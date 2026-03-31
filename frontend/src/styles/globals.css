@@ -1,0 +1,65 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    scrollbar-width: thin;
+    scrollbar-color: #2e2e3d transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background: #2e2e3d;
+    border-radius: 3px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background: #3e3e52;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-accent-blue hover:bg-accent-blue-hover text-white font-medium px-4 py-2 rounded-lg transition-colors duration-150 text-sm;
+  }
+
+  .btn-ghost {
+    @apply text-text-secondary hover:text-text-primary hover:bg-bg-hover px-3 py-2 rounded-lg transition-colors duration-150 text-sm;
+  }
+
+  .btn-danger {
+    @apply text-accent-red hover:bg-accent-red/10 px-3 py-2 rounded-lg transition-colors duration-150 text-sm;
+  }
+
+  .input-base {
+    @apply bg-bg-tertiary border border-bg-border text-text-primary placeholder-text-secondary rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent-blue/50 transition-all;
+  }
+
+  .panel-card {
+    @apply bg-bg-secondary border border-bg-border rounded-xl flex flex-col overflow-hidden;
+  }
+
+  .streaming-cursor::after {
+    content: '▋';
+    @apply animate-cursor text-accent-blue ml-0.5;
+  }
+}
