@@ -18,22 +18,28 @@ except ModuleNotFoundError:
     from langchain.agents import create_tool_calling_agent, AgentExecutor
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
-from langchain_core.chat_history import InMemoryChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langgraph.graph import StateGraph, END
 from doc_pipeline import DocPipeline
+from chat_store import SQLiteChatMessageHistory
 import httpx
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# 全局 Session 存储 (按 session_id 索引)
-_session_store: Dict[str, InMemoryChatMessageHistory] = {}
+# 联网搜索开关（由 app.py 在每次对话前设置）
+_web_search_enabled: bool = True
 
 
-def get_session_history(session_id: str) -> InMemoryChatMessageHistory:
+def set_web_search_enabled(enabled: bool) -> None:
+    """设置联网搜索全局开关"""
+    global _web_search_enabled
+    _web_search_enabled = enabled
+
+
+def get_session_history(session_id: str) -> SQLiteChatMessageHistory:
     """
     获取或创建指定 session_id 的历史记录
     
@@ -41,11 +47,9 @@ def get_session_history(session_id: str) -> InMemoryChatMessageHistory:
         session_id: 会话 ID
     
     Returns:
-        该会话的历史消息存储
+        该会话的历史消息存储（SQLite 持久化）
     """
-    if session_id not in _session_store:
-        _session_store[session_id] = InMemoryChatMessageHistory()
-    return _session_store[session_id]
+    return SQLiteChatMessageHistory(session_id=session_id)
 
 
 def clear_session_history(session_id: str) -> bool:
@@ -58,10 +62,9 @@ def clear_session_history(session_id: str) -> bool:
     Returns:
         是否成功清空
     """
-    if session_id in _session_store:
-        _session_store[session_id].clear()
-        return True
-    return False
+    history = SQLiteChatMessageHistory(session_id=session_id)
+    history.clear()
+    return True
 
 
 
@@ -171,12 +174,22 @@ def create_tools(pipeline: DocPipeline):
                 return "未找到相关文档"
 
             results = []
+            sources_meta = []
             for i, doc in enumerate(docs, 1):
                 source = doc.metadata.get("source", "未知来源")
                 content = doc.page_content.strip()
                 results.append(f"【文档 {i}: {source}】\n{content}")
+                sources_meta.append({
+                    "type": "doc",
+                    "title": source,
+                    "snippet": content[:200],
+                    "index": i,
+                })
 
-            return "\n\n---\n\n".join(results)
+            # Embed sources metadata as a JSON comment at the end for execute_tool to parse
+            import json as _json
+            sources_marker = f"\n\n__SOURCES__:{_json.dumps(sources_meta, ensure_ascii=False)}"
+            return "\n\n---\n\n".join(results) + sources_marker
 
         except Exception as e:
             logger.exception("tool=query_knowledge 检索失败")
@@ -233,6 +246,9 @@ def create_tools(pipeline: DocPipeline):
         Returns:
             格式化的搜索结果,包含标题、链接和摘要
         """
+        if not _web_search_enabled:
+            return "联网搜索已关闭，如需使用请点击输入框上方的「🌐 联网搜索」开关。"
+
         api_key = os.getenv("TAVILY_API_KEY")
 
         if not api_key:
@@ -273,7 +289,20 @@ def create_tools(pipeline: DocPipeline):
 
                     output.append(f"{i}. {title}\n链接: {url}\n摘要: {content}")
 
-                return "\n\n---\n\n".join(output)
+            # Embed sources metadata
+            import json as _json
+            sources_meta = [
+                {
+                    "type": "web",
+                    "title": r.get("title", "无标题"),
+                    "url": r.get("url", ""),
+                    "snippet": r.get("content", "")[:200],
+                    "index": idx,
+                }
+                for idx, r in enumerate(results, 1)
+            ]
+            sources_marker = f"\n\n__SOURCES__:{_json.dumps(sources_meta, ensure_ascii=False)}"
+            return "\n\n---\n\n".join(output) + sources_marker
 
         except httpx.HTTPStatusError as e:
             logger.error("tool=web_search HTTP错误 status=%d", e.response.status_code)
@@ -296,6 +325,9 @@ def create_tools(pipeline: DocPipeline):
         Returns:
             AI 总结的答案
         """
+        if not _web_search_enabled:
+            return "联网搜索已关闭，如需使用请点击输入框上方的「🌐 联网搜索」开关。"
+
         api_key = os.getenv("TAVILY_API_KEY")
 
         if not api_key:
@@ -326,7 +358,108 @@ def create_tools(pipeline: DocPipeline):
             logger.exception("tool=quick_answer 失败")
             return f"❌ 快速问答失败: {str(e)}"
 
-    return [query_knowledge, reload_knowledge_base, get_knowledge_stats, web_search, quick_answer]
+    @tool
+    async def fetch_webpage(url: str) -> str:
+        """
+        抓取指定网页的全文内容
+
+        Args:
+            url: 网页 URL
+
+        Returns:
+            网页的纯文本内容（截断至 8000 字符）
+        """
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            return "❌ 缺少 beautifulsoup4 依赖，请运行: pip install beautifulsoup4"
+
+        if not _web_search_enabled:
+            return "联网搜索已关闭，如需使用请点击输入框上方的「🌐 联网搜索」开关。"
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                
+                html = response.text
+                soup = BeautifulSoup(html, "html.parser")
+                
+                # Remove unwanted tags
+                for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+                    tag.decompose()
+                
+                # Extract text
+                text = soup.get_text(separator="\n", strip=True)
+                
+                # Clean up multiple newlines
+                lines = [line.strip() for line in text.split("\n") if line.strip()]
+                text = "\n".join(lines)
+                
+                # Truncate to 8000 characters
+                max_chars = 8000
+                if len(text) > max_chars:
+                    text = text[:max_chars] + "\n\n...[内容已截断]"
+                
+                return f"【网页内容 - {url}】\n\n{text}"
+
+        except httpx.HTTPStatusError as e:
+            logger.error("tool=fetch_webpage HTTP错误 status=%d url=%s", e.response.status_code, url)
+            return f"❌ 无法访问网页 (HTTP {e.response.status_code}): {url}"
+        except httpx.TimeoutException:
+            logger.warning("tool=fetch_webpage 请求超时 url=%s", url)
+            return f"❌ 网页请求超时: {url}"
+        except Exception as e:
+            logger.exception("tool=fetch_webpage 抓取失败 url=%s", url)
+            return f"❌ 抓取网页失败: {str(e)}"
+
+    return [query_knowledge, reload_knowledge_base, get_knowledge_stats, web_search, quick_answer, fetch_webpage]
+
+
+async def _rewrite_search_query(llm, user_input: str, chat_history: list[BaseMessage]) -> str:
+    """
+    重写搜索查询以包含对话上下文
+    
+    Args:
+        llm: LLM 实例
+        user_input: 用户原始输入
+        chat_history: 对话历史
+    
+    Returns:
+        优化后的搜索查询
+    """
+    if not chat_history:
+        return user_input
+    
+    history_text = ""
+    recent_history = chat_history[-4:]
+    for msg in recent_history:
+        if isinstance(msg, HumanMessage):
+            history_text += f"用户: {msg.content}\n"
+        elif isinstance(msg, AIMessage):
+            history_text += f"助手: {msg.content}\n"
+    
+    if not history_text.strip():
+        return user_input
+    
+    rewrite_prompt = f"""你是搜索查询优化器。根据对话上下文，将用户的问题改写为最优的搜索引擎查询词。
+只输出改写后的查询词，不要解释。
+
+对话上下文:
+{history_text}
+
+用户问题: {user_input}
+
+优化后的搜索查询:"""
+    
+    try:
+        response = await llm.ainvoke(rewrite_prompt)
+        rewritten = response.content.strip()
+        logger.info("[QueryRewrite] original=%s -> rewritten=%s", user_input[:50], rewritten[:50])
+        return rewritten if rewritten else user_input
+    except Exception as e:
+        logger.exception("[QueryRewrite] 查询重写失败")
+        return user_input
 
 
 class AgentState(TypedDict):
@@ -335,6 +468,7 @@ class AgentState(TypedDict):
     chat_history: list[BaseMessage]
     tool_choice: str
     tool_result: str
+    sources: list  # [{"type": "doc"|"web", "title": str, "url"?: str, "snippet": str}]
     output: str
 
 
@@ -342,6 +476,7 @@ async def build_langgraph_agent(
     llm,
     pipeline: DocPipeline,
     verbose: bool = True,
+    system_prompt: Optional[str] = None,
 ):
     """
     构建 LangGraph 轻量 Agent (适合小模型)
@@ -361,12 +496,14 @@ async def build_langgraph_agent(
         "3": tools_list[4],  # quick_answer
         "4": tools_list[2],  # get_knowledge_stats
         "5": tools_list[1],  # reload_knowledge_base
+        "6": tools_list[5],  # fetch_webpage
     }
     
     async def classify_intent(state: AgentState) -> AgentState:
         """节点1: 分类用户意图，选择工具"""
         user_input = state["input"]
         chat_history = state.get("chat_history", [])
+        state.setdefault("sources", [])
         
         history_text = ""
         if chat_history:
@@ -377,19 +514,21 @@ async def build_langgraph_agent(
                 elif isinstance(msg, AIMessage):
                     history_text += f"助手: {msg.content}\n"
         
-        classify_prompt = f"""你是一个企业知识库助手。根据用户问题选择最合适的工具编号（只输出一个数字）：
+        role_desc = system_prompt or "你是一个企业知识库助手"
+        classify_prompt = f"""{role_desc}。根据用户问题选择最合适的工具编号（只输出一个数字）：
 
 1 - 查询企业知识库（用于查询内部文档、公司资料）
 2 - 联网搜索（用于查询实时信息、新闻、外部知识）
 3 - 快速问答（用于快速获取网络答案）
 4 - 知识库统计（用于查询知识库状态、文档数量）
 5 - 重载知识库（用于刷新知识库）
+6 - 抓取网页全文（用于读取搜索结果中的具体网页内容）
 0 - 不需要工具（用于打招呼、闲聊、感谢等）
 
 {history_text}
 用户: {user_input}
 
-请只输出一个数字（0-5）："""
+请只输出一个数字（0-6）："""
 
         try:
             response = await llm.ainvoke(classify_prompt)
@@ -397,7 +536,7 @@ async def build_langgraph_agent(
             
             choice_char = ""
             for char in choice:
-                if char in "012345":
+                if char in "0123456":
                     choice_char = char
                     break
             
@@ -416,11 +555,14 @@ async def build_langgraph_agent(
     
     async def execute_tool(state: AgentState) -> AgentState:
         """节点2: 执行选定的工具"""
+        import json as _json
         tool_choice = state["tool_choice"]
         user_input = state["input"]
+        chat_history = state.get("chat_history", [])
         
         if tool_choice not in tools_dict:
             state["tool_result"] = ""
+            state["sources"] = []
             return state
         
         tool_func = tools_dict[tool_choice]
@@ -429,23 +571,57 @@ async def build_langgraph_agent(
             logger.info("[LangGraph] tool_name=%s 开始执行", tool_func.name)
             t0 = time.monotonic()
             
-            result = await tool_func.ainvoke({"question": user_input} if "question" in tool_func.args else {"user_question": user_input} if "user_question" in tool_func.args else {"search_query": user_input} if "search_query" in tool_func.args else {})
+            # Query rewriting for web search tools (2=web_search, 3=quick_answer)
+            actual_input = user_input
+            if tool_choice in ("2", "3"):
+                actual_input = await _rewrite_search_query(llm, user_input, chat_history)
+            
+            # Determine the correct parameter name for the tool
+            if "question" in tool_func.args:
+                params = {"question": actual_input}
+            elif "user_question" in tool_func.args:
+                params = {"user_question": actual_input}
+            elif "search_query" in tool_func.args:
+                params = {"search_query": actual_input}
+            elif "url" in tool_func.args:
+                params = {"url": actual_input}
+            else:
+                params = {}
+            
+            result = await tool_func.ainvoke(params)
             
             latency_ms = int((time.monotonic() - t0) * 1000)
+
+            # Extract __SOURCES__ marker if present
+            sources: list = []
+            sources_marker = "__SOURCES__:"
+            if sources_marker in result:
+                clean_result, _, sources_json = result.partition(sources_marker)
+                try:
+                    sources = _json.loads(sources_json)
+                except Exception:
+                    pass
+                result = clean_result.rstrip()
+
             state["tool_result"] = result
-            logger.info("[LangGraph] tool_name=%s latency_ms=%d result_len=%d", tool_func.name, latency_ms, len(result))
+            state["sources"] = sources
+            logger.info("[LangGraph] tool_name=%s latency_ms=%d result_len=%d sources=%d",
+                        tool_func.name, latency_ms, len(result), len(sources))
             
         except Exception as e:
             logger.exception("[LangGraph] tool_name=%s 执行失败", tool_func.name)
             state["tool_result"] = f"❌ 工具执行失败: {str(e)}"
+            state["sources"] = []
         
         return state
     
     async def generate_answer(state: AgentState) -> AgentState:
-        """节点3: 生成最终回答"""
+        """节点3: 生成最终回答，并在引用文档时注入脚注标记"""
+        import json as _json
         user_input = state["input"]
         tool_result = state.get("tool_result", "")
         chat_history = state.get("chat_history", [])
+        sources = state.get("sources", [])
         
         history_text = ""
         if chat_history:
@@ -456,19 +632,50 @@ async def build_langgraph_agent(
                 elif isinstance(msg, AIMessage):
                     history_text += f"助手: {msg.content}\n"
         
-        if tool_result:
-            answer_prompt = f"""你是一个企业知识库助手。根据工具返回的信息回答用户问题。
+        role_desc = system_prompt or "你是一个企业知识库助手"
 
+        # Build citation hint so the model knows which index maps to which source
+        citation_hint = ""
+        if sources:
+            cite_lines = [
+                f"  [{s.get('index', i+1)}] {s.get('title', '未知来源')}"
+                for i, s in enumerate(sources)
+            ]
+            citation_hint = (
+                "\n\n可用引用来源（在答案中用 [^数字] 标注引用，例如 [^1]）:\n"
+                + "\n".join(cite_lines)
+                + "\n"
+            )
+
+        # Structured intent card instructions
+        intent_instructions = """
+【结构化卡片输出规范】
+当用户请求以下类型的分析时，在普通文字回答之外额外输出对应的结构化卡片块（:::intent:::），以便前端自动渲染为交互式组件：
+
+1. 简历分析 / 候选人评估 → 输出 :::resume-card 块：
+:::resume-card
+{"name":"姓名","position":"应聘职位","skills":["技能1","技能2"],"score":85,"summary":"综合评价","highlights":["亮点1"],"experience":"工作经历","education":"教育背景"}
+:::
+
+2. 数据汇总 / 统计报告 → 输出 :::data-summary 块：
+:::data-summary
+{"title":"报告标题","description":"描述","metrics":[{"label":"指标名","value":100,"unit":"个","trend":"up","delta":"+10%","highlight":true}],"note":"备注"}
+:::
+
+仅在用户明确请求上述分析类型时输出卡片块，其他情况下正常用文字回答。
+"""
+
+        if tool_result:
+            answer_prompt = f"""{role_desc}。根据工具返回的信息回答用户问题。{citation_hint}{intent_instructions}
 {history_text}
 用户问题: {user_input}
 
 工具返回的信息:
 {tool_result}
 
-请基于以上信息，用自然、友好的语言回答用户问题："""
+请基于以上信息，用自然、友好的语言回答用户问题。如有引用来源请在对应句子末尾添加 [^数字] 标注："""
         else:
-            answer_prompt = f"""你是一个企业知识库助手。直接回答用户问题。
-
+            answer_prompt = f"""{role_desc}。直接回答用户问题。{intent_instructions}
 {history_text}
 用户: {user_input}
 
@@ -488,7 +695,7 @@ async def build_langgraph_agent(
     def should_use_tool(state: AgentState) -> Literal["execute_tool", "generate_answer"]:
         """条件边: 判断是否需要使用工具"""
         tool_choice = state.get("tool_choice", "0")
-        if tool_choice in ("1", "2", "3", "4", "5"):
+        if tool_choice in ("1", "2", "3", "4", "5", "6"):
             return "execute_tool"
         return "generate_answer"
     
@@ -527,6 +734,7 @@ async def build_agent(
     temperature: float = 0.3,
     agent_mode: str = "auto",
     verbose: bool = True,
+    system_prompt: Optional[str] = None,
 ):
     """
     构建带工具的 Agent
@@ -560,21 +768,17 @@ async def build_agent(
     pipeline = DocPipeline()
     
     if actual_mode == "langgraph":
-        langgraph_app = await build_langgraph_agent(llm, pipeline, verbose)
+        langgraph_app = await build_langgraph_agent(llm, pipeline, verbose, system_prompt=system_prompt)
         
         class LangGraphAgentWrapper:
             """包装 LangGraph agent 以兼容原有调用方式"""
-            def __init__(self, app, session_store):
+            def __init__(self, app):
                 self.app = app
-                self.session_store = session_store
             
             async def ainvoke(self, inputs: dict, config: dict = None):
                 session_id = config.get("configurable", {}).get("session_id", "default") if config else "default"
                 
-                history = self.session_store.get(session_id)
-                if history is None:
-                    history = InMemoryChatMessageHistory()
-                    self.session_store[session_id] = history
+                history = SQLiteChatMessageHistory(session_id=session_id)
                 
                 user_input = inputs.get("input", "")
                 
@@ -583,19 +787,36 @@ async def build_agent(
                     "chat_history": list(history.messages),
                     "tool_choice": "",
                     "tool_result": "",
+                    "sources": [],
                     "output": "",
                 }
                 
                 result_state = await self.app.ainvoke(state)
                 
                 output = result_state.get("output", "")
+                sources = result_state.get("sources", [])
                 
                 history.add_user_message(user_input)
                 history.add_ai_message(output)
                 
-                return {"output": output}
+                return {"output": output, "sources": sources}
+
+            async def astream_answer(self, user_input: str, config: dict = None):
+                """流式输出：先运行完整推理，再逐块 yield 答案，最后 yield sources 字典"""
+                result = await self.ainvoke({"input": user_input}, config=config)
+                output = result.get("output", "")
+                sources = result.get("sources", [])
+
+                # Yield sources metadata first (as a special dict)
+                if sources:
+                    yield {"type": "sources", "sources": sources}
+
+                chunk_size = 20
+                for i in range(0, len(output), chunk_size):
+                    yield output[i : i + chunk_size]
+                    await asyncio.sleep(0.01)
         
-        agent_wrapper = LangGraphAgentWrapper(langgraph_app, _session_store)
+        agent_wrapper = LangGraphAgentWrapper(langgraph_app)
         logger.info("✓ 使用 LangGraph 轻量 Agent 模式（适合小模型）")
         return agent_wrapper
     
@@ -604,8 +825,9 @@ async def build_agent(
         
         logger.info("加载了 %d 个工具: %s", len(all_tools), [t.name for t in all_tools])
         
+        system_msg = system_prompt or "你是一个企业知识库助手，可以查询内部文档和联网搜索。请根据用户问题选择合适的工具来回答。"
         prompt = ChatPromptTemplate.from_messages([
-            ("system", "你是一个企业知识库助手，可以查询内部文档和联网搜索。请根据用户问题选择合适的工具来回答。"),
+            ("system", system_msg),
             ("placeholder", "{chat_history}"),
             ("human", "{input}"),
             ("placeholder", "{agent_scratchpad}"),

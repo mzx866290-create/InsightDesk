@@ -118,6 +118,56 @@ async def quick_answer(question: str) -> str:
         return f"❌ 快速问答失败: {str(e)}"
 
 
+@mcp.tool()
+async def fetch_webpage(url: str) -> str:
+    """
+    抓取指定网页的全文内容
+
+    Args:
+        url: 网页 URL
+
+    Returns:
+        网页的纯文本内容（截断至 8000 字符）
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return "❌ 缺少 beautifulsoup4 依赖，请运行: pip install beautifulsoup4"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            
+            html = response.text
+            soup = BeautifulSoup(html, "html.parser")
+            
+            # Remove unwanted tags
+            for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
+                tag.decompose()
+            
+            # Extract text
+            text = soup.get_text(separator="\n", strip=True)
+            
+            # Clean up multiple newlines
+            lines = [line.strip() for line in text.split("\n") if line.strip()]
+            text = "\n".join(lines)
+            
+            # Truncate to 8000 characters
+            max_chars = 8000
+            if len(text) > max_chars:
+                text = text[:max_chars] + "\n\n...[内容已截断]"
+            
+            return f"【网页内容 - {url}】\n\n{text}"
+
+    except httpx.HTTPStatusError as e:
+        return f"❌ 无法访问网页 (HTTP {e.response.status_code}): {url}"
+    except httpx.TimeoutException:
+        return f"❌ 网页请求超时: {url}"
+    except Exception as e:
+        return f"❌ 抓取网页失败: {str(e)}"
+
+
 if __name__ == "__main__":
     import sys
     print("启动联网搜索 MCP Server...", file=sys.stderr)

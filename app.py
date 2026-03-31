@@ -4,6 +4,7 @@
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import asyncio
 import os
 import sys
@@ -14,8 +15,9 @@ import requests
 import uuid
 from dotenv import load_dotenv
 
-from agent_core import build_agent, clear_session_history
+from agent_core import build_agent, clear_session_history, set_web_search_enabled
 from doc_pipeline import DocPipeline
+from chat_store import get_all_sessions, delete_session, SQLiteChatMessageHistory
 
 load_dotenv()
 
@@ -53,6 +55,28 @@ st.markdown(
         text-align: center;
         margin-bottom: 1rem;
     }
+
+    /* 联网搜索 toggle 固定到输入框右侧 */
+    label[data-baseweb="checkbox"] {
+        position: fixed !important;
+        bottom: 0.8rem !important;
+        right: 3.8rem !important;
+        z-index: 9999 !important;
+        background: var(--background-color, white) !important;
+        padding: 0.2rem 0.6rem !important;
+        border-radius: 0.4rem !important;
+        margin: 0 !important;
+        display: flex !important;
+        align-items: center !important;
+    }
+    /* 压缩占位高度，避免影响页面布局 */
+    [data-testid="element-container"]:has(label[data-baseweb="checkbox"]) {
+        height: 0 !important;
+        overflow: visible !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+
 </style>
 """,
     unsafe_allow_html=True,
@@ -138,9 +162,20 @@ def init_session_state():
         st.session_state.agent_config = _default_agent_config()
     
     # 初始化 Session ID (用于多轮对话记忆)
+    # 优先从 URL 参数加载，否则创建新会话
     if "session_id" not in st.session_state:
-        st.session_state.session_id = str(uuid.uuid4())
-        logger.info("[Session] 创建新会话: %s", st.session_state.session_id)
+        # 尝试从 URL 参数获取
+        query_params = st.query_params
+        if "session_id" in query_params:
+            st.session_state.session_id = query_params["session_id"]
+            logger.info("[Session] 从 URL 加载会话: %s", st.session_state.session_id)
+        else:
+            st.session_state.session_id = str(uuid.uuid4())
+            logger.info("[Session] 创建新会话: %s", st.session_state.session_id)
+
+    # 联网搜索开关，默认根据是否配置了 Key 来决定
+    if "web_search_enabled" not in st.session_state:
+        st.session_state.web_search_enabled = bool(os.environ.get("TAVILY_API_KEY", ""))
 
 
 def build_agent_sync(provider: str, model: str, base_url: str, api_key: str, temperature: float, agent_mode: str = "auto"):
@@ -306,6 +341,28 @@ def render_sidebar():
 
         st.divider()
 
+        # 联网搜索配置
+        st.subheader("🔍 联网搜索")
+        current_tavily_key = os.environ.get("TAVILY_API_KEY", "")
+        tavily_key_input = st.text_input(
+            "Tavily API Key",
+            value=current_tavily_key,
+            type="password",
+            help="填入后联网搜索功能即可使用，获取地址: https://app.tavily.com",
+            placeholder="tvly-xxxxxxxxxxxxxxxx",
+        )
+        if tavily_key_input != current_tavily_key:
+            if st.button("💾 保存 Key", use_container_width=True):
+                os.environ["TAVILY_API_KEY"] = tavily_key_input
+                st.success("✓ Tavily API Key 已保存")
+                st.rerun()
+        if current_tavily_key:
+            st.success("✓ 联网搜索已就绪")
+        else:
+            st.caption("未配置，联网搜索不可用")
+
+        st.divider()
+
         # 文档管理
         st.subheader("📁 文档管理")
 
@@ -361,12 +418,91 @@ def render_sidebar():
         # 对话管理
         st.subheader("💬 对话管理")
         
+        # 会话选择器
+        all_sessions = get_all_sessions()
+        
+        if all_sessions:
+            st.caption(f"共 {len(all_sessions)} 个历史会话")
+            
+            # 构建会话选项
+            session_options = {}
+            for sess in all_sessions:
+                # 格式化时间
+                import datetime
+                updated_time = datetime.datetime.fromtimestamp(sess["updated_at"])
+                time_str = updated_time.strftime("%m-%d %H:%M")
+                
+                # 显示标题和消息数
+                label = f"{sess['title'][:30]} ({sess['message_count']}条) - {time_str}"
+                session_options[label] = sess["session_id"]
+            
+            # 添加"新建会话"选项
+            session_options["➕ 新建会话"] = "NEW_SESSION"
+            
+            # 找到当前会话的索引
+            current_session_id = st.session_state.session_id
+            current_index = 0
+            for idx, (label, sid) in enumerate(session_options.items()):
+                if sid == current_session_id:
+                    current_index = idx
+                    break
+            
+            selected_label = st.selectbox(
+                "选择会话",
+                options=list(session_options.keys()),
+                index=current_index,
+                help="选择历史会话或创建新会话"
+            )
+            
+            selected_session_id = session_options[selected_label]
+            
+            # 处理会话切换
+            if selected_session_id == "NEW_SESSION":
+                if st.button("✨ 创建新会话", use_container_width=True):
+                    new_session_id = str(uuid.uuid4())
+                    st.session_state.session_id = new_session_id
+                    st.session_state.messages = []
+                    st.success("✓ 已创建新会话")
+                    logger.info("[Session] 创建新会话: %s", new_session_id)
+                    st.rerun()
+            elif selected_session_id != current_session_id:
+                if st.button("🔄 切换到此会话", use_container_width=True):
+                    # 加载选中会话的消息
+                    history = SQLiteChatMessageHistory(session_id=selected_session_id)
+                    messages = []
+                    for msg in history.messages:
+                        if hasattr(msg, 'type'):
+                            role = "user" if msg.type == "human" else "assistant"
+                        else:
+                            role = "user" if msg.__class__.__name__ == "HumanMessage" else "assistant"
+                        messages.append({"role": role, "content": msg.content})
+                    
+                    st.session_state.session_id = selected_session_id
+                    st.session_state.messages = messages
+                    st.success(f"✓ 已切换到会话")
+                    logger.info("[Session] 切换会话: %s", selected_session_id)
+                    st.rerun()
+            
+            # 删除当前会话
+            if selected_session_id not in ["NEW_SESSION", current_session_id]:
+                if st.button("🗑️ 删除选中会话", use_container_width=True):
+                    delete_session(selected_session_id)
+                    st.success("✓ 已删除会话")
+                    st.rerun()
+        else:
+            st.info("暂无历史会话")
+        
+        st.divider()
+        
+        # 当前会话操作
+        st.caption("当前会话操作")
+        
         col1, col2 = st.columns(2)
         
         with col1:
-            if st.button("🗑️ 清空显示历史", use_container_width=True):
+            if st.button("🗑️ 清空显示", use_container_width=True):
                 st.session_state.messages = []
-                st.success("✓ 已清空前端显示")
+                st.success("✓ 已清空显示")
                 st.rerun()
         
         with col2:
@@ -374,18 +510,10 @@ def render_sidebar():
                 session_id = st.session_state.session_id
                 success = clear_session_history(session_id)
                 if success:
-                    st.success("✓ 已清空 Agent 记忆")
+                    st.success("✓ 已清空记忆")
                 else:
                     st.info("记忆已为空")
                 st.rerun()
-        
-        if st.button("🔄 重置会话", type="secondary", use_container_width=True):
-            # 创建新的 Session ID
-            st.session_state.session_id = str(uuid.uuid4())
-            st.session_state.messages = []
-            st.success("✓ 已创建新会话")
-            logger.info("[Session] 重置会话: %s", st.session_state.session_id)
-            st.rerun()
         
         # 显示当前 Session ID (调试用)
         with st.expander("🔍 会话信息"):
@@ -427,6 +555,19 @@ def render_chat():
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
+    has_tavily = bool(os.environ.get("TAVILY_API_KEY", ""))
+
+    web_search_enabled = st.toggle(
+        "🌐 联网搜索",
+        value=st.session_state.web_search_enabled,
+        disabled=not has_tavily,
+        help="开启后 Agent 将优先使用联网搜索补充答案"
+        if has_tavily
+        else "请先在侧边栏填写 Tavily API Key",
+        key="web_search_toggle",
+    )
+    st.session_state.web_search_enabled = web_search_enabled
+
     if prompt := st.chat_input("请输入您的问题..."):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
@@ -435,6 +576,8 @@ def render_chat():
         with st.chat_message("assistant"):
             with st.spinner("思考中..."):
                 try:
+                    # 同步联网搜索开关到 agent_core
+                    set_web_search_enabled(st.session_state.web_search_enabled)
                     # 调用 Agent 时传入 session_id (启用多轮对话记忆)
                     result = run_async(
                         st.session_state.agent.ainvoke(
@@ -456,16 +599,27 @@ def render_chat():
                     logger.exception("Agent 调用失败 session_id=%s", st.session_state.session_id)
                     err_str = str(e).lower()
 
+                    is_cloud = st.session_state.agent_config.get("provider") == "cloud"
+
                     if "timeout" in err_str or "timed out" in err_str:
-                        friendly = "请求超时，请稍后重试。如使用本地模型，请确认 Ollama 服务正常运行。"
+                        if is_cloud:
+                            friendly = "请求超时，请稍后重试。请检查网络连接或云端 API 服务状态。"
+                        else:
+                            friendly = "请求超时，请稍后重试。请确认 Ollama 服务正常运行。"
                     elif "connection" in err_str or "connect" in err_str or "refused" in err_str:
-                        friendly = "无法连接到模型服务，请检查 Ollama 是否启动或 Base URL 是否正确。"
+                        if is_cloud:
+                            friendly = "无法连接到云端 API，请检查 Base URL 是否正确，以及网络是否可用。"
+                        else:
+                            friendly = "无法连接到 Ollama 服务，请确认 Ollama 是否已启动，或检查 Base URL 是否正确。"
                     elif "api key" in err_str or "unauthorized" in err_str or "401" in err_str:
                         friendly = "API Key 无效或未配置，请在侧边栏检查 API Key 设置。"
                     elif "not found" in err_str or "404" in err_str:
-                        friendly = "模型未找到，请确认模型名称与 ollama list 中的名称一致。"
+                        if is_cloud:
+                            friendly = "云端 API 请求失败（404）。请检查：① Model ID 是否正确（如 gpt-4o、gpt-4-turbo）；② Base URL 是否填写正确。"
+                        else:
+                            friendly = "模型未找到，请确认模型名称与 `ollama list` 中的名称完全一致。"
                     else:
-                        friendly = f"生成回答时出错，请查看详细信息。"
+                        friendly = "生成回答时出错，请查看详细信息。"
 
                     st.error(f"❌ {friendly}")
                     with st.expander("🔍 详细错误信息 (调试用)"):
