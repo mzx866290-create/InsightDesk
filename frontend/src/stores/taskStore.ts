@@ -11,6 +11,7 @@ export interface TaskRecord {
   error?: string
   created_at: number
   updated_at: number
+  params?: Record<string, unknown>
 }
 
 interface TaskState {

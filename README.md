@@ -22,7 +22,7 @@
 - Agent 模式：
   - `function_calling`（模型原生工具调用）
   - `langgraph`（轻量工具路由）
-  - `auto`（本地默认 `langgraph`，云端默认 `function_calling`）
+  - `auto`（本地/云端默认都使用 `langgraph`，兼容性优先）
 - 对话记忆：基于 `session_id` 的会话级历史记录
 - 工具集：知识检索、知识库统计、知识库重载、联网搜索、快速问答
 
@@ -238,3 +238,24 @@ streamlit run app.py
 - 文档类型：执行计划版 README
 - 适配代码：当前仓库主分支（`app.py` / `agent_core.py` / `doc_pipeline.py`）
 - 维护方式：后续迭代完成后同步更新“里程碑状态”和“验收结果”
+# Windows 一键启动
+
+项目根目录新增了一个给非开发同事使用的入口：`一键启动.bat`。
+
+推荐使用方式：
+1. 配好 `.env`
+2. 双击 `一键启动.bat`
+3. 等待浏览器自动打开 `http://localhost:3000`
+
+启动器会自动处理：
+- 检查并尽量自动安装 `Python`、`Node.js`、`npm`
+- 自动创建 `venv312` 并安装 `requirements.txt`
+- 自动安装 `frontend/node_modules`
+- 按 `LLM_PROVIDER` 自动检查 `Ollama` 或 `OpenRouter`
+- 启动新版 `FastAPI + React`
+- 打印本机和局域网访问地址
+
+局域网共享说明：
+- 本机访问：`http://localhost:3000`
+- 局域网访问：`http://<启动机器IP>:3000`
+- 如果其他同事无法访问局域网地址，优先检查同网段和 Windows 防火墙放行情况

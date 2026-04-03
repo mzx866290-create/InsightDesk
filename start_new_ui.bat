@@ -1,21 +1,23 @@
 @echo off
 chcp 65001 > nul
-echo 正在启动 AI 知识库 (新版 React 界面)...
+setlocal
+
+if "%BACKEND_PORT%"=="" set BACKEND_PORT=8080
+if "%FRONTEND_PORT%"=="" set FRONTEND_PORT=3000
+
+echo Starting AI Knowledge Base (React + FastAPI)...
 echo.
 
-REM 启动 FastAPI 后端
-start "FastAPI 后端" cmd /k "chcp 65001 > nul && cd /d %~dp0 && venv312\Scripts\python.exe -m uvicorn api_server:app --reload --port 8000 --host 0.0.0.0"
+start "FastAPI Backend" cmd /k "chcp 65001 > nul && cd /d %~dp0 && set BACKEND_PORT=%BACKEND_PORT% && set FRONTEND_PORT=%FRONTEND_PORT% && venv312\Scripts\python.exe -m uvicorn api_server:app --reload --port %BACKEND_PORT% --host 0.0.0.0"
 
-REM 等待后端启动
 timeout /t 2 /nobreak > nul
 
-REM 启动 React 前端 (开发模式)
-start "React 前端" cmd /k "chcp 65001 > nul && cd /d %~dp0\frontend && npm run dev"
+start "React Frontend" cmd /k "chcp 65001 > nul && cd /d %~dp0\frontend && set BACKEND_PORT=%BACKEND_PORT% && set FRONTEND_PORT=%FRONTEND_PORT% && npm run dev -- --host 0.0.0.0 --port %FRONTEND_PORT%"
 
 echo.
-echo 启动中...
-echo   后端 API:  http://localhost:8000
-echo   前端界面:  http://localhost:3000
+echo Starting...
+echo   Backend API: http://localhost:%BACKEND_PORT%
+echo   Frontend:    http://localhost:%FRONTEND_PORT%
 echo.
-echo 按任意键退出本窗口（后端和前端将继续运行）
+echo Press any key to close this launcher window. Backend and frontend will keep running.
 pause > nul

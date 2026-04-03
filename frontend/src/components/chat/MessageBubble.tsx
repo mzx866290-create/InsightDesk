@@ -1,14 +1,15 @@
-import React from 'react'
+import React, { useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import { Copy, Check } from 'lucide-react'
+import { Copy, Check, Download, Paperclip } from 'lucide-react'
 import type { PanelMessage } from '../../stores/chatStore'
 import { CitationPanel } from './CitationPanel'
 import { ErrorBanner } from './ErrorBanner'
 import { IntentCardRenderer, stripIntentBlocks } from '../cards/IntentCardRenderer'
 import { TaskProgressCard } from '../cards/TaskProgressCard'
+import { MarkdownTableChart } from '../charts/MarkdownTableChart'
 import { useChatStore } from '../../stores/chatStore'
 import { clearSessionMessages } from '../../api/client'
 
@@ -42,11 +43,19 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, panelId }
   const isUser = message.role === 'user'
   const isError = message.role === 'error'
 
-  const { currentSessionId, clearMessages, setSettingsOpen } = useChatStore()
+  // Capture raw table data for chart rendering
+  const tableHeadersRef = useRef<string[]>([])
+  const tableRowsRef = useRef<(string | number)[][]>([])
+
+  const { currentSessionId, clearMessages, setSettingsOpen, updateSession } = useChatStore()
 
   const handleClearContext = async () => {
     if (currentSessionId) {
       await clearSessionMessages(currentSessionId)
+      updateSession(currentSessionId, {
+        message_count: 0,
+        updated_at: Date.now() / 1000,
+      })
     }
     clearMessages()
   }
@@ -67,7 +76,43 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, panelId }
     return (
       <div className="flex justify-end mb-4 animate-fade-in">
         <div className="max-w-[85%] bg-accent-blue/20 border border-accent-blue/30 text-text-primary px-4 py-3 rounded-2xl rounded-tr-sm text-sm leading-relaxed">
-          {message.content}
+          {message.images && message.images.length > 0 && (
+            <div className="mb-3 grid grid-cols-2 gap-2">
+              {message.images.map((image, index) => (
+                <a
+                  key={`${image.name}-${index}`}
+                  href={image.data_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block overflow-hidden rounded-xl border border-accent-blue/20 bg-black/10"
+                >
+                  <img
+                    src={image.data_url}
+                    alt={image.name}
+                    className="h-28 w-full object-cover"
+                  />
+                </a>
+              ))}
+            </div>
+          )}
+          {message.files && message.files.length > 0 && (
+            <div className="mb-3 flex flex-wrap gap-2">
+              {message.files.map((file, index) => (
+                <a
+                  key={`${file.name}-${index}`}
+                  href={file.data_url}
+                  download={file.name}
+                  className="inline-flex max-w-full items-center gap-2 rounded-xl border border-accent-blue/25 bg-white/5 px-3 py-2 text-xs text-text-primary transition-colors hover:bg-white/10"
+                  title={file.name}
+                >
+                  <Paperclip size={12} className="shrink-0" />
+                  <span className="max-w-[180px] truncate">{file.name}</span>
+                  <Download size={12} className="shrink-0 opacity-70" />
+                </a>
+              ))}
+            </div>
+          )}
+          {message.content && <div>{message.content}</div>}
         </div>
       </div>
     )
@@ -156,6 +201,19 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, panelId }
               )
             },
             a({ href, children }) {
+              const isInternalAnchor = typeof href === 'string' && href.startsWith('#')
+
+              if (isInternalAnchor) {
+                return (
+                  <a
+                    href={href}
+                    className="text-accent-blue hover:text-accent-blue-hover underline underline-offset-2 transition-colors"
+                  >
+                    {children}
+                  </a>
+                )
+              }
+
               return (
                 <a
                   href={href}
@@ -168,13 +226,22 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, panelId }
               )
             },
             table({ children }) {
+              const headers = tableHeadersRef.current
+              const rows = tableRowsRef.current
+              const tableEl = (
+                <table className="text-xs border-collapse w-full">{children}</table>
+              )
+              // Reset refs for next table
+              tableHeadersRef.current = []
+              tableRowsRef.current = []
               return (
-                <div className="overflow-x-auto my-3">
-                  <table className="text-xs border-collapse w-full">{children}</table>
-                </div>
+                <MarkdownTableChart rawHeaders={headers} rawRows={rows}>
+                  {tableEl}
+                </MarkdownTableChart>
               )
             },
             th({ children }) {
+              tableHeadersRef.current = [...tableHeadersRef.current, String(children ?? '')]
               return (
                 <th className="border border-bg-border bg-bg-tertiary px-3 py-1.5 text-left text-text-primary font-medium">
                   {children}
@@ -187,6 +254,23 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, panelId }
                   {children}
                 </td>
               )
+            },
+            tr({ children, ...props }) {
+              // Capture row data for chart detection — only body rows
+              const isHeader = (props as Record<string, unknown>)['data-header']
+              if (!isHeader) {
+                const cells: (string | number)[] = []
+                React.Children.forEach(children, (child) => {
+                  if (React.isValidElement(child)) {
+                    const text = String((child.props as Record<string, unknown>).children ?? '')
+                    cells.push(text)
+                  }
+                })
+                if (cells.length > 0) {
+                  tableRowsRef.current = [...tableRowsRef.current, cells]
+                }
+              }
+              return <tr>{children}</tr>
             },
             hr() {
               return <hr className="border-bg-border my-4" />

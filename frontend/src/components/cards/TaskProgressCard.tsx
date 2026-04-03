@@ -6,6 +6,7 @@ import type { TaskStatus } from '../../stores/taskStore'
 const TASK_TYPE_LABELS: Record<string, string> = {
   analyze_knowledge_base: '分析知识库',
   generate_report: '生成报告',
+  upload_documents: '导入知识库',
 }
 
 const STATUS_CONFIG: Record<

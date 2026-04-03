@@ -136,3 +136,26 @@ ollama serve
 ---
 
 祝使用愉快！🎉
+# Windows 同事启动方式
+
+推荐给不懂代码的同事直接双击项目根目录里的 `一键启动.bat`。
+
+这个启动器会自动完成这些事情：
+- 检查 `Python`、`Node.js`、`npm`
+- 自动创建 `venv312` 并安装后端依赖
+- 自动安装 `frontend` 前端依赖
+- 如果缺少 `.env`，会自动从 `.env.example` 复制
+- 按 `.env` 中的 `LLM_PROVIDER` 自动检查 `Ollama` 或 `OpenRouter`
+- 启动新版 `React + FastAPI`
+- 自动打开浏览器到 `http://localhost:3000`
+- 在窗口里打印局域网访问地址，方便同网段同事访问
+
+同事只需要记住：
+1. 双击 `一键启动.bat`
+2. 看到浏览器打开后，使用 `http://localhost:3000`
+3. 如果要给局域网其他同事访问，把窗口里显示的 `http://<你的电脑IP>:3000` 发给对方
+
+常见说明：
+- 如果 `.env` 里使用 `openrouter`，需要先把 `OPENROUTER_API_KEY` 改成真实值
+- 如果 `.env` 里使用 `ollama`，启动器会尝试自动启动 Ollama，并在模型缺失时自动拉取模型
+- 如果局域网地址打不开，优先检查两台电脑是否在同一网络，以及 Windows 防火墙是否放行 `3000` 和 `8000` 端口

@@ -1,6 +1,7 @@
 import React from 'react'
 import { ResumeCard, type ResumeCardData } from './ResumeCard'
 import { DataSummaryCard, type DataSummaryCardData } from './DataSummaryCard'
+import { DashboardCard, type DashboardCardData } from './DashboardCard'
 
 /**
  * Parses structured intent blocks from AI content.
@@ -18,6 +19,7 @@ type IntentBlock =
   | { type: 'text'; content: string }
   | { type: 'resume-card'; data: ResumeCardData }
   | { type: 'data-summary'; data: DataSummaryCardData }
+  | { type: 'dashboard-card'; data: DashboardCardData }
 
 const INTENT_BLOCK_RE = /:::(\w[\w-]*)\s*\n([\s\S]*?):::/g
 
@@ -52,6 +54,8 @@ function parseIntentBlocks(content: string): IntentBlock[] {
       blocks.push({ type: 'resume-card', data: parsed as ResumeCardData })
     } else if (intent === 'data-summary') {
       blocks.push({ type: 'data-summary', data: parsed as DataSummaryCardData })
+    } else if (intent === 'dashboard-card') {
+      blocks.push({ type: 'dashboard-card', data: parsed as DashboardCardData })
     } else {
       // Unknown intent — render as code block fallback
       blocks.push({ type: 'text', content: fullMatch })
@@ -105,6 +109,9 @@ export const IntentCardRenderer: React.FC<IntentCardRendererProps> = ({
         }
         if (block.type === 'data-summary') {
           return <DataSummaryCard key={i} data={block.data} streaming={streaming} />
+        }
+        if (block.type === 'dashboard-card') {
+          return <DashboardCard key={i} data={block.data} streaming={streaming} />
         }
         return null
       })}
