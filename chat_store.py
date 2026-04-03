@@ -3,6 +3,7 @@ SQLite-based persistent chat message history
 Implements LangChain's BaseChatMessageHistory interface
 """
 
+import json
 import sqlite3
 import time
 import logging
@@ -15,6 +16,16 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, System
 logger = logging.getLogger(__name__)
 
 DB_PATH = "./chat_history.db"
+SQLITE_TIMEOUT_SECONDS = 5
+SQLITE_BUSY_TIMEOUT_MS = 5000
+
+
+def connect_sqlite(db_path: str = DB_PATH) -> sqlite3.Connection:
+    """Create a SQLite connection with the project's default safety settings."""
+    conn = sqlite3.connect(db_path, timeout=SQLITE_TIMEOUT_SECONDS)
+    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+    conn.execute("PRAGMA journal_mode = WAL")
+    return conn
 
 
 def _env_int(name: str, default: int) -> int:
@@ -46,10 +57,22 @@ def _init_system_prompts_table(conn: sqlite3.Connection) -> None:
             is_default INTEGER DEFAULT 0,
             is_active INTEGER DEFAULT 0,
             created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
+            updated_at REAL NOT NULL,
+            vector_store_id TEXT DEFAULT '',
+            dashboard_template TEXT DEFAULT ''
         )
     """)
     conn.commit()
+    # Migration: add vector_store_id if missing
+    existing_cols = {row[1] for row in cursor.execute("PRAGMA table_info(system_prompts)")}
+    if "vector_store_id" not in existing_cols:
+        cursor.execute("ALTER TABLE system_prompts ADD COLUMN vector_store_id TEXT DEFAULT ''")
+        conn.commit()
+        logger.info("Migrated system_prompts table: added 'vector_store_id' column")
+    if "dashboard_template" not in existing_cols:
+        cursor.execute("ALTER TABLE system_prompts ADD COLUMN dashboard_template TEXT DEFAULT ''")
+        conn.commit()
+        logger.info("Migrated system_prompts table: added 'dashboard_template' column")
     # Seed a built-in default if the table is empty
     cursor.execute("SELECT COUNT(1) FROM system_prompts")
     if cursor.fetchone()[0] == 0:
@@ -105,7 +128,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
 
     def _init_db(self) -> None:
         """Initialize database schema if not exists."""
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_sqlite(self.db_path) as conn:
             cursor = conn.cursor()
 
             # Messages table
@@ -154,7 +177,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
 
     def _ensure_session_exists(self) -> None:
         """Ensure session record exists in sessions table."""
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_sqlite(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT session_id FROM sessions WHERE session_id = ?",
@@ -173,15 +196,9 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
                 conn.commit()
                 logger.info("Created new session: %s", self.session_id)
 
-    @property
-    def messages(self) -> List[BaseMessage]:  # type: ignore[override]
-        """
-        Retrieve all messages for this session.
-
-        Returns:
-            List of BaseMessage objects ordered by timestamp
-        """
-        with sqlite3.connect(self.db_path) as conn:
+    def _load_messages(self, apply_context_limit: bool = True) -> List[BaseMessage]:
+        """Load session messages with optional context-window truncation."""
+        with connect_sqlite(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 """
@@ -195,10 +212,11 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
             messages = []
             rows = cursor.fetchall()
 
-            # Context window governance: only expose latest N messages to the model
-            context_limit = _env_int("CONTEXT_HISTORY_MESSAGES", 16)
-            if context_limit > 0 and len(rows) > context_limit:
-                rows = rows[-context_limit:]
+            if apply_context_limit:
+                # Context window governance: only expose latest N messages to the model
+                context_limit = _env_int("CONTEXT_HISTORY_MESSAGES", 16)
+                if context_limit > 0 and len(rows) > context_limit:
+                    rows = rows[-context_limit:]
 
             for msg_type, content in rows:
                 if msg_type == "human":
@@ -209,6 +227,25 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
                     messages.append(SystemMessage(content=content))
 
             return messages
+
+    @property
+    def messages(self) -> List[BaseMessage]:  # type: ignore[override]
+        """
+        Retrieve model-facing messages for this session.
+
+        Returns:
+            List of BaseMessage objects ordered by timestamp
+        """
+        return self._load_messages(apply_context_limit=True)
+
+    def get_all_messages(self) -> List[BaseMessage]:
+        """
+        Retrieve the full session history without context-window truncation.
+
+        Returns:
+            List of BaseMessage objects ordered by timestamp
+        """
+        return self._load_messages(apply_context_limit=False)
 
     def add_message(self, message: BaseMessage, model_id: str = "") -> None:
         """
@@ -227,7 +264,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
         else:
             msg_type = "unknown"
 
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_sqlite(self.db_path) as conn:
             cursor = conn.cursor()
             content_text = _normalize_content(message.content)
 
@@ -297,7 +334,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
 
     def clear(self) -> None:
         """Clear all messages for this session."""
-        with sqlite3.connect(self.db_path) as conn:
+        with connect_sqlite(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "DELETE FROM messages WHERE session_id = ?", (self.session_id,)
@@ -323,7 +360,7 @@ def get_all_sessions(db_path: str = "./chat_history.db") -> List[Dict]:
     Returns:
         List of session dicts with keys: session_id, title, created_at, updated_at, message_count
     """
-    with sqlite3.connect(db_path) as conn:
+    with connect_sqlite(db_path) as conn:
         cursor = conn.cursor()
 
         # 确保表存在（数据库文件为空时自动建表）
@@ -392,7 +429,7 @@ def delete_session(session_id: str, db_path: str = "./chat_history.db") -> None:
         session_id: Session ID to delete
         db_path: Path to SQLite database file
     """
-    with sqlite3.connect(db_path) as conn:
+    with connect_sqlite(db_path) as conn:
         cursor = conn.cursor()
 
         # Delete messages
@@ -409,6 +446,15 @@ def delete_session(session_id: str, db_path: str = "./chat_history.db") -> None:
 
 
 def _row_to_prompt(row: tuple) -> Dict:
+    raw_dashboard_template = row[8] if len(row) > 8 else ""
+    dashboard_template: Dict[str, Any] = {}
+    if raw_dashboard_template:
+        try:
+            parsed = json.loads(raw_dashboard_template)
+            if isinstance(parsed, dict):
+                dashboard_template = parsed
+        except json.JSONDecodeError:
+            logger.warning("Invalid dashboard_template JSON found in system_prompts row id=%s", row[0])
     return {
         "id": row[0],
         "name": row[1],
@@ -417,20 +463,22 @@ def _row_to_prompt(row: tuple) -> Dict:
         "is_active": bool(row[4]),
         "created_at": row[5],
         "updated_at": row[6],
+        "vector_store_id": row[7] if len(row) > 7 else "",
+        "dashboard_template": dashboard_template,
     }
 
 
 def _ensure_prompts_init(db_path: str = DB_PATH) -> None:
-    with sqlite3.connect(db_path) as conn:
+    with connect_sqlite(db_path) as conn:
         _init_system_prompts_table(conn)
 
 
 def get_all_system_prompts(db_path: str = DB_PATH) -> List[Dict]:
     _ensure_prompts_init(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with connect_sqlite(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id, name, content, is_default, is_active, created_at, updated_at "
+            "SELECT id, name, content, is_default, is_active, created_at, updated_at, vector_store_id, dashboard_template "
             "FROM system_prompts ORDER BY created_at ASC"
         )
         return [_row_to_prompt(r) for r in cursor.fetchall()]
@@ -438,26 +486,33 @@ def get_all_system_prompts(db_path: str = DB_PATH) -> List[Dict]:
 
 def get_active_system_prompt(db_path: str = DB_PATH) -> Optional[Dict]:
     _ensure_prompts_init(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with connect_sqlite(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT id, name, content, is_default, is_active, created_at, updated_at "
+            "SELECT id, name, content, is_default, is_active, created_at, updated_at, vector_store_id, dashboard_template "
             "FROM system_prompts WHERE is_active = 1 LIMIT 1"
         )
         row = cursor.fetchone()
         return _row_to_prompt(row) if row else None
 
 
-def create_system_prompt(name: str, content: str, db_path: str = DB_PATH) -> Dict:
+def create_system_prompt(
+    name: str,
+    content: str,
+    db_path: str = DB_PATH,
+    vector_store_id: str = "",
+    dashboard_template: Optional[Dict[str, Any]] = None,
+) -> Dict:
     _ensure_prompts_init(db_path)
     now = time.time()
     prompt_id = str(uuid.uuid4())
-    with sqlite3.connect(db_path) as conn:
+    dashboard_template_json = json.dumps(dashboard_template or {}, ensure_ascii=False)
+    with connect_sqlite(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO system_prompts (id, name, content, is_default, is_active, created_at, updated_at) "
-            "VALUES (?, ?, ?, 0, 0, ?, ?)",
-            (prompt_id, name, content, now, now),
+            "INSERT INTO system_prompts (id, name, content, is_default, is_active, created_at, updated_at, vector_store_id, dashboard_template) "
+            "VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?)",
+            (prompt_id, name, content, now, now, vector_store_id, dashboard_template_json),
         )
         conn.commit()
     return {
@@ -468,23 +523,33 @@ def create_system_prompt(name: str, content: str, db_path: str = DB_PATH) -> Dic
         "is_active": False,
         "created_at": now,
         "updated_at": now,
+        "vector_store_id": vector_store_id,
+        "dashboard_template": dashboard_template or {},
     }
 
 
-def update_system_prompt(prompt_id: str, name: str, content: str, db_path: str = DB_PATH) -> Optional[Dict]:
+def update_system_prompt(
+    prompt_id: str,
+    name: str,
+    content: str,
+    db_path: str = DB_PATH,
+    vector_store_id: str = "",
+    dashboard_template: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict]:
     _ensure_prompts_init(db_path)
     now = time.time()
-    with sqlite3.connect(db_path) as conn:
+    dashboard_template_json = json.dumps(dashboard_template or {}, ensure_ascii=False)
+    with connect_sqlite(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "UPDATE system_prompts SET name = ?, content = ?, updated_at = ? WHERE id = ?",
-            (name, content, now, prompt_id),
+            "UPDATE system_prompts SET name = ?, content = ?, updated_at = ?, vector_store_id = ?, dashboard_template = ? WHERE id = ?",
+            (name, content, now, vector_store_id, dashboard_template_json, prompt_id),
         )
         conn.commit()
         if cursor.rowcount == 0:
             return None
         cursor.execute(
-            "SELECT id, name, content, is_default, is_active, created_at, updated_at "
+            "SELECT id, name, content, is_default, is_active, created_at, updated_at, vector_store_id, dashboard_template "
             "FROM system_prompts WHERE id = ?",
             (prompt_id,),
         )
@@ -494,7 +559,7 @@ def update_system_prompt(prompt_id: str, name: str, content: str, db_path: str =
 
 def delete_system_prompt(prompt_id: str, db_path: str = DB_PATH) -> bool:
     _ensure_prompts_init(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with connect_sqlite(db_path) as conn:
         cursor = conn.cursor()
         # Prevent deleting the only remaining prompt
         cursor.execute("SELECT COUNT(1) FROM system_prompts")
@@ -516,7 +581,7 @@ def delete_system_prompt(prompt_id: str, db_path: str = DB_PATH) -> bool:
 
 def activate_system_prompt(prompt_id: str, db_path: str = DB_PATH) -> bool:
     _ensure_prompts_init(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with connect_sqlite(db_path) as conn:
         cursor = conn.cursor()
         # Check exists
         cursor.execute("SELECT id FROM system_prompts WHERE id = ?", (prompt_id,))

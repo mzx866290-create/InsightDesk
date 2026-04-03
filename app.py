@@ -281,7 +281,7 @@ def render_sidebar():
             "Agent 模式",
             options=["auto", "langgraph", "function_calling"],
             index=["auto", "langgraph", "function_calling"].index(st.session_state.agent_config.get("agent_mode", "auto")),
-            help="auto: 本地用 LangGraph(快), 云端用 Function Calling | langgraph: 轻量模式(适合小模型) | function_calling: 原生工具调用(需模型支持)",
+            help="auto: 本地默认 LangGraph，云端默认 Function Calling | langgraph: 轻量模式(适合大多数模型) | function_calling: 原生工具调用(仅建议明确验证支持的模型使用)",
         )
 
         config_changed = (

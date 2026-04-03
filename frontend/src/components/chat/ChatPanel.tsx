@@ -13,7 +13,7 @@ interface ChatPanelProps {
 }
 
 export const ChatPanel: React.FC<ChatPanelProps> = ({ panel, isStreaming, contextLimit = 16 }) => {
-  const { removePanel, panels, clearMessages, currentSessionId } = useChatStore()
+  const { removePanel, panels, clearMessages, currentSessionId, updateSession } = useChatStore()
   const bottomRef = useRef<HTMLDivElement>(null)
   const canRemove = panels.length > 1
   const [confirmClear, setConfirmClear] = useState(false)
@@ -34,6 +34,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ panel, isStreaming, contex
     try {
       if (currentSessionId) {
         await clearSessionMessages(currentSessionId)
+        updateSession(currentSessionId, {
+          message_count: 0,
+          updated_at: Date.now() / 1000,
+        })
       }
       clearMessages()
     } finally {
@@ -45,7 +49,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ panel, isStreaming, contex
   const contextUsed = Math.min(msgCount, contextLimit)
 
   return (
-    <div className="panel-card flex-1 min-w-0">
+    <div className="panel-card min-w-0 flex-1 min-h-[22rem] lg:min-h-0">
       {/* Panel Header */}
       <div className="flex items-center justify-between px-4 py-2.5 border-b border-bg-border bg-bg-tertiary/50 shrink-0">
         <ModelSelector
@@ -89,7 +93,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ panel, isStreaming, contex
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto px-4 py-4">
+      <div className="min-h-[14rem] flex-1 overflow-y-auto px-4 py-4 lg:min-h-0">
         {panel.messages.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center gap-3 py-16">
             <div className="w-12 h-12 rounded-2xl bg-accent-blue/10 flex items-center justify-center">

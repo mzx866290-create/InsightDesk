@@ -28,7 +28,7 @@ export const ChatArea: React.FC = () => {
   return (
     <div className="flex flex-col flex-1 min-w-0 min-h-0">
       {/* Panels */}
-      <div className="flex flex-1 gap-2 p-2 min-h-0 overflow-hidden">
+      <div className="flex flex-1 min-h-0 flex-col gap-2 overflow-y-auto p-2 lg:flex-row lg:overflow-hidden">
         {panels.map((panel) => (
           <ChatPanel
             key={panel.id}

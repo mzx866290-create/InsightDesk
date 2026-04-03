@@ -1,11 +1,20 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import type { ModelConfig, Session, Message, SourceItem } from '../api/client'
+import type {
+  ChatFile,
+  ChatImage,
+  ModelConfig,
+  Session,
+  Message,
+  SourceItem,
+} from '../api/client'
 
 export interface PanelMessage {
   id: string
   role: 'user' | 'assistant' | 'error'
   content: string
+  images?: ChatImage[]
+  files?: ChatFile[]
   streaming?: boolean
   sources?: SourceItem[]
   errorCode?: string
@@ -32,6 +41,7 @@ interface ChatState {
   sidebarOpen: boolean
   settingsOpen: boolean
   webSearchEnabled: boolean
+  knowledgeBaseEnabled: boolean
 
   // Active system prompt id (null = use default)
   activePromptId: string | null
@@ -42,15 +52,20 @@ interface ChatState {
   addSession: (session: Session) => void
   removeSession: (id: string) => void
   updateSessionTitle: (id: string, title: string) => void
+  updateSession: (
+    id: string,
+    patch: Partial<Pick<Session, 'title' | 'updated_at' | 'message_count'>>,
+  ) => void
 
   // Actions – panels
   addPanel: () => void
   removePanel: (panelId: string) => void
   updatePanelModel: (panelId: string, config: Partial<ModelConfig>) => void
   setPanels: (panels: Panel[]) => void
+  loadMessagesToAllPanels: (messages: Message[]) => void
 
   // Actions – messages
-  addUserMessage: (content: string) => string  // returns message id
+  addUserMessage: (content: string, images?: ChatImage[], files?: ChatFile[]) => string  // returns message id
   appendChunk: (panelId: string, msgId: string, chunk: string) => void
   setAssistantMessage: (panelId: string, msgId: string, content: string, streaming: boolean) => void
   setSources: (panelId: string, msgId: string, sources: SourceItem[]) => void
@@ -64,6 +79,7 @@ interface ChatState {
   setSidebarOpen: (open: boolean) => void
   setSettingsOpen: (open: boolean) => void
   setWebSearchEnabled: (enabled: boolean) => void
+  setKnowledgeBaseEnabled: (enabled: boolean) => void
   setActivePromptId: (id: string | null) => void
 }
 
@@ -84,6 +100,20 @@ function newPanel(): Panel {
   return { id, modelConfig: defaultModelConfig(id), messages: [] }
 }
 
+function sortSessionsByUpdatedAt(sessions: Session[]): Session[] {
+  return [...sessions].sort((a, b) => b.updated_at - a.updated_at)
+}
+
+function mapMessages(messages: Message[]): PanelMessage[] {
+  return messages.map((message, index) => ({
+    id: `loaded-${index}`,
+    role: message.role,
+    content: message.content,
+    images: message.images,
+    files: message.files,
+  }))
+}
+
 export const useChatStore = create<ChatState>()(
   persist(
     (set, _get) => ({
@@ -93,19 +123,26 @@ export const useChatStore = create<ChatState>()(
       sidebarOpen: true,
       settingsOpen: false,
       webSearchEnabled: false,
+      knowledgeBaseEnabled: true,
       activePromptId: null,
 
-      setSessions: (sessions) => set({ sessions }),
+      setSessions: (sessions) => set({ sessions: sortSessionsByUpdatedAt(sessions) }),
       setCurrentSession: (id) => set({ currentSessionId: id }),
       addSession: (session) =>
-        set((s) => ({ sessions: [session, ...s.sessions] })),
+        set((s) => ({ sessions: sortSessionsByUpdatedAt([session, ...s.sessions]) })),
       removeSession: (id) =>
         set((s) => ({ sessions: s.sessions.filter((x) => x.session_id !== id) })),
       updateSessionTitle: (id, title) =>
         set((s) => ({
-          sessions: s.sessions.map((x) =>
+          sessions: sortSessionsByUpdatedAt(s.sessions.map((x) =>
             x.session_id === id ? { ...x, title } : x,
-          ),
+          )),
+        })),
+      updateSession: (id, patch) =>
+        set((s) => ({
+          sessions: sortSessionsByUpdatedAt(s.sessions.map((x) =>
+            x.session_id === id ? { ...x, ...patch } : x,
+          )),
         })),
 
       addPanel: () =>
@@ -127,15 +164,22 @@ export const useChatStore = create<ChatState>()(
           ),
         })),
       setPanels: (panels) => set({ panels }),
+      loadMessagesToAllPanels: (messages) =>
+        set((s) => ({
+          panels: s.panels.map((panel) => ({
+            ...panel,
+            messages: mapMessages(messages),
+          })),
+        })),
 
-      addUserMessage: (content) => {
+      addUserMessage: (content, images = [], files = []) => {
         const msgId = `msg-${Date.now()}`
         set((s) => ({
           panels: s.panels.map((p) => ({
             ...p,
             messages: [
               ...p.messages,
-              { id: msgId, role: 'user', content },
+              { id: msgId, role: 'user', content, images, files },
             ],
           })),
         }))
@@ -228,11 +272,7 @@ export const useChatStore = create<ChatState>()(
             if (p.id !== panelId) return p
             return {
               ...p,
-              messages: messages.map((m, i) => ({
-                id: `loaded-${i}`,
-                role: m.role,
-                content: m.content,
-              })),
+              messages: mapMessages(messages),
             }
           }),
         })),
@@ -246,6 +286,7 @@ export const useChatStore = create<ChatState>()(
       setSidebarOpen: (open) => set({ sidebarOpen: open }),
       setSettingsOpen: (open) => set({ settingsOpen: open }),
       setWebSearchEnabled: (enabled) => set({ webSearchEnabled: enabled }),
+      setKnowledgeBaseEnabled: (enabled) => set({ knowledgeBaseEnabled: enabled }),
       setActivePromptId: (id) => set({ activePromptId: id }),
     }),
     {
@@ -253,6 +294,7 @@ export const useChatStore = create<ChatState>()(
       partialize: (s) => ({
         sidebarOpen: s.sidebarOpen,
         webSearchEnabled: s.webSearchEnabled,
+        knowledgeBaseEnabled: s.knowledgeBaseEnabled,
         activePromptId: s.activePromptId,
         panels: s.panels.map((p) => ({ ...p, messages: [] })),
       }),
