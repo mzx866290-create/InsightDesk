@@ -24,6 +24,7 @@ import {
 import { useChatStore } from '../../stores/chatStore'
 import { useResolvedTheme } from '../../hooks/useResolvedTheme'
 import { Button } from '../ui/Button'
+import { InlineNotice } from '../ui/InlineNotice'
 import { createDeckDraft, createSession, createSessionShareLink, getSystemPrompts, resetSession } from '../../api/client'
 import { DeckEditorModal } from '../reports/DeckEditorModal'
 import { DeckGenerationModal } from '../reports/DeckGenerationModal'
@@ -73,6 +74,10 @@ export const Header: React.FC = () => {
   const [kbManageOpen, setKbManageOpen] = useState(false)
   const [sharingSession, setSharingSession] = useState(false)
   const [sessionShareCopied, setSessionShareCopied] = useState(false)
+  const [actionFeedback, setActionFeedback] = useState<{
+    tone: 'error' | 'success'
+    message: string
+  } | null>(null)
   const [moreMenuOpen, setMoreMenuOpen] = useState(false)
   const moreMenuRef = React.useRef<HTMLDivElement>(null)
   const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768)
@@ -119,6 +124,12 @@ export const Header: React.FC = () => {
     media.addEventListener('change', handleChange)
     return () => media.removeEventListener('change', handleChange)
   }, [])
+
+  useEffect(() => {
+    if (!actionFeedback) return
+    const timer = window.setTimeout(() => setActionFeedback(null), 3200)
+    return () => window.clearTimeout(timer)
+  }, [actionFeedback])
 
   const handleNewChat = async () => {
     try {
@@ -181,8 +192,12 @@ export const Header: React.FC = () => {
       })
       setDeckData(data)
       setDeckOpen(true)
+      setActionFeedback(null)
     } catch (e) {
-      alert(`生成演示稿失败：${(e as Error).message}`)
+      setActionFeedback({
+        tone: 'error',
+        message: `生成演示稿失败：${(e as Error).message}`,
+      })
     } finally {
       setGeneratingDeck(false)
     }
@@ -204,8 +219,15 @@ export const Header: React.FC = () => {
         updated_at: Date.now() / 1000,
       })
       clearMessages()
+      setActionFeedback({
+        tone: 'success',
+        message: '会话已重置。',
+      })
     } catch (e) {
-      alert(`重置会话失败：${(e as Error).message}`)
+      setActionFeedback({
+        tone: 'error',
+        message: `重置会话失败：${(e as Error).message}`,
+      })
     } finally {
       setResetting(false)
     }
@@ -218,9 +240,16 @@ export const Header: React.FC = () => {
       const payload = await createSessionShareLink(currentSessionId)
       await navigator.clipboard.writeText(payload.share_url)
       setSessionShareCopied(true)
+      setActionFeedback({
+        tone: 'success',
+        message: '分享链接已复制到剪贴板。',
+      })
       window.setTimeout(() => setSessionShareCopied(false), 2000)
     } catch (e) {
-      alert(`创建分享链接失败：${(e as Error).message}`)
+      setActionFeedback({
+        tone: 'error',
+        message: `创建分享链接失败：${(e as Error).message}`,
+      })
     } finally {
       setSharingSession(false)
     }
@@ -535,6 +564,12 @@ export const Header: React.FC = () => {
           </div>
         )}
       </header>
+
+      {actionFeedback && (
+        <div className="px-3 pt-2 sm:px-4">
+          <InlineNotice message={actionFeedback.message} tone={actionFeedback.tone} />
+        </div>
+      )}
 
       <Modal open={mobileActionsOpen} onClose={() => setMobileActionsOpen(false)} title="快捷操作" width="max-w-md">
         <div className="space-y-4">
