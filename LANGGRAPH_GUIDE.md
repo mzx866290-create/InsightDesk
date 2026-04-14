@@ -52,7 +52,8 @@ pip install -r requirements.txt
 启动应用：
 
 ```bash
-streamlit run app.py
+python -m uvicorn api_server:app --host 0.0.0.0 --port 8000
+cd frontend && npm run dev -- --host 0.0.0.0 --port 3000
 ```
 
 在侧边栏的 **Agent 模式** 下拉框中选择：
@@ -94,7 +95,7 @@ print(result["output"])
 运行测试脚本：
 
 ```bash
-python test_langgraph_agent.py
+python scripts/manual_checks/langgraph_agent_smoke.py
 ```
 
 测试脚本会：
@@ -209,3 +210,10 @@ LangGraph agent 的返回格式与 `AgentExecutor` 完全一致：
 3. 在 Streamlit UI 中选择 LangGraph 模式开始使用
 
 4. 享受快速、稳定的小模型 Agent 体验！
+> Update (2026-04-12)
+>
+> - `app.py` is no longer part of the active product surface.
+> - Use the React frontend and FastAPI backend entrypoints instead of `streamlit run app.py`.
+> - Manual verification scripts now live under `scripts/manual_checks/`.
+> - The closest replacement for `python test_langgraph_agent.py` is
+>   `python scripts/manual_checks/langgraph_agent_smoke.py`.

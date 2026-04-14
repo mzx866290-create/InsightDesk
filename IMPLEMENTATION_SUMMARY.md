@@ -67,7 +67,7 @@ from langgraph.graph import StateGraph, END
 - `"auto"` 模式：本地用 LangGraph，云端用 Function Calling
 - 保持向后兼容，默认行为不变
 
-### 3. UI 更新 - app.py
+### 3. 历史 UI 更新 - app.py（已迁移）
 
 #### 3.1 配置状态
 - `agent_config` 新增 `"agent_mode": "auto"` 字段
@@ -82,7 +82,7 @@ from langgraph.graph import StateGraph, END
 - 状态栏显示当前 Agent 模式
 
 ### 4. 测试脚本
-- **文件**: `test_langgraph_agent.py`
+- **文件**: `scripts/manual_checks/langgraph_agent_smoke.py`
 - **功能**: 
   - 测试 LangGraph agent 初始化
   - 测试多种查询类型（闲聊、知识库、联网搜索）
@@ -108,8 +108,8 @@ from langgraph.graph import StateGraph, END
 |------|---------|------|
 | requirements.txt | 新增 | +1 |
 | agent_core.py | 重构+新增 | +300 |
-| app.py | 修改 | +15 |
-| test_langgraph_agent.py | 新增 | +100 |
+| app.py | 历史文件（已移除） | +15 |
+| scripts/manual_checks/langgraph_agent_smoke.py | 新位置 | +100 |
 | LANGGRAPH_GUIDE.md | 新增 | +200 |
 | README.md | 修改 | +30 |
 | IMPLEMENTATION_SUMMARY.md | 新增 | 本文件 |
@@ -138,7 +138,8 @@ pip install -r requirements.txt
 
 2. 启动应用：
 ```bash
-streamlit run app.py
+python -m uvicorn api_server:app --host 0.0.0.0 --port 8000
+cd frontend && npm run dev -- --host 0.0.0.0 --port 3000
 ```
 
 3. 在侧边栏选择 Agent 模式：
@@ -149,7 +150,7 @@ streamlit run app.py
 ### 测试验证
 
 ```bash
-python test_langgraph_agent.py
+python scripts/manual_checks/langgraph_agent_smoke.py
 ```
 
 ### 代码调用
@@ -210,3 +211,11 @@ print(result["output"])
 成功实施了 LangGraph 轻量 Agent 方案，解决了小模型不支持 Function Calling 的问题。通过简化工具选择流程（数字选择）和减少 LLM 调用次数（最多 2 次），显著提升了小模型的可用性和响应速度。
 
 该方案完全兼容现有系统，用户可以根据模型能力灵活选择 Agent 模式，实现了"大模型用 Function Calling，小模型用 LangGraph"的最优配置。
+> Update (2026-04-12)
+>
+> This summary contains historical references from the earlier Streamlit phase.
+> For the current repo layout:
+>
+> - `app.py` has been removed.
+> - The active stack is `FastAPI + React`.
+> - Root-level manual test scripts were reorganized into `scripts/manual_checks/`.

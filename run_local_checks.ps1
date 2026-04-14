@@ -10,7 +10,7 @@ if (-not (Test-Path $Python)) {
 Push-Location $ProjectRoot
 try {
     & $Python -m py_compile api_server.py agent_core.py chat_store.py deck_service.py
-    & $Python -m pytest tests/test_phase1_api.py
+    & $Python -m pytest -q
 
     Push-Location (Join-Path $ProjectRoot "frontend")
     try {

@@ -3,6 +3,7 @@
 基于 Tavily API 提供实时网络搜索功能
 """
 
+import json
 import os
 import httpx
 from mcp.server.fastmcp import FastMCP
@@ -13,13 +14,17 @@ load_dotenv()
 mcp = FastMCP("web-search")
 
 
+def _append_sources_marker(text: str, sources: list[dict]) -> str:
+    return f"{text}\n\n__SOURCES__:{json.dumps(sources, ensure_ascii=False)}"
+
+
 @mcp.tool()
-async def web_search(query: str, max_results: int = 5) -> str:
+async def web_search(search_query: str, max_results: int = 5) -> str:
     """
     搜索互联网获取实时信息
 
     Args:
-        query: 搜索关键词
+        search_query: 搜索关键词
         max_results: 最大返回结果数 (默认 5)
 
     Returns:
@@ -35,7 +40,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
             response = await client.post(
                 "https://api.tavily.com/search",
                 json={
-                    "query": query,
+                    "query": search_query,
                     "max_results": max_results,
                     "api_key": api_key,
                     "search_depth": "basic",
@@ -50,7 +55,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
             answer = data.get("answer", "")
 
             if not results:
-                return f"未找到相关搜索结果: {query}"
+                return f"未找到相关搜索结果: {search_query}"
 
             # 格式化输出
             output = []
@@ -58,7 +63,7 @@ async def web_search(query: str, max_results: int = 5) -> str:
             if answer:
                 output.append(f"【AI 总结】\n{answer}\n")
 
-            output.append(f"【搜索结果 - {query}】\n")
+            output.append(f"【搜索结果 - {search_query}】\n")
 
             for i, result in enumerate(results, 1):
                 title = result.get("title", "无标题")
@@ -67,7 +72,17 @@ async def web_search(query: str, max_results: int = 5) -> str:
 
                 output.append(f"{i}. {title}\n链接: {url}\n摘要: {content}")
 
-            return "\n\n---\n\n".join(output)
+            sources = [
+                {
+                    "type": "web",
+                    "title": result.get("title", "无标题"),
+                    "url": result.get("url", ""),
+                    "snippet": str(result.get("content", ""))[:200],
+                    "index": index,
+                }
+                for index, result in enumerate(results, 1)
+            ]
+            return _append_sources_marker("\n\n---\n\n".join(output), sources)
 
     except httpx.HTTPStatusError as e:
         return f"❌ 搜索 API 请求失败 (HTTP {e.response.status_code}): {e.response.text}"
@@ -78,12 +93,12 @@ async def web_search(query: str, max_results: int = 5) -> str:
 
 
 @mcp.tool()
-async def quick_answer(question: str) -> str:
+async def quick_answer(user_question: str) -> str:
     """
     快速问答 - 直接返回 AI 总结答案,不返回详细搜索结果
 
     Args:
-        question: 问题
+        user_question: 问题
 
     Returns:
         AI 总结的答案
@@ -98,7 +113,7 @@ async def quick_answer(question: str) -> str:
             response = await client.post(
                 "https://api.tavily.com/search",
                 json={
-                    "query": question,
+                    "query": user_question,
                     "max_results": 3,
                     "api_key": api_key,
                     "search_depth": "basic",
@@ -158,7 +173,19 @@ async def fetch_webpage(url: str) -> str:
             if len(text) > max_chars:
                 text = text[:max_chars] + "\n\n...[内容已截断]"
             
-            return f"【网页内容 - {url}】\n\n{text}"
+            content = f"【网页内容 - {url}】\n\n{text}"
+            return _append_sources_marker(
+                content,
+                [
+                    {
+                        "type": "web",
+                        "title": url,
+                        "url": url,
+                        "snippet": text[:200],
+                        "index": 1,
+                    }
+                ],
+            )
 
     except httpx.HTTPStatusError as e:
         return f"❌ 无法访问网页 (HTTP {e.response.status_code}): {url}"

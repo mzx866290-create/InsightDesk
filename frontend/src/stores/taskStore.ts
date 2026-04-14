@@ -1,97 +1,158 @@
 import { create } from 'zustand'
 
-export type TaskStatus = 'pending' | 'running' | 'completed' | 'failed'
-
-export interface TaskRecord {
-  task_id: string
-  task_type: string
-  status: TaskStatus
-  progress: number
-  result?: string
-  error?: string
-  created_at: number
-  updated_at: number
-  params?: Record<string, unknown>
-}
+import { getTask, listTasks } from '../api/client'
+import type { TaskRecord } from '../api/client'
 
 interface TaskState {
   tasks: Record<string, TaskRecord>
-  // Track active polling timers: task_id → interval handle
-  _pollingTimers: Record<string, ReturnType<typeof setInterval>>
-
-  // Actions
   addTask: (task: TaskRecord) => void
+  addTasks: (tasks: TaskRecord[]) => void
   updateTask: (taskId: string, patch: Partial<TaskRecord>) => void
   startPolling: (taskId: string) => void
   stopPolling: (taskId: string) => void
   getTask: (taskId: string) => TaskRecord | undefined
+  syncRecentTasks: (limit?: number) => Promise<void>
 }
 
 const POLL_INTERVAL_MS = 1500
+const HIDDEN_POLL_INTERVAL_MS = 5000
+const FAILURE_BACKOFF_MS = 12000
+
+const _activeTaskIds = new Set<string>()
+let _pollTimer: ReturnType<typeof setTimeout> | null = null
+let _pollInFlight = false
+let _consecutivePollFailures = 0
+
+function isActiveTaskStatus(status: string | undefined): boolean {
+  return status === 'pending' || status === 'running'
+}
+
+function clearPollTimer(): void {
+  if (_pollTimer !== null) {
+    clearTimeout(_pollTimer)
+    _pollTimer = null
+  }
+}
+
+function resolvePollIntervalMs(): number {
+  const visibilityState =
+    typeof document !== 'undefined' && typeof document.visibilityState === 'string'
+      ? document.visibilityState
+      : 'visible'
+  const baseInterval = visibilityState === 'hidden' ? HIDDEN_POLL_INTERVAL_MS : POLL_INTERVAL_MS
+  if (_consecutivePollFailures <= 0) return baseInterval
+  return Math.max(baseInterval, FAILURE_BACKOFF_MS)
+}
+
+function schedulePoll(delayMs = resolvePollIntervalMs()): void {
+  clearPollTimer()
+  if (_activeTaskIds.size === 0) return
+  _pollTimer = setTimeout(() => {
+    void pollTrackedTasks()
+  }, Math.max(0, delayMs))
+}
+
+async function pollTrackedTasks(): Promise<void> {
+  if (_pollInFlight) return
+
+  const taskIds = [..._activeTaskIds]
+  if (taskIds.length === 0) {
+    clearPollTimer()
+    return
+  }
+
+  _pollInFlight = true
+  try {
+    const results = await Promise.allSettled(taskIds.map((taskId) => getTask(taskId)))
+    let successCount = 0
+
+    results.forEach((result, index) => {
+      const taskId = taskIds[index]
+      if (result.status !== 'fulfilled') return
+
+      successCount += 1
+      const task = result.value
+      useTaskStore.getState().updateTask(taskId, task)
+      if (isActiveTaskStatus(task.status)) {
+        _activeTaskIds.add(taskId)
+      } else {
+        _activeTaskIds.delete(taskId)
+      }
+    })
+
+    _consecutivePollFailures = successCount > 0 ? 0 : _consecutivePollFailures + 1
+  } catch {
+    _consecutivePollFailures += 1
+  } finally {
+    _pollInFlight = false
+    if (_activeTaskIds.size === 0) {
+      clearPollTimer()
+    } else {
+      schedulePoll()
+    }
+  }
+}
 
 export const useTaskStore = create<TaskState>((set, get) => ({
   tasks: {},
-  _pollingTimers: {},
 
   addTask: (task) =>
-    set((s) => ({ tasks: { ...s.tasks, [task.task_id]: task } })),
+    set((state) => ({ tasks: { ...state.tasks, [task.task_id]: task } })),
+
+  addTasks: (tasks) =>
+    set((state) => ({
+      tasks: {
+        ...state.tasks,
+        ...Object.fromEntries(tasks.map((task) => [task.task_id, task])),
+      },
+    })),
 
   updateTask: (taskId, patch) =>
-    set((s) => {
-      const existing = s.tasks[taskId]
-      if (!existing) return s
-      return { tasks: { ...s.tasks, [taskId]: { ...existing, ...patch } } }
+    set((state) => {
+      const existing = state.tasks[taskId]
+      if (!existing) return state
+      return {
+        tasks: {
+          ...state.tasks,
+          [taskId]: { ...existing, ...patch },
+        },
+      }
     }),
 
   getTask: (taskId) => get().tasks[taskId],
 
   startPolling: (taskId) => {
-    const { _pollingTimers, stopPolling } = get()
+    const task = get().tasks[taskId]
+    if (task && !isActiveTaskStatus(task.status)) {
+      _activeTaskIds.delete(taskId)
+      if (_activeTaskIds.size === 0) clearPollTimer()
+      return
+    }
 
-    // Avoid duplicate timers
-    if (_pollingTimers[taskId]) return
-
-    const timer = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/tasks/${taskId}`)
-        if (!res.ok) {
-          stopPolling(taskId)
-          return
-        }
-        const data: TaskRecord = await res.json()
-        get().updateTask(taskId, data)
-
-        // Stop polling when terminal state reached
-        if (data.status === 'completed' || data.status === 'failed') {
-          stopPolling(taskId)
-        }
-      } catch {
-        // Network error — keep polling for a few more cycles
-      }
-    }, POLL_INTERVAL_MS)
-
-    set((s) => ({
-      _pollingTimers: { ...s._pollingTimers, [taskId]: timer },
-    }))
+    _activeTaskIds.add(taskId)
+    schedulePoll(0)
   },
 
   stopPolling: (taskId) => {
-    const timer = get()._pollingTimers[taskId]
-    if (timer !== undefined) {
-      clearInterval(timer)
-      set((s) => {
-        const timers = { ...s._pollingTimers }
-        delete timers[taskId]
-        return { _pollingTimers: timers }
-      })
+    _activeTaskIds.delete(taskId)
+    if (_activeTaskIds.size === 0) {
+      clearPollTimer()
+    }
+  },
+
+  syncRecentTasks: async (limit = 20) => {
+    const tasks = await listTasks(limit)
+    get().addTasks(tasks)
+    for (const task of tasks) {
+      if (isActiveTaskStatus(task.status)) {
+        get().startPolling(task.task_id)
+      } else {
+        get().stopPolling(task.task_id)
+      }
     }
   },
 }))
 
-/**
- * Create a task on the backend and immediately start polling.
- * Returns the initial TaskRecord.
- */
 export async function createAndTrackTask(
   taskType: string,
   params: Record<string, unknown> = {},
@@ -104,7 +165,7 @@ export async function createAndTrackTask(
   })
 
   if (!res.ok) {
-    throw new Error(`Failed to create task: HTTP ${res.status}`)
+    throw new Error(`Task creation failed (HTTP ${res.status})`)
   }
 
   const task: TaskRecord = await res.json()

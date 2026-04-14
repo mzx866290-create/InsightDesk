@@ -42,7 +42,7 @@ export const MarkdownTableChart: React.FC<MarkdownTableChartProps> = ({
     }
   }, [rawHeaders, rawRows, chartType])
 
-  if (!chartData) return <>{children}</>
+  if (!chartData) return <div className="my-3 overflow-x-auto">{children}</div>
 
   return (
     <div className="my-3 rounded-xl border border-bg-border overflow-hidden">

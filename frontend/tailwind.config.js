@@ -5,28 +5,28 @@ export default {
   theme: {
     extend: {
       colors: {
-        // ChatHub-inspired dark palette
+        // CSS 变量驱动，支持深色/浅色主题切换
         bg: {
-          primary: '#0f0f13',
-          secondary: '#1a1a24',
-          tertiary: '#22222e',
-          card: '#1e1e2a',
-          hover: '#2a2a38',
-          border: '#2e2e3d',
+          primary: 'var(--bg-primary)',
+          secondary: 'var(--bg-secondary)',
+          tertiary: 'var(--bg-tertiary)',
+          card: 'var(--bg-card)',
+          hover: 'var(--bg-hover)',
+          border: 'var(--bg-border)',
         },
         accent: {
-          blue: '#4f8ef7',
-          'blue-hover': '#6aa0f8',
-          purple: '#8b5cf6',
-          green: '#10b981',
-          orange: '#f59e0b',
-          red: '#ef4444',
+          blue: 'var(--accent-blue)',
+          'blue-hover': 'var(--accent-blue-hover)',
+          purple: 'var(--accent-purple)',
+          green: 'var(--accent-green)',
+          orange: 'var(--accent-orange)',
+          red: 'var(--accent-red)',
         },
         text: {
-          primary: '#e8e8f0',
-          secondary: '#9999b3',
-          muted: '#6666888',
-          disabled: '#444458',
+          primary: 'var(--text-primary)',
+          secondary: 'var(--text-secondary)',
+          muted: 'var(--text-muted)',
+          disabled: 'var(--text-disabled)',
         },
       },
       animation: {

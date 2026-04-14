@@ -17,18 +17,18 @@
 
 ### 2.1 已实现能力
 
-- UI 与交互：`Streamlit` 页面，支持模型配置、文档导入、对话交互
+- UI 与交互：`React + FastAPI`，支持多面板对话、附件工作区、Deck 编辑与导出
 - 检索链路：`FAISS` 粗排 + `CrossEncoder` 二段重排
 - Agent 模式：
   - `function_calling`（模型原生工具调用）
   - `langgraph`（轻量工具路由）
-  - `auto`（本地/云端默认都使用 `langgraph`，兼容性优先）
+  - `auto`（本地默认 `langgraph`，云端默认 `function_calling`）
 - 对话记忆：基于 `session_id` 的会话级历史记录
-- 工具集：知识检索、知识库统计、知识库重载、联网搜索、快速问答
+- 工具集：知识检索、知识库统计、知识库重载、联网搜索、快速问答，可选 MCP 覆盖接入
 
 ### 2.2 当前限制
 
-- 记忆存储为进程内内存，重启后丢失
+- 默认以单机 SQLite 持久化为主，尚未扩展到集中式会话基础设施
 - 未提供权限控制、审计日志和用户体系
 - 联网搜索依赖外部 API Key（`TAVILY_API_KEY`）
 - 向量库为本地存储，暂未支持分布式检索服务
@@ -37,9 +37,10 @@
 
 ```mermaid
 flowchart TD
-    Browser["UserBrowser"] --> UI["StreamlitUI(app.py)"]
-    UI --> Agent["AgentCore(agent_core.py)"]
-    UI --> Pipeline["DocPipeline(doc_pipeline.py)"]
+    Browser["UserBrowser"] --> UI["ReactUI(frontend/)"]
+    UI --> API["FastAPI(api_server.py)"]
+    API --> Agent["AgentCore(agent_core.py)"]
+    API --> Pipeline["DocPipeline(doc_pipeline.py)"]
 
     Agent --> LgMode["LangGraphAgent"]
     Agent --> FcMode["FunctionCallingAgent"]
@@ -59,10 +60,11 @@ flowchart TD
 
 模块对应关系：
 
-- `app.py`：页面、会话状态、模型配置、文档上传入口、Agent 调用
+- `frontend/`：React 前端，负责对话、附件、任务、Deck 编辑等交互
+- `api_server.py`：FastAPI 接口层，提供 REST、SSE、Deck、会话与分享能力
 - `agent_core.py`：模型工厂、工具定义、LangGraph/Function Calling 编排、会话记忆管理
 - `doc_pipeline.py`：文档加载、文本切块、向量化、向量库持久化、Rerank 检索
-- `mcp_servers/`：预留 MCP Server 扩展目录（当前运行主链路以内置工具为主）
+- `mcp_servers/`：MCP Server 扩展目录，可通过 `ENABLE_MCP_TOOLS=true` 按需接入运行时
 - `vector_store/`：本地 FAISS 索引目录
 
 ## 4. 技术栈清单
@@ -70,7 +72,7 @@ flowchart TD
 | 层级 | 技术 |
 |---|---|
 | 语言/运行时 | Python 3.9+ |
-| Web/UI | Streamlit |
+| Web/UI | React, FastAPI |
 | Agent 编排 | LangChain, LangGraph |
 | 模型接入 | langchain-ollama, langchain-openai, langchain-openrouter |
 | 检索与向量库 | FAISS, sentence-transformers |
@@ -122,16 +124,17 @@ ollama list
 ### 5.4 启动方式
 
 ```bash
-streamlit run app.py
-```
-
-或在 Windows 下使用：
-
-```bash
 .\start.bat
 ```
 
-访问地址：`http://localhost:8501`
+或直接分别启动后端与前端：
+
+```bash
+python -m uvicorn api_server:app --host 0.0.0.0 --port 8000
+cd frontend && npm run dev -- --host 0.0.0.0 --port 3000
+```
+
+访问地址：`http://localhost:3000`
 
 ## 6. 里程碑与优化方向
 
@@ -202,8 +205,8 @@ streamlit run app.py
 每次迭代至少完成以下回归：
 
 1. 启动回归
-   - `streamlit run app.py` 可正常启动
-   - UI 可加载且无阻塞异常
+   - `.\start.bat` 或 `launch_windows.ps1` 可正常启动
+   - React 前端与 FastAPI 接口均可加载且无阻塞异常
 2. 核心功能回归
    - 文档上传后可完成向量化
    - 内部知识检索可返回来源片段
@@ -236,7 +239,7 @@ streamlit run app.py
 ## 10. 版本说明
 
 - 文档类型：执行计划版 README
-- 适配代码：当前仓库主分支（`app.py` / `agent_core.py` / `doc_pipeline.py`）
+- 适配代码：当前仓库主分支（`frontend/` / `api_server.py` / `agent_core.py` / `doc_pipeline.py`）
 - 维护方式：后续迭代完成后同步更新“里程碑状态”和“验收结果”
 # Windows 一键启动
 
@@ -259,3 +262,41 @@ streamlit run app.py
 - 本机访问：`http://localhost:3000`
 - 局域网访问：`http://<启动机器IP>:3000`
 - 如果其他同事无法访问局域网地址，优先检查同网段和 Windows 防火墙放行情况
+
+# Docker 启动
+
+项目根目录已新增容器化入口：
+
+- `Dockerfile`：构建前端并由 FastAPI 托管静态资源
+- `docker-compose.yml`：一键启动应用服务，可选同时启动 `Ollama`
+- `.dockerignore`：减少构建上下文，避免把本地虚拟环境和缓存打进镜像
+
+推荐流程：
+
+```bash
+copy .env.example .env
+docker compose up --build -d
+```
+
+访问地址：
+
+- 应用：`http://localhost:8000`
+- Ollama：`http://localhost:11434`
+
+如果需要在容器内自动连接 compose 中的 `ollama` 服务，可在 `.env` 中保留：
+
+```env
+DOCKER_OLLAMA_BASE_URL=http://ollama:11434
+```
+
+如果你只想用云端模型，也可以只启动应用服务：
+
+```bash
+docker compose up --build -d app
+```
+
+如果需要预拉取本地模型，可额外执行：
+
+```bash
+docker compose --profile init up ollama-pull
+```

@@ -1,143 +1,259 @@
 import React, { useEffect, useState } from 'react'
-import { ChevronDown, X, Cpu, Cloud } from 'lucide-react'
+import { ChevronDown, Cloud, Cpu, X } from 'lucide-react'
 import { useChatStore } from '../../stores/chatStore'
-import { getOllamaModels } from '../../api/client'
-import type { ModelConfig } from '../../api/client'
+import {
+  defaultBaseUrlForConnectionType,
+  defaultModelForConnectionType,
+  getConnectionTypeLabel,
+  getOllamaModels,
+  normalizeConnectionType,
+} from '../../api/client'
+import type { ConnectionType, ModelConfig } from '../../api/client'
 
 interface ModelSelectorProps {
   panelId: string
   modelConfig: ModelConfig
   onRemove?: () => void
   canRemove: boolean
+  disabled?: boolean
 }
+
+const COMPATIBLE_PRESETS: Array<{
+  label: string
+  description: string
+  baseUrl: string
+  defaultModel?: string
+}> = [
+  {
+    label: 'OpenRouter',
+    description: '托管型 OpenAI 兼容网关',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    defaultModel: 'openai/gpt-4o-mini',
+  },
+  {
+    label: 'LM Studio',
+    description: '本地 OpenAI 兼容服务',
+    baseUrl: 'http://localhost:1234/v1',
+  },
+  {
+    label: 'vLLM / OneAPI',
+    description: '自托管兼容接口',
+    baseUrl: 'http://localhost:8000/v1',
+  },
+]
 
 export const ModelSelector: React.FC<ModelSelectorProps> = ({
   panelId,
   modelConfig,
   onRemove,
   canRemove,
+  disabled = false,
 }) => {
-  const { updatePanelModel } = useChatStore()
+  const {
+    updatePanelModel,
+    modelPresets,
+    cloudModelProfiles,
+    saveModelPreset,
+    deleteModelPreset,
+    applyModelPreset,
+    applyCloudModelProfile,
+    setSettingsOpen,
+  } = useChatStore()
   const [open, setOpen] = useState(false)
   const [ollamaModels, setOllamaModels] = useState<string[]>([])
   const [customModel, setCustomModel] = useState('')
+  const [presetName, setPresetName] = useState('')
+
+  const connectionType = normalizeConnectionType(
+    modelConfig.connection_type ?? modelConfig.provider,
+    modelConfig.base_url,
+  )
+  const connectionLabel = getConnectionTypeLabel(modelConfig)
 
   useEffect(() => {
-    if (modelConfig.provider === 'local') {
-      getOllamaModels(modelConfig.base_url).then(setOllamaModels)
+    if (!open) return
+    if (connectionType === 'ollama') {
+      getOllamaModels(modelConfig.base_url).then(setOllamaModels).catch(() => setOllamaModels([]))
+      return
     }
-  }, [modelConfig.provider, modelConfig.base_url])
+    setOllamaModels([])
+  }, [connectionType, modelConfig.base_url, open])
 
-  const handleProviderChange = (provider: 'local' | 'cloud') => {
+  const handleConnectionTypeChange = (nextType: ConnectionType) => {
     updatePanelModel(panelId, {
-      provider,
-      model: provider === 'local' ? 'qwen2.5:7b' : 'gpt-4o-mini',
-      base_url: provider === 'local' ? 'http://localhost:11434' : 'https://openrouter.ai/api/v1',
+      connection_type: nextType,
+      provider: nextType,
+      model: defaultModelForConnectionType(nextType),
+      base_url: defaultBaseUrlForConnectionType(nextType),
       api_key: '',
     })
   }
 
-  const shortModel = modelConfig.model.length > 18
-    ? modelConfig.model.slice(0, 16) + '…'
-    : modelConfig.model
+  const applyCompatiblePreset = (preset: (typeof COMPATIBLE_PRESETS)[number]) => {
+    updatePanelModel(panelId, {
+      connection_type: 'openai_compatible',
+      provider: 'openai_compatible',
+      base_url: preset.baseUrl,
+      model:
+        preset.defaultModel ??
+        modelConfig.model ??
+        defaultModelForConnectionType('openai_compatible'),
+      api_key: preset.baseUrl.startsWith('http://localhost') ? '' : modelConfig.api_key,
+    })
+  }
+
+  const shortModel =
+    modelConfig.model.length > 18 ? `${modelConfig.model.slice(0, 16)}...` : modelConfig.model
+  const agentModeOptions: Array<{
+    id: ModelConfig['agent_mode']
+    label: string
+    description: string
+  }> = [
+    {
+      id: 'auto',
+      label: 'Agent 开',
+      description: '保留知识库、联网搜索和工具链能力',
+    },
+    {
+      id: 'plain_chat',
+      label: '直连',
+      description: '绕过 Agent，更适合小说、续写、润色等纯文本场景',
+    },
+  ]
+
+  const handleSavePreset = () => {
+    if (disabled) return
+    const trimmedName = presetName.trim()
+    if (!trimmedName) return
+    saveModelPreset(trimmedName, modelConfig)
+    setPresetName('')
+  }
 
   return (
-    <div className="relative flex items-center gap-1.5 min-w-0">
-      {/* Provider icon */}
-      {modelConfig.provider === 'local' ? (
-        <Cpu size={12} className="text-accent-green shrink-0" />
+    <div className="relative flex min-w-0 items-center gap-1.5">
+      {connectionType === 'ollama' ? (
+        <Cpu size={12} className="shrink-0 text-accent-green" />
       ) : (
-        <Cloud size={12} className="text-accent-blue shrink-0" />
+        <Cloud size={12} className="shrink-0 text-accent-blue" />
       )}
 
-      {/* Model name button */}
       <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1 text-xs text-text-secondary hover:text-text-primary transition-colors min-w-0"
+        type="button"
+        onClick={() => {
+          if (disabled) return
+          setOpen(!open)
+        }}
+        disabled={disabled}
+        className="flex min-w-0 items-center gap-1 text-xs text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
       >
-        <span className="truncate max-w-[120px]">{shortModel}</span>
-        <ChevronDown size={11} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+        <span className="max-w-[120px] truncate">{shortModel}</span>
+        <span className="hidden text-[10px] text-text-secondary/60 sm:inline">{connectionLabel}</span>
+        <ChevronDown
+          size={11}
+          className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+        />
       </button>
 
-      {/* Remove panel button */}
       {canRemove && (
         <button
+          type="button"
           onClick={onRemove}
-          className="text-text-secondary hover:text-accent-red transition-colors ml-1"
-          title="移除此面板"
+          disabled={disabled}
+          className="ml-1 text-text-secondary transition-colors hover:text-accent-red disabled:cursor-not-allowed disabled:opacity-40"
+          title="移除面板"
         >
           <X size={12} />
         </button>
       )}
 
-      {/* Dropdown */}
       {open && (
         <div
-          className="absolute top-full left-0 mt-1 z-50 bg-bg-secondary border border-bg-border rounded-xl shadow-2xl p-3 w-72 animate-fade-in"
-          onClick={(e) => e.stopPropagation()}
+          className="absolute left-0 top-full z-50 mt-1 w-[min(20rem,calc(100vw-1rem))] max-h-[min(70vh,38rem)] max-w-[calc(100vw-1rem)] overflow-y-auto animate-fade-in rounded-xl border border-bg-border bg-bg-secondary p-3 shadow-2xl sm:w-80"
+          onClick={(event) => event.stopPropagation()}
         >
-          {/* Provider tabs */}
-          <div className="flex gap-1 mb-3 bg-bg-tertiary p-1 rounded-lg">
-            {(['local', 'cloud'] as const).map((p) => (
-              <button
-                key={p}
-                onClick={() => handleProviderChange(p)}
-                className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                  modelConfig.provider === p
-                    ? 'bg-accent-blue text-white'
-                    : 'text-text-secondary hover:text-text-primary'
-                }`}
-              >
-                {p === 'local' ? <Cpu size={11} /> : <Cloud size={11} />}
-                {p === 'local' ? '本地 Ollama' : '云端 API'}
-              </button>
-            ))}
+          <div className="mb-3 rounded-lg bg-bg-tertiary p-1">
+            <div className="grid grid-cols-2 gap-1">
+              {([
+                { id: 'openai_compatible', icon: <Cloud size={11} />, label: 'OpenAI 兼容' },
+                { id: 'ollama', icon: <Cpu size={11} />, label: 'Ollama' },
+              ] as const).map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => handleConnectionTypeChange(item.id)}
+                  disabled={disabled}
+                  className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-xs font-medium transition-colors ${
+                    connectionType === item.id
+                      ? 'bg-accent-blue text-white'
+                      : 'text-text-secondary hover:text-text-primary'
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
+                >
+                  {item.icon}
+                  {item.label}
+                </button>
+              ))}
+            </div>
           </div>
 
-          {/* Model selection */}
-          {modelConfig.provider === 'local' ? (
+          {connectionType === 'ollama' ? (
             <div className="space-y-2">
               {ollamaModels.length > 0 ? (
                 <div>
-                  <div className="text-[10px] text-text-secondary uppercase tracking-wide mb-1.5">已安装模型</div>
-                  <div className="space-y-0.5 max-h-40 overflow-y-auto">
-                    {ollamaModels.map((m) => (
+                  <div className="mb-1.5 text-[10px] uppercase tracking-wide text-text-secondary">
+                    已安装模型
+                  </div>
+                  <div className="max-h-40 space-y-0.5 overflow-y-auto">
+                    {ollamaModels.map((model) => (
                       <button
-                        key={m}
-                        onClick={() => { updatePanelModel(panelId, { model: m }); setOpen(false) }}
-                        className={`w-full text-left px-2.5 py-1.5 rounded-lg text-xs transition-colors ${
-                          modelConfig.model === m
+                        key={model}
+                        type="button"
+                        onClick={() => {
+                          if (disabled) return
+                          updatePanelModel(panelId, { model })
+                          setOpen(false)
+                        }}
+                        disabled={disabled}
+                        className={`w-full rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
+                          modelConfig.model === model
                             ? 'bg-accent-blue/20 text-accent-blue'
                             : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-                        }`}
+                        } disabled:cursor-not-allowed disabled:opacity-50`}
                       >
-                        {m}
+                        {model}
                       </button>
                     ))}
                   </div>
                 </div>
               ) : (
-                <p className="text-xs text-text-secondary text-center py-2">未检测到 Ollama 模型</p>
+                <p className="py-2 text-center text-xs text-text-secondary">未检测到 Ollama 模型</p>
               )}
+
               <div>
-                <div className="text-[10px] text-text-secondary uppercase tracking-wide mb-1">自定义 Base URL</div>
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
+                  服务地址
+                </div>
                 <input
                   className="input-base w-full text-xs"
                   value={modelConfig.base_url}
-                  onChange={(e) => updatePanelModel(panelId, { base_url: e.target.value })}
+                  onChange={(event) => updatePanelModel(panelId, { base_url: event.target.value })}
                   placeholder="http://localhost:11434"
+                  disabled={disabled}
                 />
               </div>
+
               <div>
-                <div className="text-[10px] text-text-secondary uppercase tracking-wide mb-1">自定义模型名</div>
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
+                  自定义模型名
+                </div>
                 <div className="flex gap-1.5">
                   <input
                     className="input-base flex-1 text-xs"
                     value={customModel}
-                    onChange={(e) => setCustomModel(e.target.value)}
-                    placeholder="qwen3:4b"
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && customModel.trim()) {
+                    onChange={(event) => setCustomModel(event.target.value)}
+                    placeholder="qwen3.5-2B:latest"
+                    disabled={disabled}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' && customModel.trim()) {
                         updatePanelModel(panelId, { model: customModel.trim() })
                         setCustomModel('')
                         setOpen(false)
@@ -145,16 +261,17 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                     }}
                   />
                   <button
-                    className="btn-primary text-xs px-2"
+                    type="button"
+                    className="btn-primary px-2 text-xs"
+                    disabled={disabled}
                     onClick={() => {
-                      if (customModel.trim()) {
-                        updatePanelModel(panelId, { model: customModel.trim() })
-                        setCustomModel('')
-                        setOpen(false)
-                      }
+                      if (!customModel.trim()) return
+                      updatePanelModel(panelId, { model: customModel.trim() })
+                      setCustomModel('')
+                      setOpen(false)
                     }}
                   >
-                    确定
+                    应用
                   </button>
                 </div>
               </div>
@@ -162,40 +279,225 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
           ) : (
             <div className="space-y-2">
               <div>
-                <div className="text-[10px] text-text-secondary uppercase tracking-wide mb-1">Model ID</div>
+                <div className="mb-1 flex items-center justify-between gap-2">
+                  <div className="text-[10px] uppercase tracking-wide text-text-secondary">
+                    已保存云端模型
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSettingsOpen(true)
+                      setOpen(false)
+                    }}
+                    className="text-[11px] text-accent-blue transition-colors hover:text-accent-blue-hover"
+                  >
+                    管理
+                  </button>
+                </div>
+
+                {cloudModelProfiles.length > 0 ? (
+                  <div className="max-h-36 space-y-1.5 overflow-y-auto">
+                    {cloudModelProfiles.map((profile) => (
+                      <button
+                        key={profile.id}
+                        type="button"
+                        onClick={() => {
+                          if (disabled) return
+                          applyCloudModelProfile(panelId, profile.id)
+                          setOpen(false)
+                        }}
+                        disabled={disabled}
+                        className={`w-full rounded-lg border px-2.5 py-2 text-left transition-colors ${
+                          profile.modelConfig.model === modelConfig.model &&
+                          profile.modelConfig.base_url === modelConfig.base_url
+                            ? 'border-accent-blue/40 bg-accent-blue/10'
+                            : 'border-bg-border bg-bg-primary/30 hover:border-accent-blue/35 hover:bg-bg-hover'
+                        } disabled:cursor-not-allowed disabled:opacity-50`}
+                      >
+                        <div className="text-xs font-medium text-text-primary">{profile.name}</div>
+                        <div className="mt-0.5 truncate text-[11px] text-text-secondary">
+                          {profile.modelConfig.model}
+                        </div>
+                        <div className="mt-0.5 truncate text-[11px] text-text-secondary/70">
+                          {profile.modelConfig.base_url}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="rounded-lg border border-dashed border-bg-border px-2.5 py-2 text-[11px] leading-5 text-text-secondary">
+                    还没有已保存的云端模型配置。点右侧“管理”后可集中维护，再回来一键选用。
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
+                  常用预设
+                </div>
+                <div className="grid gap-1.5">
+                  {COMPATIBLE_PRESETS.map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => applyCompatiblePreset(preset)}
+                      disabled={disabled}
+                      className="rounded-lg border border-bg-border px-2.5 py-2 text-left transition-colors hover:border-accent-blue/35 hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <div className="text-xs font-medium text-text-primary">{preset.label}</div>
+                      <div className="mt-0.5 text-[11px] text-text-secondary">
+                        {preset.description}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
+                  模型 ID
+                </div>
                 <input
                   className="input-base w-full text-xs"
                   value={modelConfig.model}
-                  onChange={(e) => updatePanelModel(panelId, { model: e.target.value })}
-                  placeholder="gpt-4o-mini"
+                  onChange={(event) => updatePanelModel(panelId, { model: event.target.value })}
+                  placeholder="gpt-4o-mini / qwen/qwen-2.5-72b-instruct"
+                  disabled={disabled}
                 />
               </div>
+
               <div>
-                <div className="text-[10px] text-text-secondary uppercase tracking-wide mb-1">Base URL</div>
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
+                  服务地址
+                </div>
                 <input
                   className="input-base w-full text-xs"
                   value={modelConfig.base_url}
-                  onChange={(e) => updatePanelModel(panelId, { base_url: e.target.value })}
+                  onChange={(event) => updatePanelModel(panelId, { base_url: event.target.value })}
                   placeholder="https://openrouter.ai/api/v1"
+                  disabled={disabled}
                 />
               </div>
+
               <div>
-                <div className="text-[10px] text-text-secondary uppercase tracking-wide mb-1">API Key</div>
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
+                  API Key
+                </div>
                 <input
                   className="input-base w-full text-xs"
                   type="password"
                   value={modelConfig.api_key}
-                  onChange={(e) => updatePanelModel(panelId, { api_key: e.target.value })}
-                  placeholder="sk-or-v1-..."
+                  onChange={(event) => updatePanelModel(panelId, { api_key: event.target.value })}
+                  placeholder="本地兼容服务可留空"
+                  disabled={disabled}
                 />
               </div>
+
+              <p className="text-[11px] leading-5 text-text-secondary">
+                支持 OpenRouter、OneAPI、NewAPI、LM Studio、vLLM 等 OpenAI 兼容网关与服务。
+              </p>
             </div>
           )}
 
-          {/* Temperature */}
-          <div className="mt-3 pt-3 border-t border-bg-border">
-            <div className="flex items-center justify-between mb-1.5">
-              <span className="text-[10px] text-text-secondary uppercase tracking-wide">Temperature</span>
+          <div className="mt-3 border-t border-bg-border pt-3">
+            <div className="mb-2 text-[10px] uppercase tracking-wide text-text-secondary">
+              执行方式
+            </div>
+            <div className="grid gap-1.5">
+              {agentModeOptions.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  onClick={() => updatePanelModel(panelId, { agent_mode: option.id })}
+                  disabled={disabled}
+                  className={`rounded-lg border px-2.5 py-2 text-left transition-colors ${
+                    modelConfig.agent_mode === option.id
+                      ? 'border-accent-blue/40 bg-accent-blue/10'
+                      : 'border-bg-border bg-bg-primary/30 hover:border-accent-blue/35 hover:bg-bg-hover'
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
+                >
+                  <div className="text-xs font-medium text-text-primary">{option.label}</div>
+                  <div className="mt-0.5 text-[11px] text-text-secondary">
+                    {option.description}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-3 border-t border-bg-border pt-3">
+            <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
+              已保存预设
+            </div>
+            <div className="flex gap-1.5">
+              <input
+                className="input-base flex-1 text-xs"
+                value={presetName}
+                onChange={(event) => setPresetName(event.target.value)}
+                placeholder="预设名称"
+                disabled={disabled}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    handleSavePreset()
+                  }
+                }}
+              />
+              <button
+                type="button"
+                onClick={handleSavePreset}
+                disabled={disabled || !presetName.trim()}
+                className="btn-primary px-2 text-xs disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                保存
+              </button>
+            </div>
+
+            {modelPresets.length > 0 ? (
+              <div className="mt-2 max-h-36 space-y-1.5 overflow-y-auto">
+                {modelPresets.map((preset) => (
+                  <div
+                    key={preset.id}
+                    className="rounded-lg border border-bg-border bg-bg-primary/40 px-2.5 py-2"
+                  >
+                    <div className="truncate text-xs font-medium text-text-primary">
+                      {preset.name}
+                    </div>
+                    <div className="mt-0.5 truncate text-[11px] text-text-secondary">
+                      {preset.modelConfig.model}
+                    </div>
+                    <div className="mt-1.5 flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          applyModelPreset(panelId, preset.id)
+                          setOpen(false)
+                        }}
+                        disabled={disabled}
+                        className="rounded-md border border-bg-border px-2 py-1 text-[11px] text-text-secondary transition-colors hover:border-accent-blue/35 hover:text-accent-blue disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        应用
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteModelPreset(preset.id)}
+                        disabled={disabled}
+                        className="rounded-md border border-bg-border px-2 py-1 text-[11px] text-text-secondary transition-colors hover:border-accent-red/35 hover:text-accent-red disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-2 text-[11px] text-text-secondary">还没有保存的预设。</p>
+            )}
+          </div>
+
+          <div className="mt-3 border-t border-bg-border pt-3">
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="text-[10px] uppercase tracking-wide text-text-secondary">温度</span>
               <span className="text-xs text-text-primary">{modelConfig.temperature.toFixed(1)}</span>
             </div>
             <input
@@ -204,24 +506,26 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
               max="1"
               step="0.1"
               value={modelConfig.temperature}
-              onChange={(e) => updatePanelModel(panelId, { temperature: parseFloat(e.target.value) })}
+              onChange={(event) =>
+                updatePanelModel(panelId, { temperature: parseFloat(event.target.value) })
+              }
               className="w-full accent-accent-blue"
+              disabled={disabled}
             />
           </div>
 
           <button
+            type="button"
             onClick={() => setOpen(false)}
-            className="mt-3 w-full btn-primary text-xs"
+            disabled={disabled}
+            className="btn-primary mt-3 w-full text-xs"
           >
             完成
           </button>
         </div>
       )}
 
-      {/* Click outside to close */}
-      {open && (
-        <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-      )}
+      {open && <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />}
     </div>
   )
 }

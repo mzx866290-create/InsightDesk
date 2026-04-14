@@ -53,7 +53,7 @@ Created a complete SQLite-based chat history implementation:
 - Updated classification prompt to include webpage fetching option
 - Enhanced execute_tool to handle "url" parameter for fetch_webpage
 
-### 3. Enhanced `app.py`
+### 3. Historical `app.py` Phase
 
 #### Session Management UI
 - Added comprehensive session picker in sidebar
