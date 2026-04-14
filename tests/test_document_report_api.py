@@ -160,6 +160,18 @@ def test_upload_documents_endpoint_cleans_temp_files_when_task_setup_fails(
     assert all(not Path(path).exists() for path in staged_paths)
 
 
+def test_upload_documents_endpoint_rejects_unsupported_extension():
+    client = TestClient(api_server.app)
+
+    response = client.post(
+        "/api/documents/upload",
+        files=[("files", ("payload.exe", b"boom", "application/octet-stream"))],
+    )
+
+    assert response.status_code == 400
+    assert "不支持的文件类型" in response.json()["detail"]
+
+
 def test_download_report_endpoint_returns_pptx(monkeypatch, tmp_path):
     db_path = tmp_path / "chat_history.db"
     history_cls = _history_cls_for_db(db_path)

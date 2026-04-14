@@ -7,6 +7,21 @@ from typing import Any, Callable, Iterable
 from api_task_store import TaskRecord, TaskStatus
 
 
+DEFAULT_UPLOAD_ALLOWED_SUFFIXES = {
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".txt",
+    ".md",
+    ".csv",
+    ".xls",
+    ".xlsx",
+}
+DEFAULT_UPLOAD_MAX_FILE_COUNT = 20
+DEFAULT_UPLOAD_MAX_FILE_BYTES = 25 * 1024 * 1024
+DEFAULT_UPLOAD_MAX_TOTAL_BYTES = 100 * 1024 * 1024
+
+
 def upload_file_suffix(name: str | None) -> str:
     if not name:
         return ""
@@ -24,15 +39,57 @@ def cleanup_temp_paths(paths: Iterable[str]) -> None:
 
 
 async def stage_upload_files(files: list[Any]) -> tuple[list[str], list[str]]:
+    return await stage_upload_files_with_limits(files)
+
+
+async def stage_upload_files_with_limits(
+    files: list[Any],
+    *,
+    allowed_suffixes: set[str] | None = None,
+    max_file_count: int = DEFAULT_UPLOAD_MAX_FILE_COUNT,
+    max_file_bytes: int = DEFAULT_UPLOAD_MAX_FILE_BYTES,
+    max_total_bytes: int = DEFAULT_UPLOAD_MAX_TOTAL_BYTES,
+) -> tuple[list[str], list[str]]:
     temp_paths: list[str] = []
     file_names: list[str] = []
+    normalized_allowed_suffixes = {
+        str(item or "").strip().lower()
+        for item in (allowed_suffixes or DEFAULT_UPLOAD_ALLOWED_SUFFIXES)
+        if str(item or "").strip()
+    }
+    uploads = list(files or [])
+    if not uploads:
+        raise ValueError("至少上传一个文件")
+    if len(uploads) > max(1, int(max_file_count)):
+        raise ValueError(f"单次最多上传 {int(max_file_count)} 个文件")
+
+    total_bytes = 0
 
     try:
-        for upload in files:
-            suffix = upload_file_suffix(getattr(upload, "filename", None))
+        for upload in uploads:
+            file_name = str(getattr(upload, "filename", "") or "").strip()
+            if not file_name:
+                raise ValueError("存在缺少文件名的上传项")
+            suffix = upload_file_suffix(file_name).lower()
+            if normalized_allowed_suffixes and suffix not in normalized_allowed_suffixes:
+                raise ValueError(f"不支持的文件类型: {suffix or '无扩展名'}")
             fd, temp_path = tempfile.mkstemp(suffix=suffix)
             try:
                 content = await upload.read()
+                if not isinstance(content, (bytes, bytearray)):
+                    raise ValueError(f"文件读取失败: {file_name}")
+                file_size = len(content)
+                if file_size <= 0:
+                    raise ValueError(f"文件内容为空: {file_name}")
+                if file_size > max(1, int(max_file_bytes)):
+                    raise ValueError(
+                        f"文件过大: {file_name}，单文件限制 {int(max_file_bytes)} 字节"
+                    )
+                total_bytes += file_size
+                if total_bytes > max(1, int(max_total_bytes)):
+                    raise ValueError(
+                        f"上传总大小超限，最多 {int(max_total_bytes)} 字节"
+                    )
                 with os.fdopen(fd, "wb") as handle:
                     handle.write(content)
             except Exception:
@@ -44,9 +101,7 @@ async def stage_upload_files(files: list[Any]) -> tuple[list[str], list[str]]:
                 raise
 
             temp_paths.append(temp_path)
-            file_names.append(
-                str(getattr(upload, "filename", "") or os.path.basename(temp_path))
-            )
+            file_names.append(file_name or os.path.basename(temp_path))
     except Exception:
         cleanup_temp_paths(temp_paths)
         raise
