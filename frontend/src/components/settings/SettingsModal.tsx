@@ -4,6 +4,7 @@ import {
   UserCog, Check, Activity, Search, ChevronDown, ChevronUp, Zap, HardDrive, FileText as FileIcon,
   ToggleLeft, ToggleRight,
 } from 'lucide-react'
+import { AdminTokenPanel } from '../admin/AdminTokenPanel'
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import {
@@ -23,6 +24,7 @@ import type {
   RetrievalTestResult,
   DashboardTemplateConfig,
 } from '../../api/client'
+import { isAdminAccessError } from '../admin/adminAccess'
 import { useChatStore, type CloudModelProfile } from '../../stores/chatStore'
 import { useTaskStore } from '../../stores/taskStore'
 
@@ -66,15 +68,6 @@ const SECTION_ORDER_OPTIONS: DashboardTemplateConfig['section_order'] = [
   'warnings',
 ]
 const KB_CHUNK_PAGE_SIZE = 12
-
-function isAdminAccessError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? '')
-  return (
-    message.includes('管理令牌') ||
-    message.includes('ADMIN_API_TOKEN') ||
-    message.includes('远程管理接口已禁用')
-  )
-}
 
 function normalizeDashboardTemplate(
   template?: Partial<DashboardTemplateConfig> | null,
@@ -726,58 +719,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
       {/* General Tab */}
       {tab === 'general' && (
         <div className="space-y-4">
-          <div className="rounded-xl border border-bg-border bg-bg-tertiary/30 p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-semibold text-text-primary">远程管理员令牌</h3>
-                <p className="mt-1 text-xs leading-5 text-text-secondary">
-                  仅在远程访问受保护的管理接口时需要。本地通过 `127.0.0.1` 或 `localhost` 打开时通常不需要填写。
-                </p>
-              </div>
-              <span className={`rounded-full px-2 py-1 text-[11px] ${
-                adminToken.trim()
-                  ? 'bg-accent-green/10 text-accent-green'
-                  : 'bg-bg-secondary text-text-secondary'
-              }`}>
-                {adminToken.trim() ? '已保存' : '未配置'}
-              </span>
-            </div>
-
-            <div className="mt-4 flex gap-2">
-              <input
-                className="input-base flex-1 text-sm"
-                type="password"
-                placeholder="输入 ADMIN_API_TOKEN"
-                value={adminToken}
-                onChange={(e) => setAdminToken(e.target.value)}
-              />
-              <Button variant="primary" onClick={handleSaveAdminToken}>
-                {adminTokenSaved ? <CheckCircle size={14} /> : null}
-                {adminTokenSaved ? '已保存' : '保存令牌'}
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  setAdminToken('')
-                  saveAdminApiToken('')
-                  setAdminTokenSaved(false)
-                  setAdminAccessError(null)
-                }}
-              >
-                清除
-              </Button>
-            </div>
-
-            <p className="mt-2 text-[11px] text-text-secondary">
-              令牌只保存在当前浏览器的本地存储中，不会回写到服务器配置。
-            </p>
-
-            {adminAccessError && (
-              <div className="mt-3 rounded-lg border border-accent-red/30 bg-accent-red/10 px-3 py-2 text-xs text-accent-red">
-                {adminAccessError}
-              </div>
-            )}
-          </div>
+          <AdminTokenPanel
+            token={adminToken}
+            saved={adminTokenSaved}
+            error={adminAccessError}
+            description="仅在远程访问受保护的管理接口时需要。本地通过 `127.0.0.1` 或 `localhost` 打开时通常不需要填写。"
+            onTokenChange={setAdminToken}
+            onSave={handleSaveAdminToken}
+            onClear={() => {
+              setAdminToken('')
+              saveAdminApiToken('')
+              setAdminTokenSaved(false)
+              setAdminAccessError(null)
+            }}
+          />
 
           <div>
             <label className="block text-xs font-medium text-text-secondary uppercase tracking-wide mb-2">
