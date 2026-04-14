@@ -1,302 +1,256 @@
-# 企业 AI 知识库系统 README（计划书版）
+# AI 智能体项目介绍
 
-本文件用于描述当前项目版本的实现边界、阶段目标和优化路线，作为后续迭代的执行依据。
+## 一句话说明
 
-## 1. 项目定位与范围
+这是一个面向企业知识问答、资料分析与结果交付的 AI 工作台，基于 `React + FastAPI + LangChain + LangGraph` 构建，支持本地模型与云端模型双模式运行，覆盖“提问、检索、分析、沉淀、生成报告/演示稿”的完整链路。
 
-本项目是一个面向企业内部知识问答场景的轻量系统，核心能力包括：
+## 项目定位
 
-- 文档导入、分块、向量化与检索
-- 基于工具调用的问答编排（知识库检索 + 联网搜索）
-- 本地模型与云端模型切换
-- 基于 Session 的多轮对话记忆
+很多 AI 项目只解决“回答问题”，这个项目更强调“完成工作”。
 
-当前版本定位为单机可运行的工程化原型，重点是可用性和可扩展性，不包含多租户权限体系与分布式部署能力。
+它不是一个单纯的聊天页面，也不是一个只做 RAG 检索的 Demo，而是一个可持续迭代的工程化智能体平台，核心目标包括：
 
-## 2. 当前版本能力边界
+- 将企业内部文档转化为可检索、可引用、可追溯的知识资产
+- 让用户围绕同一会话完成问答、附件分析、记忆沉淀与任务推进
+- 将对话结果进一步结构化为报告、仪表盘卡片和 `PPTX` 演示稿
+- 支持本地私有化模型和云端模型并存，适配不同成本、安全和算力场景
 
-### 2.1 已实现能力
+## 核心价值
 
-- UI 与交互：`React + FastAPI`，支持多面板对话、附件工作区、Deck 编辑与导出
-- 检索链路：`FAISS` 粗排 + `CrossEncoder` 二段重排
-- Agent 模式：
-  - `function_calling`（模型原生工具调用）
-  - `langgraph`（轻量工具路由）
-  - `auto`（本地默认 `langgraph`，云端默认 `function_calling`）
-- 对话记忆：基于 `session_id` 的会话级历史记录
-- 工具集：知识检索、知识库统计、知识库重载、联网搜索、快速问答，可选 MCP 覆盖接入
+- 面向业务交付，而不是只做模型试玩
+- 前后端分层明确，已经具备持续演进为团队内部产品的基础
+- 功能覆盖从知识入库到最终输出，减少“问完还要手工整理”的断层
+- 保留工程可控性，支持本地部署、Docker 部署和 Windows 一键启动
 
-### 2.2 当前限制
+## 当前能力概览
 
-- 默认以单机 SQLite 持久化为主，尚未扩展到集中式会话基础设施
-- 未提供权限控制、审计日志和用户体系
-- 联网搜索依赖外部 API Key（`TAVILY_API_KEY`）
-- 向量库为本地存储，暂未支持分布式检索服务
+### 1. 智能问答工作台
 
-## 3. 架构与代码映射（以当前代码为准）
+- 支持多会话、多工作区管理
+- 支持多面板并行对话，可用于多模型对比、不同参数策略对比
+- 支持流式响应和前端实时展示
+- 支持系统 Prompt 管理与激活切换
+
+### 2. 知识库与检索增强
+
+- 支持 `PDF / DOC / DOCX / TXT / Markdown / CSV / Excel` 等文档接入
+- 支持文档切块、向量化、向量库持久化
+- 检索链路采用 `FAISS` 粗排 + `CrossEncoder` 二段重排
+- 支持知识库统计、健康检查、检索测试、Chunk 编辑与删除
+- 回答结果可附带来源引用，便于校验与追溯
+
+### 3. 附件分析与会话增强
+
+- 支持聊天过程中上传附件与图片
+- 支持围绕附件内容继续分析，而不是仅做一次性上传
+- 支持附件提升为知识库任务
+- 支持收藏、引用查看、消息反馈等增强能力
+
+### 4. 会话记忆与沉淀
+
+- 支持会话级记忆管理
+- 支持手动固定关键结论、事实、决策
+- 支持自动阶段总结，缓解长会话上下文膨胀
+- 支持在记忆工作区中编辑、删除、二次发送到输入区
+
+### 5. 任务中心与异步执行
+
+- 支持异步任务创建、轮询、状态追踪
+- 已覆盖知识库导入、附件入库、报告生成等任务场景
+- 前端提供任务中心，便于查看执行进度和失败原因
+
+### 6. 报告与演示稿交付
+
+- 支持从会话内容生成结构化报告
+- 支持生成 Deck 并编辑主题、内容与页面
+- 支持导出 `PPTX`
+- 支持会话与 Deck 分享链接
+
+### 7. Agent 编排与可观测性
+
+- 支持 `function_calling`、`langgraph`、`auto` 三种 Agent 模式
+- 支持本地 `Ollama` 与 OpenAI-Compatible / OpenRouter 等云端模型
+- 支持联网搜索工具与知识库工具协同
+- 已接入 LangGraph 工作流可视化，前端可查看节点执行过程
+- 预留 `MCP Server` 扩展目录，便于后续接入更多工具
+
+## 架构概览
 
 ```mermaid
 flowchart TD
-    Browser["UserBrowser"] --> UI["ReactUI(frontend/)"]
-    UI --> API["FastAPI(api_server.py)"]
-    API --> Agent["AgentCore(agent_core.py)"]
-    API --> Pipeline["DocPipeline(doc_pipeline.py)"]
+    User["User"] --> Frontend["React + Vite Frontend"]
+    Frontend --> API["FastAPI API Server"]
 
-    Agent --> LgMode["LangGraphAgent"]
-    Agent --> FcMode["FunctionCallingAgent"]
-    Agent --> Tools["ToolSet"]
+    API --> Agent["Agent Core"]
+    API --> ChatStore["SQLite Chat Store"]
+    API --> Pipeline["Document Pipeline"]
+    API --> Deck["Deck Service"]
+    API --> Tasks["Task Runtime"]
 
-    Tools --> KB["query_knowledge"]
-    Tools --> Search["web_search/quick_answer"]
-    Tools --> Stats["get_knowledge_stats/reload_knowledge_base"]
+    Agent --> Tools["Tool Orchestration"]
+    Tools --> KB["Knowledge Retrieval"]
+    Tools --> Web["Web Search"]
+    Tools --> Memory["Session Memory"]
 
-    Pipeline --> VS["FAISS(vector_store/)"]
-    Pipeline --> Embed["HuggingFaceEmbeddings"]
-    Pipeline --> Rerank["CrossEncoderReranker"]
+    Pipeline --> Embed["Embeddings"]
+    Pipeline --> Vector["FAISS Vector Store"]
+    Pipeline --> Rerank["CrossEncoder Reranker"]
 
-    Agent --> LocalLLM["Ollama(local)"]
-    Agent --> CloudLLM["OpenAICompatible(cloud)"]
+    Agent --> LocalModel["Ollama"]
+    Agent --> CloudModel["OpenAI-Compatible APIs"]
+
+    Deck --> PPT["PPTX Export"]
 ```
 
-模块对应关系：
+## 主要模块
 
-- `frontend/`：React 前端，负责对话、附件、任务、Deck 编辑等交互
-- `api_server.py`：FastAPI 接口层，提供 REST、SSE、Deck、会话与分享能力
-- `agent_core.py`：模型工厂、工具定义、LangGraph/Function Calling 编排、会话记忆管理
-- `doc_pipeline.py`：文档加载、文本切块、向量化、向量库持久化、Rerank 检索
-- `mcp_servers/`：MCP Server 扩展目录，可通过 `ENABLE_MCP_TOOLS=true` 按需接入运行时
-- `vector_store/`：本地 FAISS 索引目录
+- `frontend/`
+  React 前端，负责工作区、会话、聊天面板、引用查看、附件工作区、记忆工作区、任务中心、Deck 预览与编辑等交互。
 
-## 4. 技术栈清单
+- `api_server.py`
+  FastAPI 服务入口，提供 REST API、SSE 流式输出、分享、报告、知识库管理、任务调度等能力。
+
+- `agent_core.py`
+  智能体核心编排层，负责模型接入、工具路由、Agent 模式切换、引用组装、会话记忆注入等。
+
+- `doc_pipeline.py`
+  文档处理与检索链路，负责加载文档、切块、向量化、FAISS 持久化、召回与重排。
+
+- `chat_store.py`
+  SQLite 持久层，负责会话、消息、工作区、收藏、Prompt、会话记忆等数据管理。
+
+- `deck_service.py`
+  演示稿生成与导出模块，负责 Deck 结构生成、主题管理、页面重生成、`PPTX` 导出与持久化。
+
+- `mcp_servers/`
+  MCP 扩展工具目录，适合后续接入专有知识源或外部业务系统。
+
+- `tests/`
+  自动化测试目录，已覆盖 API、知识库、记忆、Deck、任务、附件、分享等主要能力。
+
+## 技术栈
 
 | 层级 | 技术 |
-|---|---|
-| 语言/运行时 | Python 3.9+ |
-| Web/UI | React, FastAPI |
-| Agent 编排 | LangChain, LangGraph |
-| 模型接入 | langchain-ollama, langchain-openai, langchain-openrouter |
-| 检索与向量库 | FAISS, sentence-transformers |
-| 重排模型 | CrossEncoder（默认 `BAAI/bge-reranker-base`） |
-| 文档解析 | pypdf, docx2txt, unstructured |
-| 网络请求 | httpx, requests |
-| 配置管理 | python-dotenv |
+| --- | --- |
+| 前端 | React、TypeScript、Vite、Tailwind CSS、Zustand |
+| 后端 | FastAPI、Uvicorn |
+| Agent | LangChain、LangGraph |
+| 模型接入 | Ollama、OpenAI-Compatible API、OpenRouter |
+| 检索 | FAISS、sentence-transformers、CrossEncoder |
+| 数据存储 | SQLite |
+| 文档处理 | pypdf、docx2txt、mammoth、unstructured、pandas |
+| 导出能力 | python-pptx |
+| 部署 | Windows 脚本、Docker、docker-compose |
 
-## 5. 启动与运行（执行版）
+## 文档结构
 
-### 5.1 环境准备
+- [QUICKSTART.md](/f:/项目/AI智能体/QUICKSTART.md)
+  最短启动路径。
+
+- [docs/README.md](/f:/项目/AI智能体/docs/README.md)
+  整体文档目录。
+
+- [docs/GETTING_STARTED.md](/f:/项目/AI智能体/docs/GETTING_STARTED.md)
+  安装、模型模式、首次运行与排错。
+
+- [docs/AGENT_AND_WORKFLOW.md](/f:/项目/AI智能体/docs/AGENT_AND_WORKFLOW.md)
+  Agent 模式、LangGraph、工作流可视化与实现边界。
+
+- [docs/PRODUCT_ROADMAP.md](/f:/项目/AI智能体/docs/PRODUCT_ROADMAP.md)
+  产品路线图、迁移方向与执行优先级。
+
+- [docs/DECK_DELIVERY_PLAN.md](/f:/项目/AI智能体/docs/DECK_DELIVERY_PLAN.md)
+  报告与 PPT 交付能力的演进方案。
+
+- [docs/VALIDATION.md](/f:/项目/AI智能体/docs/VALIDATION.md)
+  冒烟、回归与发布前校验。
+
+## 适用场景
+
+- 企业内部知识助手
+- 规章制度、项目文档、培训资料问答
+- 基于附件和资料的分析问答
+- 多模型对比评估
+- 汇报材料、分析报告、演示稿草稿生成
+- 团队内部私有化 AI 工作台原型
+
+## 当前工程边界
+
+这个项目已经具备较完整的产品骨架，但当前定位更适合“团队内部可用的单机/轻量部署系统”，而不是开箱即用的企业级多租户 SaaS。现阶段边界主要包括：
+
+- 默认以 `SQLite + 本地文件 + 本地 FAISS` 为主，适合单机部署
+- 尚未形成完整的用户体系、鉴权体系、RBAC 权限模型与审计日志
+- 检索与任务运行仍以单服务进程为中心，未做分布式拆分
+- 联网搜索依赖外部 API Key，例如 `TAVILY_API_KEY`
+- 生产化监控、限流、告警、链路追踪能力仍有继续增强空间
+
+## 推荐演进方向
+
+### P0：生产可用性补强
+
+- 增加鉴权、用户体系、权限隔离
+- 增加统一审计日志与操作留痕
+- 增加结构化监控、错误告警、任务观测
+- 将关键配置改造为更明确的环境与运行时配置管理
+
+### P1：架构升级
+
+- 将会话存储迁移到 `PostgreSQL`
+- 将缓存与异步任务状态迁移到 `Redis`
+- 将知识库检索和任务执行拆分为独立服务
+- 为分享、导出、文件处理增加更清晰的安全边界
+
+### P2：产品能力增强
+
+- 增加更完整的知识库治理和评测体系
+- 增加组织级 Prompt、模板、工作流配置
+- 增加更强的报告模板化与品牌化输出能力
+- 增加 MCP 工具生态与业务系统连接器
+
+## 快速启动
+
+### 本地启动
 
 ```bash
-cd f:\项目\AI智能体
 python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
+
+cd frontend
+npm install
 ```
 
-复制配置：
+复制配置文件：
 
 ```bash
 copy .env.example .env
 ```
 
-### 5.2 本地模型模式（推荐内网）
-
-```env
-LLM_PROVIDER=ollama
-OLLAMA_MODEL=qwen2.5:7b
-OLLAMA_BASE_URL=http://localhost:11434
-TAVILY_API_KEY=your_tavily_api_key
-```
-
-确保本地模型服务可用：
-
-```bash
-ollama list
-```
-
-### 5.3 云端模式（OpenAI 兼容接口）
-
-在 UI 中选择 `cloud`，并配置：
-
-- `Model ID`（如 `qwen/qwen-2.5-72b-instruct`）
-- `Base URL`（如 OpenRouter API 地址）
-- `API Key`
-
-### 5.4 启动方式
-
-```bash
-.\start.bat
-```
-
-或直接分别启动后端与前端：
+启动后端：
 
 ```bash
 python -m uvicorn api_server:app --host 0.0.0.0 --port 8000
-cd frontend && npm run dev -- --host 0.0.0.0 --port 3000
 ```
 
-访问地址：`http://localhost:3000`
+启动前端：
 
-## 6. 里程碑与优化方向
+```bash
+cd frontend
+npm run dev -- --host 0.0.0.0 --port 3000
+```
 
-### 6.1 里程碑划分
+### Windows 一键启动
 
-| 阶段 | 目标 | 当前状态 |
-|---|---|---|
-| M0 当前基线 | 单机 RAG + 双模式 Agent + 会话记忆 | 已完成 |
-| M1 稳定性增强 | 可观测性、失败恢复、回归基线 | 进行中 |
-| M2 检索质量提升 | 检索评测、参数调优、混合检索 | 规划中 |
-| M3 工程化部署 | 容器化、外部会话存储、多实例支持 | 规划中 |
+项目根目录提供 `start.bat`、`setup.bat` 和 `一键启动.bat`，适合本地快速体验和团队内部演示。
 
-### 6.2 优先级排序（P0/P1/P2）
-
-#### P0（优先立即执行）
-
-1. 可观测性增强
-   - 目标：定位 Agent 路由、工具调用和检索失败原因
-   - 实现点：统一日志字段（session_id、tool_name、latency、error）
-   - 验收：出现异常时可在 5 分钟内定位到模块级原因
-
-2. 检索链路调优
-   - 目标：提升答案相关性与稳定性
-   - 实现点：暴露 `fetch_k`、`top_k` 配置；建立固定测试问题集
-   - 验收：测试集平均相关性评分较当前基线提升
-
-3. 会话记忆治理
-   - 目标：避免长会话导致性能下降
-   - 实现点：限制历史条数、增加手动重置策略、异常会话清理
-   - 验收：长会话连续交互无明显卡顿，内存占用可控
-
-#### P1（短期）
-
-1. 混合检索能力
-   - 目标：覆盖关键词明确但语义较弱的查询
-   - 实现点：向量检索与关键词检索融合排序
-   - 验收：关键词类问题命中率明显提升
-
-2. 配置管理收敛
-   - 目标：减少“UI 配置与 .env 配置”不一致导致的问题
-   - 实现点：关键配置落盘与启动时提示校验
-   - 验收：配置错误类问题显著减少
-
-#### P2（中长期）
-
-1. 会话存储外置化
-   - 目标：支持重启后会话保留与多实例共享
-   - 实现点：将内存历史迁移到 Redis/数据库
-   - 验收：重启后可恢复会话上下文
-
-2. 部署标准化
-   - 目标：降低交付复杂度
-   - 实现点：容器化、健康检查、基础监控
-   - 验收：可通过标准部署脚本完成上线
-
-## 7. 执行路线（任务模板）
-
-后续每个优化项按以下模板执行：
-
-- 目标：明确要解决的问题与成功标准
-- 改动范围：涉及文件与模块（例如 `agent_core.py`、`doc_pipeline.py`）
-- 实施步骤：分阶段实现，优先保持向后兼容
-- 验收标准：必须可测试、可复现
-- 风险与回滚：定义失败判定与快速回退方案
-
-## 8. 回归与验收清单
-
-每次迭代至少完成以下回归：
-
-1. 启动回归
-   - `.\start.bat` 或 `launch_windows.ps1` 可正常启动
-   - React 前端与 FastAPI 接口均可加载且无阻塞异常
-2. 核心功能回归
-   - 文档上传后可完成向量化
-   - 内部知识检索可返回来源片段
-   - 联网搜索在配置 API Key 后可用
-3. 模式回归
-   - `local + langgraph` 可稳定回答
-   - `cloud + function_calling` 可调用工具
-4. 记忆回归
-   - 同一 `session_id` 可追问
-   - 清空/重置会话后行为符合预期
-
-## 9. 常见问题（运维视角）
-
-1. 启动后无法访问页面
-   - 检查端口 `8501` 是否被占用
-   - 检查虚拟环境与依赖是否完整安装
-
-2. 本地模型不可用
-   - 先执行 `ollama list` 验证服务状态
-   - 确认 UI 中 `Base URL` 与模型名称一致
-
-3. 检索为空或效果差
-   - 确认已导入文档且向量库加载成功
-   - 调整 `fetch_k` 与 `top_k` 并复测基线问题集
-
-4. 联网搜索失败
-   - 检查 `TAVILY_API_KEY` 是否已配置
-   - 检查外网连通性与 API 配额
-
-## 10. 版本说明
-
-- 文档类型：执行计划版 README
-- 适配代码：当前仓库主分支（`frontend/` / `api_server.py` / `agent_core.py` / `doc_pipeline.py`）
-- 维护方式：后续迭代完成后同步更新“里程碑状态”和“验收结果”
-# Windows 一键启动
-
-项目根目录新增了一个给非开发同事使用的入口：`一键启动.bat`。
-
-推荐使用方式：
-1. 配好 `.env`
-2. 双击 `一键启动.bat`
-3. 等待浏览器自动打开 `http://localhost:3000`
-
-启动器会自动处理：
-- 检查并尽量自动安装 `Python`、`Node.js`、`npm`
-- 自动创建 `venv312` 并安装 `requirements.txt`
-- 自动安装 `frontend/node_modules`
-- 按 `LLM_PROVIDER` 自动检查 `Ollama` 或 `OpenRouter`
-- 启动新版 `FastAPI + React`
-- 打印本机和局域网访问地址
-
-局域网共享说明：
-- 本机访问：`http://localhost:3000`
-- 局域网访问：`http://<启动机器IP>:3000`
-- 如果其他同事无法访问局域网地址，优先检查同网段和 Windows 防火墙放行情况
-
-# Docker 启动
-
-项目根目录已新增容器化入口：
-
-- `Dockerfile`：构建前端并由 FastAPI 托管静态资源
-- `docker-compose.yml`：一键启动应用服务，可选同时启动 `Ollama`
-- `.dockerignore`：减少构建上下文，避免把本地虚拟环境和缓存打进镜像
-
-推荐流程：
+### Docker 启动
 
 ```bash
 copy .env.example .env
 docker compose up --build -d
 ```
 
-访问地址：
+## 总结
 
-- 应用：`http://localhost:8000`
-- Ollama：`http://localhost:11434`
-
-如果需要在容器内自动连接 compose 中的 `ollama` 服务，可在 `.env` 中保留：
-
-```env
-DOCKER_OLLAMA_BASE_URL=http://ollama:11434
-```
-
-如果你只想用云端模型，也可以只启动应用服务：
-
-```bash
-docker compose up --build -d app
-```
-
-如果需要预拉取本地模型，可额外执行：
-
-```bash
-docker compose --profile init up ollama-pull
-```
+这个项目的价值不在于“又做了一个聊天机器人”，而在于它已经把企业知识问答、附件分析、会话沉淀、任务执行和结果交付整合到了一个统一工作台里。  
+如果后续补齐鉴权、监控、存储和部署能力，它完全可以继续演进为一个更稳定的企业内部 AI 应用底座。

@@ -1,0 +1,37 @@
+# Documentation Map
+
+## Purpose
+
+This directory contains the consolidated project documentation.
+
+The goal is to keep the repository documentation maintainable by reducing duplicated planning notes, implementation summaries, and feature guides into a small number of living documents.
+
+## Read First
+
+- [README.md](/f:/项目/AI智能体/README.md)
+  Project overview, current capabilities, architecture, boundaries, and deployment entry points.
+
+- [QUICKSTART.md](/f:/项目/AI智能体/QUICKSTART.md)
+  Fastest path to run the project locally.
+
+## Core Docs
+
+- [GETTING_STARTED.md](/f:/项目/AI智能体/docs/GETTING_STARTED.md)
+  Setup options, local/cloud model modes, LangGraph mode, and recommended first-run path.
+
+- [AGENT_AND_WORKFLOW.md](/f:/项目/AI智能体/docs/AGENT_AND_WORKFLOW.md)
+  Agent modes, LangGraph integration, workflow visualization, and implementation notes.
+
+- [PRODUCT_ROADMAP.md](/f:/项目/AI智能体/docs/PRODUCT_ROADMAP.md)
+  Consolidated product roadmap, migration priorities, retention direction, and execution order.
+
+- [DECK_DELIVERY_PLAN.md](/f:/项目/AI智能体/docs/DECK_DELIVERY_PLAN.md)
+  Report/PPT delivery redesign direction, Deck architecture, and phased evolution plan.
+
+- [VALIDATION.md](/f:/项目/AI智能体/docs/VALIDATION.md)
+  Smoke checks, release validation, and regression checklist.
+
+## Archive
+
+- [archive/README.md](/f:/项目/AI智能体/docs/archive/README.md)
+  Mapping from old standalone markdown files to the new consolidated docs.

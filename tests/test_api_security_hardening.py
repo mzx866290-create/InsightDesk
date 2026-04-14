@@ -50,3 +50,25 @@ def test_remote_share_routes_require_strong_share_secret(monkeypatch, tmp_path):
 
     assert response.status_code == 503
     assert response.json()["detail"] == "远程分享已禁用，请配置强 SHARE_LINK_SECRET 后再启用"
+
+
+def test_remote_document_upload_requires_admin_token(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(api_server, "ALLOW_REMOTE_CLIENTS", True)
+    monkeypatch.setattr(api_server, "_request_is_local", lambda request: False)
+    monkeypatch.setenv("ADMIN_API_TOKEN", "demo-admin-token")
+    client = TestClient(api_server.app)
+
+    denied = client.post(
+        "/api/documents/upload",
+        files=[("files", ("demo.txt", b"hello world", "text/plain"))],
+    )
+    assert denied.status_code == 403
+    assert denied.json()["detail"] == "缺少有效的管理令牌"
+
+    allowed = client.post(
+        "/api/documents/upload",
+        headers={"X-Admin-Token": "demo-admin-token"},
+        files=[("files", ("demo.txt", b"hello world", "text/plain"))],
+    )
+    assert allowed.status_code != 403

@@ -2380,9 +2380,11 @@ async def clear_session_messages(session_id: str):
 
 @app.post("/api/documents/upload")
 async def upload_documents(
+    request: Request,
     files: list[UploadFile] = File(...),
     vector_store_path: Optional[str] = Form(default=None),
 ):
+    _require_remote_admin(request)
     temp_paths: list[str] = []
     try:
         effective_vector_store_path = _effective_vector_store_path(vector_store_path)
@@ -2894,17 +2896,19 @@ async def list_knowledge_base_chunks(
 @app.patch("/api/knowledge-base/chunks/{chunk_id}")
 async def update_knowledge_base_chunk(
     chunk_id: str,
-    request: UpdateKBChunkRequest,
+    request: Request,
+    payload: UpdateKBChunkRequest,
     path: Optional[str] = None,
 ):
     from doc_pipeline import DocPipeline
     from langchain_core.documents import Document
 
+    _require_remote_admin(request)
     store_path = _effective_vector_store_path(path)
     return update_kb_chunk_payload(
         chunk_id=chunk_id,
-        request=request,
-        field_set=_request_field_set(request),
+        request=payload,
+        field_set=_request_field_set(payload),
         pipeline_factory=lambda: DocPipeline(vector_store_path=store_path),
         docstore_dict=_kb_docstore_dict,
         safe_metadata=_kb_safe_metadata,
@@ -2918,9 +2922,14 @@ async def update_knowledge_base_chunk(
 
 
 @app.delete("/api/knowledge-base/chunks/{chunk_id}")
-async def delete_knowledge_base_chunk(chunk_id: str, path: Optional[str] = None):
+async def delete_knowledge_base_chunk(
+    chunk_id: str,
+    request: Request,
+    path: Optional[str] = None,
+):
     from doc_pipeline import DocPipeline
 
+    _require_remote_admin(request)
     store_path = _effective_vector_store_path(path)
     return delete_kb_chunk_payload(
         chunk_id=chunk_id,
