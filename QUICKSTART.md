@@ -7,6 +7,8 @@
 3. Run `start.bat`
 4. Open `http://localhost:3000`
 
+If you access the app remotely and have enabled protected admin routes, open Settings and save the `ADMIN_API_TOKEN` in the "远程管理员令牌" section before using knowledge-base or prompt-management features.
+
 ## Full Guide
 
 See the consolidated setup guide:

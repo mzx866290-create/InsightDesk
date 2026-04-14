@@ -12,6 +12,7 @@ import {
   deleteSystemPrompt, activateSystemPrompt,
   getKnowledgeBases, getKBHealth, getKnowledgeBaseChunks, updateKnowledgeBaseChunk,
   deleteKnowledgeBaseChunk, testKBRetrieval, deleteKnowledgeBase,
+  getAdminApiToken, saveAdminApiToken,
 } from '../../api/client'
 import type {
   DocStats,
@@ -66,6 +67,15 @@ const SECTION_ORDER_OPTIONS: DashboardTemplateConfig['section_order'] = [
 ]
 const KB_CHUNK_PAGE_SIZE = 12
 
+function isAdminAccessError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return (
+    message.includes('管理令牌') ||
+    message.includes('ADMIN_API_TOKEN') ||
+    message.includes('远程管理接口已禁用')
+  )
+}
+
 function normalizeDashboardTemplate(
   template?: Partial<DashboardTemplateConfig> | null,
 ): DashboardTemplateConfig {
@@ -100,6 +110,9 @@ function StatusDot({ status }: { status: 'healthy' | 'empty' | 'not_found' | 'er
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) => {
   const [tab, setTab] = useState<Tab>('general')
+  const [adminToken, setAdminToken] = useState('')
+  const [adminTokenSaved, setAdminTokenSaved] = useState(false)
+  const [adminAccessError, setAdminAccessError] = useState<string | null>(null)
   const [tavilyKey, setTavilyKey] = useState('')
   const [tavilyKeySet, setTavilyKeySet] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -189,8 +202,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
     try {
       const cfg = await getConfig()
       setTavilyKeySet(cfg.tavily_api_key_set)
-    } catch {
-      // ignore
+      setAdminAccessError(null)
+    } catch (e) {
+      if (isAdminAccessError(e)) {
+        setAdminAccessError((e as Error).message)
+      }
     }
   }, [])
 
@@ -199,8 +215,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
     try {
       const list = await getSystemPrompts()
       setPrompts(list)
-    } catch {
-      // ignore
+      setAdminAccessError(null)
+    } catch (e) {
+      if (isAdminAccessError(e)) {
+        setAdminAccessError((e as Error).message)
+      }
     } finally {
       setLoadingPrompts(false)
     }
@@ -211,8 +230,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
     try {
       const list = await getKnowledgeBases()
       setKnowledgeBases(list)
-    } catch {
-      // ignore
+      setAdminAccessError(null)
+    } catch (e) {
+      if (isAdminAccessError(e)) {
+        setAdminAccessError((e as Error).message)
+      }
     } finally {
       setLoadingKBs(false)
     }
@@ -262,6 +284,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
   useEffect(() => {
     if (open) {
       setTab('general')
+      setAdminToken(getAdminApiToken())
+      setAdminTokenSaved(false)
+      setAdminAccessError(null)
       loadConfig()
       loadPrompts()
     }
@@ -291,6 +316,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
       await loadConfig()
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleSaveAdminToken = async () => {
+    const nextToken = adminToken.trim()
+    saveAdminApiToken(nextToken)
+    setAdminToken(nextToken)
+    setAdminTokenSaved(true)
+    setAdminAccessError(null)
+    setTimeout(() => setAdminTokenSaved(false), 2500)
+
+    await loadConfig()
+    await loadPrompts()
+    if (tab === 'roles') {
+      await loadKnowledgeBases()
+    }
+    if (tab === 'kb_monitor') {
+      await loadKBHealth()
+      await loadKBChunks({
+        offset: kbChunkOffset,
+        query: kbChunkAppliedQuery,
+        source: kbChunkAppliedSourceFilter,
+      })
     }
   }
 
@@ -678,6 +726,59 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
       {/* General Tab */}
       {tab === 'general' && (
         <div className="space-y-4">
+          <div className="rounded-xl border border-bg-border bg-bg-tertiary/30 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-text-primary">远程管理员令牌</h3>
+                <p className="mt-1 text-xs leading-5 text-text-secondary">
+                  仅在远程访问受保护的管理接口时需要。本地通过 `127.0.0.1` 或 `localhost` 打开时通常不需要填写。
+                </p>
+              </div>
+              <span className={`rounded-full px-2 py-1 text-[11px] ${
+                adminToken.trim()
+                  ? 'bg-accent-green/10 text-accent-green'
+                  : 'bg-bg-secondary text-text-secondary'
+              }`}>
+                {adminToken.trim() ? '已保存' : '未配置'}
+              </span>
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <input
+                className="input-base flex-1 text-sm"
+                type="password"
+                placeholder="输入 ADMIN_API_TOKEN"
+                value={adminToken}
+                onChange={(e) => setAdminToken(e.target.value)}
+              />
+              <Button variant="primary" onClick={handleSaveAdminToken}>
+                {adminTokenSaved ? <CheckCircle size={14} /> : null}
+                {adminTokenSaved ? '已保存' : '保存令牌'}
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setAdminToken('')
+                  saveAdminApiToken('')
+                  setAdminTokenSaved(false)
+                  setAdminAccessError(null)
+                }}
+              >
+                清除
+              </Button>
+            </div>
+
+            <p className="mt-2 text-[11px] text-text-secondary">
+              令牌只保存在当前浏览器的本地存储中，不会回写到服务器配置。
+            </p>
+
+            {adminAccessError && (
+              <div className="mt-3 rounded-lg border border-accent-red/30 bg-accent-red/10 px-3 py-2 text-xs text-accent-red">
+                {adminAccessError}
+              </div>
+            )}
+          </div>
+
           <div>
             <label className="block text-xs font-medium text-text-secondary uppercase tracking-wide mb-2">
               Tavily 联网搜索 API Key

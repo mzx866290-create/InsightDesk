@@ -1,6 +1,115 @@
 import type { WorkflowNode } from '../stores/workflowStore'
 
 const BASE = '/api'
+const ADMIN_API_TOKEN_STORAGE_KEY = 'admin_api_token'
+
+function getBrowserStorage(): Storage | null {
+  if (typeof window === 'undefined') return null
+  try {
+    return window.localStorage
+  } catch {
+    return null
+  }
+}
+
+export function getAdminApiToken(): string {
+  const storage = getBrowserStorage()
+  if (!storage) return ''
+  try {
+    return (storage.getItem(ADMIN_API_TOKEN_STORAGE_KEY) ?? '').trim()
+  } catch {
+    return ''
+  }
+}
+
+export function hasAdminApiToken(): boolean {
+  return getAdminApiToken().length > 0
+}
+
+export function saveAdminApiToken(token: string): void {
+  const storage = getBrowserStorage()
+  if (!storage) return
+  const normalized = token.trim()
+  try {
+    if (normalized) storage.setItem(ADMIN_API_TOKEN_STORAGE_KEY, normalized)
+    else storage.removeItem(ADMIN_API_TOKEN_STORAGE_KEY)
+  } catch {
+    // Ignore storage failures and let requests fall back to local-mode access.
+  }
+}
+
+function withAdminHeaders(headers?: HeadersInit): Headers {
+  const next = new Headers(headers)
+  const token = getAdminApiToken()
+  if (token && !next.has('X-Admin-Token')) {
+    next.set('X-Admin-Token', token)
+  }
+  return next
+}
+
+async function adminFetch(path: string, init?: RequestInit): Promise<Response> {
+  return fetch(`${BASE}${path}`, {
+    ...init,
+    headers: withAdminHeaders(init?.headers),
+  })
+}
+
+async function readErrorDetail(res: Response, fallback: string): Promise<string> {
+  try {
+    const payload = await res.json() as { detail?: string }
+    if (typeof payload.detail === 'string' && payload.detail.trim()) {
+      return payload.detail
+    }
+  } catch {
+    // Ignore JSON parsing failures and use the fallback message.
+  }
+  return fallback
+}
+
+function normalizeRequestPath(input: RequestInfo | URL): string {
+  const raw =
+    typeof input === 'string'
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url
+
+  try {
+    const base = typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
+    const url = new URL(raw, base)
+    return `${url.pathname}${url.search}`
+  } catch {
+    return raw
+  }
+}
+
+function requestNeedsAdminToken(path: string): boolean {
+  return (
+    path.startsWith(`${BASE}/config`) ||
+    path.startsWith(`${BASE}/agents/reset`) ||
+    path.startsWith(`${BASE}/documents/upload`) ||
+    path.startsWith(`${BASE}/documents/stats`) ||
+    path.startsWith(`${BASE}/prompts`) ||
+    path.startsWith(`${BASE}/knowledge-bases`) ||
+    path.startsWith(`${BASE}/knowledge-base/health`) ||
+    path.startsWith(`${BASE}/knowledge-base/chunks`) ||
+    path.startsWith(`${BASE}/knowledge-base/test-retrieval`) ||
+    path.startsWith(`${BASE}/knowledge-base/by-path`) ||
+    path === `${BASE}/knowledge-base`
+  )
+}
+
+const nativeFetch: typeof globalThis.fetch = globalThis.fetch.bind(globalThis)
+const fetch: typeof globalThis.fetch = (input, init) => {
+  const path = normalizeRequestPath(input)
+  if (!requestNeedsAdminToken(path)) {
+    return nativeFetch(input, init)
+  }
+  return nativeFetch(input, {
+    ...init,
+    headers: withAdminHeaders(init?.headers),
+  })
+}
 
 export interface Session {
   session_id: string
@@ -1377,20 +1486,23 @@ export async function getOllamaModels(baseUrl = 'http://localhost:11434'): Promi
 // ── Config ───────────────────────────────────
 
 export async function getConfig() {
-  const res = await fetch(`${BASE}/config`)
+  const res = await adminFetch('/config')
+  if (!res.ok) throw new Error(await readErrorDetail(res, 'Failed to load config'))
   return res.json()
 }
 
 export async function saveConfig(payload: { tavily_api_key?: string }): Promise<void> {
-  await fetch(`${BASE}/config`, {
+  const res = await adminFetch('/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
+  if (!res.ok) throw new Error(await readErrorDetail(res, 'Failed to save config'))
 }
 
 export async function resetAgents(): Promise<void> {
-  await fetch(`${BASE}/agents/reset`, { method: 'POST' })
+  const res = await adminFetch('/agents/reset', { method: 'POST' })
+  if (!res.ok) throw new Error(await readErrorDetail(res, 'Failed to reset agents'))
 }
 
 // ── Documents ────────────────────────────────
@@ -1398,10 +1510,9 @@ export async function resetAgents(): Promise<void> {
 export async function uploadDocuments(files: File[]): Promise<UploadDocumentsResponse> {
   const form = new FormData()
   for (const f of files) form.append('files', f)
-  const res = await fetch(`${BASE}/documents/upload`, { method: 'POST', body: form })
+  const res = await adminFetch('/documents/upload', { method: 'POST', body: form })
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail ?? res.statusText)
+    throw new Error(await readErrorDetail(res, res.statusText))
   }
   return res.json()
 }
@@ -1435,6 +1546,7 @@ export async function getDocStats(): Promise<DocStats> {
 
 export async function getSystemPrompts(): Promise<SystemPrompt[]> {
   const res = await fetch(`${BASE}/prompts`)
+  if (!res.ok) throw new Error(await readErrorDetail(res, 'Failed to load prompts'))
   const data = await res.json()
   return data.prompts as SystemPrompt[]
 }
@@ -1469,7 +1581,8 @@ export async function updateSystemPrompt(
 }
 
 export async function deleteSystemPrompt(id: string): Promise<void> {
-  await fetch(`${BASE}/prompts/${id}`, { method: 'DELETE' })
+  const res = await fetch(`${BASE}/prompts/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(await readErrorDetail(res, '删除角色失败'))
 }
 
 export async function activateSystemPrompt(id: string): Promise<{ ok: boolean; kb_status?: string }> {
@@ -1627,6 +1740,7 @@ export async function regenerateDeckSlide(
 
 export async function getKnowledgeBases(): Promise<KnowledgeBase[]> {
   const res = await fetch(`${BASE}/knowledge-bases`)
+  if (!res.ok) throw new Error(await readErrorDetail(res, 'Failed to load knowledge bases'))
   const data = await res.json()
   return data.knowledge_bases as KnowledgeBase[]
 }
