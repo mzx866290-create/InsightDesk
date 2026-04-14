@@ -1,0 +1,478 @@
+import asyncio
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+import api_server
+import chat_store
+import deck_service
+
+
+def _history_cls_for_db(db_path: Path):
+    class TestSQLiteChatMessageHistory(chat_store.SQLiteChatMessageHistory):
+        def __init__(self, session_id: str, db_path_arg: str = "./chat_history.db"):
+            super().__init__(session_id=session_id, db_path=str(db_path))
+
+    return TestSQLiteChatMessageHistory
+
+
+def test_workspaces_list_create_and_activate(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "chat_history.db"
+    history_cls = _history_cls_for_db(db_path)
+    client = TestClient(api_server.app)
+
+    initial = client.get("/api/workspaces")
+    assert initial.status_code == 200
+    initial_payload = initial.json()
+    default_workspace = next(
+        item
+        for item in initial_payload["workspaces"]
+        if item["workspace_id"] == chat_store.DEFAULT_WORKSPACE_ID
+    )
+
+    assert initial_payload["active_workspace_id"] == chat_store.DEFAULT_WORKSPACE_ID
+    assert default_workspace["name"] == chat_store.DEFAULT_WORKSPACE_NAME
+    assert default_workspace["is_active"] is True
+
+    created = client.post(
+        "/api/workspaces",
+        json={
+            "name": "Strategy",
+            "description": "Quarter planning",
+            "color": "green",
+            "activate": False,
+        },
+    )
+    assert created.status_code == 200
+    created_workspace = created.json()["workspace"]
+
+    assert created_workspace["name"] == "Strategy"
+    assert created_workspace["description"] == "Quarter planning"
+    assert created_workspace["color"] == "green"
+    assert created_workspace["is_active"] is False
+    assert created_workspace["session_count"] == 0
+
+    activated = client.post(
+        f"/api/workspaces/{created_workspace['workspace_id']}/activate"
+    )
+    assert activated.status_code == 200
+    activated_workspace = activated.json()["workspace"]
+    assert activated_workspace["workspace_id"] == created_workspace["workspace_id"]
+    assert activated_workspace["is_active"] is True
+
+    history_cls("session-implicit-workspace")
+    stored_session = chat_store.get_session(
+        "session-implicit-workspace",
+        db_path=str(db_path),
+    )
+    assert stored_session is not None
+    assert stored_session["workspace_id"] == created_workspace["workspace_id"]
+
+
+def test_sessions_support_workspace_filters_and_move(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "chat_history.db"
+    history_cls = _history_cls_for_db(db_path)
+    client = TestClient(api_server.app)
+
+    history_cls("session-default-workspace")
+
+    created_workspace = client.post(
+        "/api/workspaces",
+        json={"name": "Delivery", "color": "amber", "activate": True},
+    )
+    assert created_workspace.status_code == 200
+    workspace = created_workspace.json()["workspace"]
+
+    created_session = client.post(
+        "/api/sessions",
+        json={"title": "Launch checklist", "workspace_id": workspace["workspace_id"]},
+    )
+    assert created_session.status_code == 200
+    created_session_payload = created_session.json()
+
+    assert created_session_payload["title"] == "Launch checklist"
+    assert created_session_payload["workspace_id"] == workspace["workspace_id"]
+
+    workspace_sessions = client.get(
+        "/api/sessions",
+        params={"workspace_id": workspace["workspace_id"]},
+    )
+    assert workspace_sessions.status_code == 200
+    assert [item["session_id"] for item in workspace_sessions.json()["sessions"]] == [
+        created_session_payload["session_id"]
+    ]
+
+    default_sessions_before_move = client.get(
+        "/api/sessions",
+        params={"workspace_id": chat_store.DEFAULT_WORKSPACE_ID},
+    )
+    assert default_sessions_before_move.status_code == 200
+    assert {
+        item["session_id"]
+        for item in default_sessions_before_move.json()["sessions"]
+    } == {"session-default-workspace"}
+
+    moved = client.patch(
+        f"/api/sessions/{created_session_payload['session_id']}",
+        json={"workspace_id": chat_store.DEFAULT_WORKSPACE_ID},
+    )
+    assert moved.status_code == 200
+    moved_session = moved.json()["session"]
+    assert moved_session["workspace_id"] == chat_store.DEFAULT_WORKSPACE_ID
+
+    workspace_sessions_after_move = client.get(
+        "/api/sessions",
+        params={"workspace_id": workspace["workspace_id"]},
+    )
+    assert workspace_sessions_after_move.status_code == 200
+    assert workspace_sessions_after_move.json()["sessions"] == []
+
+    default_sessions_after_move = client.get(
+        "/api/sessions",
+        params={"workspace_id": chat_store.DEFAULT_WORKSPACE_ID},
+    )
+    assert default_sessions_after_move.status_code == 200
+    assert {
+        item["session_id"] for item in default_sessions_after_move.json()["sessions"]
+    } == {
+        "session-default-workspace",
+        created_session_payload["session_id"],
+    }
+
+
+def test_create_session_rejects_missing_workspace_without_side_effects(
+    monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "chat_history.db"
+    client = TestClient(api_server.app)
+
+    response = client.post(
+        "/api/sessions",
+        json={"title": "Bad workspace", "workspace_id": "workspace-missing"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "工作区不存在"
+
+    assert chat_store.get_all_sessions(db_path=str(db_path)) == []
+
+
+def test_delete_session_endpoint_removes_session(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "chat_history.db"
+    history_cls = _history_cls_for_db(db_path)
+    client = TestClient(api_server.app)
+
+    session_id = "session-delete-route"
+    history = history_cls(session_id)
+    history.add_user_message("hello")
+
+    before = chat_store.get_session(session_id, db_path=str(db_path))
+    assert before is not None
+
+    response = client.delete(f"/api/sessions/{session_id}")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert chat_store.get_session(session_id, db_path=str(db_path)) is None
+
+
+def test_delete_session_endpoint_is_idempotent_on_fresh_db(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(api_server.app)
+
+    response = client.delete("/api/sessions/session-missing")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_delete_session_removes_retrieval_feedback(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "chat_history.db"
+    history_cls = _history_cls_for_db(db_path)
+    client = TestClient(api_server.app)
+
+    session_id = "session-delete-feedback"
+    history = history_cls(session_id)
+    history.add_user_message("Need sources", answer_group_id="grp-feedback")
+    history.add_ai_message(
+        "Here are the sources",
+        panel_id="panel-main",
+        answer_group_id="grp-feedback",
+    )
+    chat_store.set_retrieval_feedback(
+        session_id,
+        panel_id="panel-main",
+        answer_group_id="grp-feedback",
+        source={"type": "web", "title": "Doc", "url": "https://example.com/doc"},
+        feedback_value=1,
+        db_path=str(db_path),
+    )
+
+    before = chat_store.list_retrieval_feedback(
+        session_id,
+        panel_id="panel-main",
+        answer_group_id="grp-feedback",
+        db_path=str(db_path),
+    )
+    assert len(before) == 1
+
+    response = client.delete(f"/api/sessions/{session_id}")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert chat_store.get_session(session_id, db_path=str(db_path)) is None
+    assert (
+        chat_store.list_retrieval_feedback(
+            session_id,
+            panel_id="panel-main",
+            answer_group_id="grp-feedback",
+            db_path=str(db_path),
+        )
+        == []
+    )
+
+
+def test_delete_session_endpoint_cascades_to_decks_and_tasks(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "chat_history.db"
+    history_cls = _history_cls_for_db(db_path)
+    task_store = api_server.SQLiteTaskStore(db_path=str(db_path))
+    deck_store = deck_service.SQLiteDeckStore(db_path=str(db_path))
+    in_memory_task = api_server.TaskRecord(
+        task_id="task-in-memory-session-delete",
+        task_type="generate_report",
+        status=api_server.TaskStatus.RUNNING,
+        params={"mode": "demo"},
+        session_id="session-delete-cascade",
+        created_at=10.0,
+        updated_at=12.0,
+        progress=60,
+    )
+
+    monkeypatch.setattr(api_server, "_task_store", task_store)
+    monkeypatch.setattr(api_server, "_deck_store", deck_store)
+    monkeypatch.setattr(api_server, "_tasks", {in_memory_task.task_id: in_memory_task})
+
+    client = TestClient(api_server.app)
+    session_id = "session-delete-cascade"
+    history = history_cls(session_id)
+    history.add_user_message("hello")
+
+    task_store.save(
+        api_server.TaskRecord(
+            task_id="task-persisted-session-delete",
+            task_type="promote_attachment_to_kb",
+            status=api_server.TaskStatus.COMPLETED,
+            params={
+                "attachment_id": "att-brief",
+                "attachment_name": "brief.txt",
+                "vector_store_path": "vector_store_test",
+            },
+            session_id=session_id,
+            created_at=5.0,
+            updated_at=7.0,
+            result="indexed",
+            progress=100,
+        )
+    )
+    deck_store.save(
+        deck_service.DeckSpec(
+            deck_id="deck-session-delete",
+            meta=deck_service.DeckMeta(
+                title="Delete Me",
+                created_at="2026-04-14T10:00:00+0800",
+                session_id=session_id,
+                source_mode="chat_only",
+                generator_panel_id="panel-main",
+            ),
+            generation=deck_service.DeckGeneration(
+                source="chat_only",
+                target_slide_count=1,
+                actual_slide_count=1,
+            ),
+            slides=[
+                deck_service.DeckSlide(
+                    id="slide-1",
+                    type="content",
+                    title="Slide",
+                    layout="title-bullets",
+                    blocks=[
+                        deck_service.DeckBlock(
+                            id="block-1",
+                            kind="paragraph",
+                            role="summary",
+                            content={"text": "Delete me too"},
+                        )
+                    ],
+                )
+            ],
+            source_registry=[],
+        )
+    )
+
+    response = client.delete(f"/api/sessions/{session_id}")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert chat_store.get_session(session_id, db_path=str(db_path)) is None
+    assert task_store.get("task-persisted-session-delete") is None
+    assert task_store.get_attachment_promotion("att-brief", "vector_store_test") is None
+    assert api_server._tasks == {}
+    with pytest.raises(KeyError):
+        deck_store.get("deck-session-delete")
+
+
+def test_delete_session_suppresses_late_task_writeback(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "chat_history.db"
+    history_cls = _history_cls_for_db(db_path)
+    task_store = api_server.SQLiteTaskStore(db_path=str(db_path))
+    late_record = api_server.TaskRecord(
+        task_id="task-late-writeback",
+        task_type="generate_dashboard",
+        status=api_server.TaskStatus.RUNNING,
+        params={"prompt_excerpt": "demo"},
+        session_id="session-delete-late-writeback",
+        created_at=10.0,
+        updated_at=12.0,
+        progress=60,
+    )
+
+    monkeypatch.setattr(api_server, "_task_store", task_store)
+    monkeypatch.setattr(api_server, "_tasks", {late_record.task_id: late_record})
+
+    client = TestClient(api_server.app)
+    history = history_cls("session-delete-late-writeback")
+    history.add_user_message("hello")
+
+    response = client.delete("/api/sessions/session-delete-late-writeback")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert task_store.get(late_record.task_id) is None
+    assert api_server._tasks == {}
+
+    late_record.progress = 90
+    late_record.updated_at = 20.0
+    api_server._persist_task_record(late_record)
+    assert task_store.get(late_record.task_id) is None
+
+    asyncio.run(
+        api_server._set_inline_task_state(
+            late_record,
+            status=api_server.TaskStatus.COMPLETED,
+            progress=100,
+            result="too late",
+        )
+    )
+    assert task_store.get(late_record.task_id) is None
+    assert api_server._tasks == {}
+
+
+def test_delete_session_invalidates_session_and_deck_share_links(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "chat_history.db"
+    history_cls = _history_cls_for_db(db_path)
+    deck_store = deck_service.SQLiteDeckStore(db_path=str(db_path))
+    monkeypatch.setattr(api_server, "_deck_store", deck_store)
+
+    session_id = "session-delete-share-links"
+    history = history_cls(session_id)
+    history.add_user_message("share me")
+
+    deck_store.save(
+        deck_service.DeckSpec(
+            deck_id="deck-delete-share-links",
+            meta=deck_service.DeckMeta(
+                title="Delete Share Links",
+                created_at="2026-04-14T10:00:00+0800",
+                session_id=session_id,
+                source_mode="chat_only",
+                generator_panel_id="panel-main",
+            ),
+            generation=deck_service.DeckGeneration(
+                source="chat_only",
+                target_slide_count=1,
+                actual_slide_count=1,
+            ),
+            slides=[
+                deck_service.DeckSlide(
+                    id="slide-1",
+                    type="content",
+                    title="Slide",
+                    layout="title-bullets",
+                    blocks=[],
+                )
+            ],
+            source_registry=[],
+        )
+    )
+
+    client = TestClient(api_server.app)
+    session_share = client.post(f"/api/sessions/{session_id}/share").json()
+    deck_share = client.post("/api/decks/deck-delete-share-links/share").json()
+
+    deleted = client.delete(f"/api/sessions/{session_id}")
+    assert deleted.status_code == 200
+
+    session_shared_response = client.get(
+        session_share["share_url"].replace("http://testserver", "")
+    )
+    deck_shared_response = client.get(
+        deck_share["share_url"].replace("http://testserver", "")
+    )
+
+    assert session_shared_response.status_code == 404
+    assert deck_shared_response.status_code == 404
+
+
+def test_delete_workspace_moves_sessions_and_reactivates_target(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "chat_history.db"
+    history_cls = _history_cls_for_db(db_path)
+    client = TestClient(api_server.app)
+
+    created = client.post(
+        "/api/workspaces",
+        json={"name": "Operations", "color": "rose", "activate": True},
+    )
+    assert created.status_code == 200
+    workspace = created.json()["workspace"]
+
+    history = history_cls("session-delete-workspace")
+    stored_before = chat_store.get_session(history.session_id, db_path=str(db_path))
+    assert stored_before is not None
+    assert stored_before["workspace_id"] == workspace["workspace_id"]
+
+    deleted = client.delete(f"/api/workspaces/{workspace['workspace_id']}")
+    assert deleted.status_code == 200
+    deleted_payload = deleted.json()
+
+    assert deleted_payload["deleted_workspace_id"] == workspace["workspace_id"]
+    assert deleted_payload["target_workspace_id"] == chat_store.DEFAULT_WORKSPACE_ID
+    assert deleted_payload["target_workspace"]["workspace_id"] == chat_store.DEFAULT_WORKSPACE_ID
+    assert deleted_payload["target_workspace"]["is_active"] is True
+
+    stored_after = chat_store.get_session(history.session_id, db_path=str(db_path))
+    assert stored_after is not None
+    assert stored_after["workspace_id"] == chat_store.DEFAULT_WORKSPACE_ID
+
+    listed = client.get("/api/workspaces")
+    assert listed.status_code == 200
+    workspace_ids = {item["workspace_id"] for item in listed.json()["workspaces"]}
+    assert workspace["workspace_id"] not in workspace_ids
+    assert chat_store.DEFAULT_WORKSPACE_ID in workspace_ids
+
+
+def test_delete_workspace_rejects_default_workspace(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(api_server.app)
+
+    response = client.delete(f"/api/workspaces/{chat_store.DEFAULT_WORKSPACE_ID}")
+    assert response.status_code == 400
+    assert response.json()["detail"] == "默认工作区不能删除"

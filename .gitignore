@@ -40,6 +40,8 @@ vector_store/
 
 # Local runtime data
 chat_history.db
+chat_history.db-shm
+chat_history.db-wal
 
 # Streamlit
 .streamlit/
@@ -47,6 +49,7 @@ chat_history.db
 # IDE
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
@@ -62,6 +65,7 @@ Thumbs.db
 *.tmp
 temp/
 tmp/
+tmp_export_test.pptx
 
 # Frontend build/dependency artifacts
 frontend/node_modules/

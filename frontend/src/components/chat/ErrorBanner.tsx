@@ -1,5 +1,6 @@
 import React, { useState } from 'react'
 import { AlertTriangle, ChevronDown, ChevronUp, RefreshCw, Eraser, Settings } from 'lucide-react'
+import { resolveErrorMessage } from '../../utils/errorMessages'
 
 interface ErrorBannerProps {
   content: string
@@ -20,10 +21,15 @@ export const ErrorBanner: React.FC<ErrorBannerProps> = ({
 }) => {
   const [expanded, setExpanded] = useState(false)
 
-  const showSettingsAction =
-    errorCode === 'AUTH_FAILED' || errorCode === 'MODEL_NOT_FOUND'
-  const showClearAction =
-    errorCode === 'INTERNAL_ERROR' || errorCode === 'TIMEOUT' || !errorCode
+  // 使用错误码映射表解析用户友好的提示文案
+  const resolved = resolveErrorMessage(errorCode, content)
+  const displayTitle = resolved.title
+  const displaySuggestion = suggestion ?? resolved.suggestion
+  const recommendedAction = resolved.action
+
+  const showSettingsAction = recommendedAction === 'settings'
+  const showClearAction = recommendedAction === 'clear' || (!errorCode && recommendedAction !== 'none')
+  const showRetry = recommendedAction === 'retry' || (!errorCode && !!onRetry)
 
   return (
     <div className="flex justify-start mb-4 animate-fade-in">
@@ -32,16 +38,16 @@ export const ErrorBanner: React.FC<ErrorBannerProps> = ({
         <div className="flex items-start gap-2.5">
           <AlertTriangle size={15} className="text-accent-red shrink-0 mt-0.5" />
           <div className="flex-1 min-w-0">
-            <p className="text-sm text-accent-red font-medium leading-snug">{content}</p>
-            {suggestion && (
-              <p className="text-xs text-text-secondary mt-1 leading-relaxed">{suggestion}</p>
+            <p className="text-sm text-accent-red font-medium leading-snug">{displayTitle}</p>
+            {displaySuggestion && (
+              <p className="text-xs text-text-secondary mt-1 leading-relaxed">{displaySuggestion}</p>
             )}
           </div>
         </div>
 
         {/* Action buttons */}
         <div className="flex items-center gap-2 mt-3 flex-wrap">
-          {onRetry && (
+          {showRetry && onRetry && (
             <button
               onClick={onRetry}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs bg-accent-red/10 text-accent-red hover:bg-accent-red/20 transition-colors border border-accent-red/20"
@@ -79,10 +85,13 @@ export const ErrorBanner: React.FC<ErrorBannerProps> = ({
           )}
         </div>
 
-        {/* Collapsible technical details */}
+        {/* Collapsible technical details — 展示原始技术错误信息 */}
         {expanded && errorCode && (
-          <div className="mt-2.5 px-3 py-2 bg-bg-tertiary rounded-lg border border-bg-border">
+          <div className="mt-2.5 px-3 py-2 bg-bg-tertiary rounded-lg border border-bg-border space-y-1">
             <p className="text-[10px] text-text-secondary font-mono">错误码: {errorCode}</p>
+            {content !== displayTitle && (
+              <p className="text-[10px] text-text-muted font-mono break-all">详情: {content}</p>
+            )}
           </div>
         )}
       </div>

@@ -38,10 +38,11 @@ ollama list
 ### 3. 启动应用（1 分钟）
 
 ```bash
-streamlit run app.py
+python -m uvicorn api_server:app --host 0.0.0.0 --port 8000
+cd frontend && npm run dev -- --host 0.0.0.0 --port 3000
 ```
 
-浏览器自动打开 `http://localhost:8501`
+浏览器打开 `http://localhost:3000`
 
 ### 4. 配置 Agent 模式（1 分钟）
 
@@ -114,7 +115,7 @@ A: 第一次启动需要加载 embedding 模型（约 1GB），后续会快很�
 
 ### Q: 如何查看详细日志？
 
-A: 查看运行 `streamlit run app.py` 的终端窗口，会显示：
+A: 查看运行 `python -m uvicorn api_server:app --host 0.0.0.0 --port 8000` 的终端窗口，会显示：
 - `[LangGraph] 工具选择: 1`
 - `[LangGraph] 执行工具: query_knowledge`
 - `[LangGraph] 生成回答: ...`
@@ -133,7 +134,7 @@ A:
 ## 下一步
 
 - 📖 阅读完整文档：[LANGGRAPH_GUIDE.md](LANGGRAPH_GUIDE.md)
-- 🧪 运行测试：`python test_langgraph_agent.py`
+- 🧪 运行测试：`python scripts/manual_checks/langgraph_agent_smoke.py`
 - 📁 上传文档，构建你的知识库
 - 🎯 探索更多功能
 
@@ -146,3 +147,11 @@ A:
 ---
 
 **享受快速、稳定的小模型 Agent 体验！** 🚀
+> Update (2026-04-12)
+>
+> - The old `streamlit run app.py` flow is deprecated. The current app uses `FastAPI + React`.
+> - Start the backend with `python -m uvicorn api_server:app --host 0.0.0.0 --port 8000`.
+> - Start the frontend with `cd frontend && npm run dev -- --host 0.0.0.0 --port 3000`.
+> - Manual smoke scripts were moved from the repo root to `scripts/manual_checks/`.
+> - Replace old commands such as `python test_langgraph_agent.py` with
+>   `python scripts/manual_checks/langgraph_agent_smoke.py`.

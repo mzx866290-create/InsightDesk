@@ -1,6 +1,4 @@
-import React, { useEffect, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import React, { Suspense, useEffect, useState } from 'react'
 import { ChevronLeft, ChevronRight, Download, ExternalLink, Copy, Check, X } from 'lucide-react'
 
 interface ReportPreviewModalProps {
@@ -10,6 +8,8 @@ interface ReportPreviewModalProps {
   title: string
   sessionId: string
 }
+
+const ReportMarkdown = React.lazy(() => import('./ReportMarkdown'))
 
 function parseSlides(markdown: string): string[] {
   // Split on Slidev slide separator (--- on its own line)
@@ -80,7 +80,7 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `${title.slice(0, 40) || 'report'}.pptx`
+      a.download = `${title.slice(0, 40) || '报告'}.pptx`
       a.click()
       URL.revokeObjectURL(url)
     } catch (e) {
@@ -95,7 +95,7 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `${title.slice(0, 40) || 'report'}.md`
+    a.download = `${title.slice(0, 40) || '报告'}.md`
     a.click()
     URL.revokeObjectURL(url)
   }
@@ -166,9 +166,15 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
           <div className="flex-1 min-h-0 rounded-2xl border border-bg-border bg-bg-secondary shadow-xl">
             <div className="h-full overflow-y-auto p-6 sm:p-8">
               <div className="prose prose-invert prose-sm max-w-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {slides[currentSlide] ?? ''}
-              </ReactMarkdown>
+                <Suspense
+                  fallback={
+                    <pre className="whitespace-pre-wrap break-words text-sm leading-6 text-text-primary">
+                      {slides[currentSlide] ?? ''}
+                    </pre>
+                  }
+                >
+                  <ReportMarkdown content={slides[currentSlide] ?? ''} />
+                </Suspense>
               </div>
             </div>
           </div>

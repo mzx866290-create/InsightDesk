@@ -1,0 +1,55 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    env_file:
+      - .env
+    environment:
+      SERVER_HOST: 0.0.0.0
+      SERVER_PORT: 8000
+      VECTOR_STORE_PATH: /app/runtime/vector_store
+      OLLAMA_BASE_URL: ${DOCKER_OLLAMA_BASE_URL:-http://ollama:11434}
+    volumes:
+      - ./runtime:/app/runtime
+    command: >
+      sh -lc "mkdir -p /app/runtime/vector_store
+      && touch /app/runtime/chat_history.db
+      && ln -sf /app/runtime/chat_history.db /app/chat_history.db
+      && uvicorn api_server:app --host 0.0.0.0 --port 8000"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health').read()\"",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    profiles: ["init"]
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3.5-2B:latest}
+    entrypoint: ["/bin/sh", "-lc"]
+    command: >
+      until ollama list >/dev/null 2>&1; do sleep 2; done;
+      ollama pull "$${OLLAMA_MODEL}"
+    restart: "no"
+
+volumes:
+  ollama_data:

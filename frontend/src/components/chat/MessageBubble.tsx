@@ -1,53 +1,146 @@
-import React, { useRef } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import { Copy, Check, Download, Paperclip } from 'lucide-react'
+import React, { Suspense } from 'react'
+import {
+  AlertCircle,
+  ArrowUpCircle,
+  Bookmark,
+  BookmarkCheck,
+  Check,
+  Copy,
+  Download,
+  Eye,
+  GitBranch,
+  Loader2,
+  Paperclip,
+  Pencil,
+  Pin,
+  Quote,
+  RotateCcw,
+  Sparkles,
+  ThumbsDown,
+  ThumbsUp,
+} from 'lucide-react'
 import type { PanelMessage } from '../../stores/chatStore'
 import { CitationPanel } from './CitationPanel'
 import { ErrorBanner } from './ErrorBanner'
 import { IntentCardRenderer, stripIntentBlocks } from '../cards/IntentCardRenderer'
 import { TaskProgressCard } from '../cards/TaskProgressCard'
-import { MarkdownTableChart } from '../charts/MarkdownTableChart'
 import { useChatStore } from '../../stores/chatStore'
-import { clearSessionMessages } from '../../api/client'
+import {
+  clearSessionMessages,
+  createBookmark,
+  deleteBookmark,
+  pinSessionMemory,
+  setMessageFeedback,
+} from '../../api/client'
+import type { ChatFile } from '../../api/client'
+import { AttachmentPreviewModal } from './AttachmentPreviewModal'
 
 interface MessageBubbleProps {
   message: PanelMessage
   panelId?: string
+  isPrimaryPanel?: boolean
+  interactionLocked?: boolean
+  onPromote?: (message: PanelMessage) => Promise<void>
+  onRerun?: (message: PanelMessage) => Promise<void>
+  canRerun?: boolean
+  onContinue?: (message: PanelMessage) => Promise<void>
+  canContinue?: boolean
+  // 对话分叉：从该消息之前的历史创建新会话
+  onFork?: (message: PanelMessage) => void
 }
 
-const CopyButton: React.FC<{ text: string }> = ({ text }) => {
-  const [copied, setCopied] = React.useState(false)
+const MessageMarkdown = React.lazy(() => import('./MessageMarkdown'))
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(text).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    })
-  }
+const formatMessageTimestamp = (timestamp?: number): string => {
+  if (!timestamp) return ''
+  const date = new Date(timestamp * 1000)
+  if (Number.isNaN(date.getTime())) return ''
 
-  return (
-    <button
-      onClick={handleCopy}
-      className="absolute top-2 right-2 p-1.5 rounded-md bg-bg-tertiary/80 text-text-secondary hover:text-text-primary opacity-0 group-hover:opacity-100 transition-opacity"
-      title="复制代码"
-    >
-      {copied ? <Check size={12} className="text-accent-green" /> : <Copy size={12} />}
-    </button>
-  )
+  const now = new Date()
+  const isSameDay =
+    now.getFullYear() === date.getFullYear() &&
+    now.getMonth() === date.getMonth() &&
+    now.getDate() === date.getDate()
+
+  const formatter = new Intl.DateTimeFormat('zh-CN', {
+    month: isSameDay ? undefined : '2-digit',
+    day: isSameDay ? undefined : '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+  return formatter.format(date)
 }
 
-export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, panelId }) => {
+export const MessageBubble: React.FC<MessageBubbleProps> = ({
+  message,
+  panelId,
+  isPrimaryPanel = false,
+  interactionLocked = false,
+  onPromote,
+  onRerun,
+  canRerun = false,
+  onContinue,
+  canContinue = false,
+  onFork,
+}) => {
   const isUser = message.role === 'user'
   const isError = message.role === 'error'
+  const [promoting, setPromoting] = React.useState(false)
+  const [promoted, setPromoted] = React.useState(false)
+  const [rerunning, setRerunning] = React.useState(false)
+  const [continuing, setContinuing] = React.useState(false)
+  const [copied, setCopied] = React.useState(false)
+  const [bookmarkState, setBookmarkState] = React.useState<'idle' | 'saving' | 'error'>('idle')
+  const [memoryPinState, setMemoryPinState] = React.useState<
+    'idle' | 'saving' | 'created' | 'duplicate' | 'error'
+  >('idle')
+  const [feedbackState, setFeedbackState] = React.useState<'idle' | 'saving' | 'error'>('idle')
+  const [feedbackPendingValue, setFeedbackPendingValue] = React.useState<1 | -1 | 0 | null>(null)
+  const [previewFile, setPreviewFile] = React.useState<ChatFile | null>(null)
 
-  // Capture raw table data for chart rendering
-  const tableHeadersRef = useRef<string[]>([])
-  const tableRowsRef = useRef<(string | number)[][]>([])
+  const {
+    currentSessionId,
+    clearMessages,
+    setSettingsOpen,
+    updateSession,
+    pushComposerSeed,
+    bookmarks,
+    addBookmark,
+    removeBookmark,
+    sessions,
+    updateMessage,
+  } = useChatStore()
+  const effectivePanelId = panelId ?? message.panelId ?? ''
+  const bookmarkEntry = bookmarks.find((bookmark) => {
+    if ((bookmark.source ?? 'remote') === 'local' && bookmark.id === message.id) {
+      return true
+    }
 
-  const { currentSessionId, clearMessages, setSettingsOpen, updateSession } = useChatStore()
+    if (
+      currentSessionId &&
+      bookmark.sessionId === currentSessionId &&
+      typeof bookmark.messageId === 'number' &&
+      typeof message.serverMessageId === 'number' &&
+      bookmark.messageId === message.serverMessageId
+    ) {
+      return true
+    }
+
+    if (
+      currentSessionId &&
+      bookmark.sessionId === currentSessionId &&
+      message.answerGroupId &&
+      bookmark.answerGroupId === message.answerGroupId &&
+      bookmark.role === message.role
+    ) {
+      return message.role === 'user' || bookmark.panelId === effectivePanelId
+    }
+
+    return false
+  })
+  const isBookmarked = Boolean(bookmarkEntry)
+  const messageTimeLabel = formatMessageTimestamp(message.timestamp)
 
   const handleClearContext = async () => {
     if (currentSessionId) {
@@ -72,12 +165,40 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, panelId }
     )
   }
 
+  const handleEditMessage = () => {
+    pushComposerSeed({
+      text: message.content,
+      images: message.images ?? [],
+      files: message.files ?? [],
+      editAnswerGroupId: message.answerGroupId ?? null,
+    })
+  }
+
   if (isUser) {
     return (
-      <div className="flex justify-end mb-4 animate-fade-in">
-        <div className="max-w-[85%] bg-accent-blue/20 border border-accent-blue/30 text-text-primary px-4 py-3 rounded-2xl rounded-tr-sm text-sm leading-relaxed">
+      <div
+        className="mb-4 flex justify-end animate-fade-in group/user"
+        data-role={message.role}
+        data-panel-id={panelId}
+        data-answer-group-id={message.answerGroupId}
+        data-message-id={message.id}
+        data-server-message-id={message.serverMessageId}
+      >
+        <div className="flex flex-col items-end gap-1 max-w-[85%]">
+        {!interactionLocked && (
+          <button
+            type="button"
+            onClick={handleEditMessage}
+            className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-text-secondary/40 opacity-0 group-hover/user:opacity-100 transition-opacity hover:text-text-secondary"
+            title="编辑并重新发送"
+          >
+            <Pencil size={10} />
+            编辑
+          </button>
+        )}
+        <div className="rounded-2xl rounded-tr-sm border border-accent-blue/30 bg-accent-blue/20 px-4 py-3 text-sm leading-relaxed text-text-primary w-full break-words">
           {message.images && message.images.length > 0 && (
-            <div className="mb-3 grid grid-cols-2 gap-2">
+            <div className="mb-3 grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))' }}>
               {message.images.map((image, index) => (
                 <a
                   key={`${image.name}-${index}`}
@@ -98,192 +219,463 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({ message, panelId }
           {message.files && message.files.length > 0 && (
             <div className="mb-3 flex flex-wrap gap-2">
               {message.files.map((file, index) => (
-                <a
+                <div
                   key={`${file.name}-${index}`}
-                  href={file.data_url}
-                  download={file.name}
-                  className="inline-flex max-w-full items-center gap-2 rounded-xl border border-accent-blue/25 bg-white/5 px-3 py-2 text-xs text-text-primary transition-colors hover:bg-white/10"
+                  className="inline-flex max-w-full items-center gap-2 rounded-xl border border-accent-blue/25 bg-white/5 px-3 py-2 text-xs text-text-primary"
                   title={file.name}
                 >
                   <Paperclip size={12} className="shrink-0" />
-                  <span className="max-w-[180px] truncate">{file.name}</span>
-                  <Download size={12} className="shrink-0 opacity-70" />
-                </a>
+                  <span className="max-w-[160px] truncate">{file.name}</span>
+                  {file.extracted_text && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewFile(file)}
+                        className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-text-secondary transition-colors hover:bg-white/10 hover:text-text-primary"
+                        title="预览附件内容"
+                      >
+                        <Eye size={11} className="shrink-0" />
+                        预览
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const rawText = (file.extracted_text ?? '').trim()
+                          if (!rawText) return
+                          const clipped = rawText.length > 500
+                            ? `${rawText.slice(0, 500).trim()}\n...[以下内容已截断]`
+                            : rawText
+                          pushComposerSeed({ text: `请把以下来自"${file.name}"的片段作为上下文：\n"""\n${clipped}\n"""` })
+                        }}
+                        className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-text-secondary transition-colors hover:bg-white/10 hover:text-text-primary"
+                        title="引用此附件内容到输入框"
+                      >
+                        <Quote size={11} className="shrink-0" />
+                        引用
+                      </button>
+                    </>
+                  )}
+                  {file.data_url && (
+                    <a
+                      href={file.data_url}
+                      download={file.name}
+                      className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-text-secondary transition-colors hover:bg-white/10 hover:text-text-primary"
+                      title={`下载 ${file.name}`}
+                    >
+                      <Download size={11} className="shrink-0 opacity-70" />
+                      下载
+                    </a>
+                  )}
+                </div>
               ))}
             </div>
           )}
           {message.content && <div>{message.content}</div>}
+          {previewFile && (
+            <AttachmentPreviewModal file={previewFile} onClose={() => setPreviewFile(null)} />
+          )}
+        </div>
+        {messageTimeLabel && (
+          <div className="text-[10px] text-text-secondary/55">{messageTimeLabel}</div>
+        )}
         </div>
       </div>
     )
   }
 
-  void panelId
+  const canPromote =
+    Boolean(onPromote) &&
+    Boolean(message.answerGroupId) &&
+    !interactionLocked &&
+    !message.streaming &&
+    !isPrimaryPanel
+
+  const canRunAgain =
+    Boolean(onRerun) &&
+    canRerun &&
+    Boolean(message.answerGroupId) &&
+    !interactionLocked &&
+    !message.streaming
+
+  const canContinueGeneration =
+    Boolean(onContinue) &&
+    canContinue &&
+    Boolean(message.answerGroupId) &&
+    !interactionLocked &&
+    !message.streaming
+
+  const canPinToMemory =
+    Boolean(currentSessionId) &&
+    !interactionLocked &&
+    !message.streaming &&
+    Boolean(stripIntentBlocks(message.content).trim())
+
+  const canGiveFeedback =
+    Boolean(currentSessionId) &&
+    !interactionLocked &&
+    !message.streaming &&
+    Boolean(message.serverMessageId || message.answerGroupId)
+
+  const canBookmark =
+    Boolean(currentSessionId) &&
+    !interactionLocked &&
+    !message.streaming &&
+    Boolean(stripIntentBlocks(message.content).trim()) &&
+    Boolean(message.serverMessageId || message.answerGroupId || bookmarkEntry)
+
+  const handlePromote = async () => {
+    if (!onPromote || !canPromote) return
+    setPromoting(true)
+    try {
+      await onPromote(message)
+      setPromoted(true)
+      window.setTimeout(() => setPromoted(false), 2000)
+    } finally {
+      setPromoting(false)
+    }
+  }
+
+  const handleRerun = async () => {
+    if (!onRerun || !canRunAgain) return
+    setRerunning(true)
+    try {
+      await onRerun(message)
+    } finally {
+      setRerunning(false)
+    }
+  }
+
+  const handleContinue = async () => {
+    if (!onContinue || !canContinueGeneration) return
+    setContinuing(true)
+    try {
+      await onContinue(message)
+    } finally {
+      setContinuing(false)
+    }
+  }
+
+  const handleBookmark = async () => {
+    if (!canBookmark) return
+
+    if (bookmarkEntry) {
+      setBookmarkState('saving')
+      try {
+        if ((bookmarkEntry.source ?? 'remote') === 'remote') {
+          await deleteBookmark(bookmarkEntry.id)
+        }
+        removeBookmark(bookmarkEntry.id)
+        setBookmarkState('idle')
+      } catch {
+        setBookmarkState('error')
+        window.setTimeout(() => setBookmarkState('idle'), 1800)
+      }
+      return
+    }
+
+    const session = sessions.find((s) => s.session_id === currentSessionId)
+    setBookmarkState('saving')
+    try {
+      const savedBookmark = await createBookmark({
+        session_id: currentSessionId ?? '',
+        role: message.role as 'user' | 'assistant',
+        message_id: message.serverMessageId,
+        panel_id: effectivePanelId,
+        answer_group_id: message.answerGroupId ?? '',
+        content: stripIntentBlocks(message.content),
+        model_id: message.modelId,
+        session_title: session?.title ?? '未命名对话',
+      })
+      addBookmark(savedBookmark)
+      setBookmarkState('idle')
+    } catch {
+      setBookmarkState('error')
+      window.setTimeout(() => setBookmarkState('idle'), 1800)
+    }
+  }
+
+  const handleCopy = () => {
+    const text = stripIntentBlocks(message.content)
+    if (!text.trim()) return
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+
+  const handleFeedback = async (value: 1 | -1) => {
+    if (!currentSessionId || !canGiveFeedback) return
+    const nextValue = message.feedbackValue === value ? 0 : value
+    setFeedbackState('saving')
+    setFeedbackPendingValue(value)
+    try {
+      const result = await setMessageFeedback(currentSessionId, {
+        value: nextValue,
+        message_id: message.serverMessageId,
+        panel_id: message.panelId ?? panelId ?? '',
+        answer_group_id: message.answerGroupId ?? '',
+      })
+      updateMessage(panelId ?? message.panelId ?? '', message.id, {
+        serverMessageId: result.message_id,
+        panelId: result.panel_id,
+        answerGroupId: result.answer_group_id,
+        feedbackValue: result.feedback_value,
+      })
+      setFeedbackState('idle')
+    } catch {
+      setFeedbackState('error')
+      window.setTimeout(() => setFeedbackState('idle'), 1800)
+    } finally {
+      setFeedbackPendingValue(null)
+    }
+  }
+
+  const handlePinToMemory = async () => {
+    if (!currentSessionId || !canPinToMemory) return
+    setMemoryPinState('saving')
+    try {
+      const result = await pinSessionMemory(currentSessionId, {
+        content: stripIntentBlocks(message.content),
+        kind: 'fact',
+      })
+      updateSession(currentSessionId, {
+        updated_at: Date.now() / 1000,
+      })
+      setMemoryPinState(result.created ? 'created' : 'duplicate')
+    } catch {
+      setMemoryPinState('error')
+    } finally {
+      window.setTimeout(() => setMemoryPinState('idle'), 2200)
+    }
+  }
+
+  const pinFeedbackVisible = memoryPinState !== 'idle'
+  let pinButtonLabel = '固定到记忆'
+  if (memoryPinState === 'created') pinButtonLabel = '已固定到记忆'
+  else if (memoryPinState === 'duplicate') pinButtonLabel = '记忆已存在'
+  else if (memoryPinState === 'error') pinButtonLabel = '固定失败'
 
   return (
-    <div className="flex justify-start mb-4 animate-fade-in">
-      <div className={`max-w-[95%] text-sm ${message.streaming ? 'streaming-cursor' : ''}`}>
-        {message.taskId && (
-          <TaskProgressCard
-            taskId={message.taskId}
-            taskType={message.taskType}
+    <div
+      className="mb-4 flex justify-start animate-fade-in"
+      data-role={message.role}
+      data-panel-id={panelId}
+      data-answer-group-id={message.answerGroupId}
+      data-message-id={message.id}
+      data-server-message-id={message.serverMessageId}
+    >
+      <div className={`max-w-[95%] min-w-0 text-sm break-words ${message.streaming ? 'streaming-cursor' : ''}`}>
+        {(canPromote || promoted || canRunAgain || canContinueGeneration || canPinToMemory || pinFeedbackVisible) && (
+          <div className="mb-1 flex items-center gap-2 text-[10px] text-text-secondary">
+            {(canPromote || promoted) && (
+              <button
+                type="button"
+                onClick={() => {
+                  void handlePromote()
+                }}
+                disabled={promoting}
+                className="inline-flex items-center gap-1 rounded-md border border-bg-border px-2 py-1 transition-colors hover:border-accent-blue/40 hover:text-text-primary disabled:opacity-50"
+              >
+                {promoting ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : promoted ? (
+                  <Check size={11} className="text-accent-green" />
+                ) : (
+                  <ArrowUpCircle size={11} />
+                )}
+                {promoted ? '已设为主答案' : '设为主答案'}
+              </button>
+            )}
+            {(canPinToMemory || pinFeedbackVisible) && (
+              <button
+                type="button"
+                onClick={() => {
+                  void handlePinToMemory()
+                }}
+                disabled={memoryPinState === 'saving'}
+                className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 transition-colors disabled:opacity-50 ${
+                  memoryPinState === 'error'
+                    ? 'border-accent-red/40 text-accent-red hover:border-accent-red/60'
+                    : 'border-bg-border hover:border-accent-blue/40 hover:text-text-primary'
+                }`}
+              >
+                {memoryPinState === 'saving' ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : memoryPinState === 'created' || memoryPinState === 'duplicate' ? (
+                  <Check size={11} className="text-accent-green" />
+                ) : memoryPinState === 'error' ? (
+                  <AlertCircle size={11} />
+                ) : (
+                  <Pin size={11} />
+                )}
+                {pinButtonLabel}
+              </button>
+            )}
+            {canRunAgain && (
+              <button
+                type="button"
+                onClick={() => {
+                  void handleRerun()
+                }}
+                disabled={rerunning}
+                className="inline-flex items-center gap-1 rounded-md border border-bg-border px-2 py-1 transition-colors hover:border-accent-blue/40 hover:text-text-primary disabled:opacity-50"
+              >
+                {rerunning ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : (
+                  <RotateCcw size={11} />
+                )}
+                仅重跑此模型
+              </button>
+            )}
+            {canContinueGeneration && (
+              <button
+                type="button"
+                onClick={() => {
+                  void handleContinue()
+                }}
+                disabled={continuing}
+                className="inline-flex items-center gap-1 rounded-md border border-bg-border px-2 py-1 transition-colors hover:border-accent-blue/40 hover:text-text-primary disabled:opacity-50"
+                title="继续生成剩余内容"
+              >
+                {continuing ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : (
+                  <Sparkles size={11} />
+                )}
+                继续生成
+              </button>
+            )}
+            {message.modelId && (
+              <span className="truncate text-text-secondary/70">{message.modelId}</span>
+            )}
+          </div>
+        )}
+        {message.taskId && <TaskProgressCard taskId={message.taskId} taskType={message.taskType} />}
+        <IntentCardRenderer content={message.content} streaming={message.streaming} />
+        <Suspense
+          fallback={
+            <div className="whitespace-pre-wrap leading-relaxed text-text-primary">
+              {stripIntentBlocks(message.content)}
+            </div>
+          }
+        >
+          <MessageMarkdown content={stripIntentBlocks(message.content)} />
+        </Suspense>
+        {message.sources && message.sources.length > 0 && (
+          <CitationPanel
+            sources={message.sources}
+            panelId={panelId}
+            answerGroupId={message.answerGroupId}
+            streaming={message.streaming}
           />
         )}
-        <IntentCardRenderer content={message.content} streaming={message.streaming} />
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={{
-            code({ node, className, children, ...props }) {
-              const match = /language-(\w+)/.exec(className || '')
-              const codeText = String(children).replace(/\n$/, '')
-              const isBlock = codeText.includes('\n') || match
-
-              if (isBlock) {
-                return (
-                  <div className="relative group my-3 rounded-lg overflow-hidden border border-bg-border">
-                    <div className="flex items-center justify-between bg-bg-tertiary px-4 py-2 text-xs text-text-secondary">
-                      <span>{match ? match[1] : 'code'}</span>
-                      <CopyButton text={codeText} />
-                    </div>
-                    <SyntaxHighlighter
-                      style={oneDark}
-                      language={match ? match[1] : 'text'}
-                      PreTag="div"
-                      customStyle={{
-                        margin: 0,
-                        borderRadius: 0,
-                        background: '#12121a',
-                        fontSize: '0.8rem',
-                        padding: '1rem',
-                      }}
-                    >
-                      {codeText}
-                    </SyntaxHighlighter>
-                  </div>
-                )
-              }
-
-              return (
-                <code
-                  className="bg-bg-tertiary border border-bg-border text-accent-blue px-1.5 py-0.5 rounded text-[0.8em] font-mono"
-                  {...props}
+        {!message.streaming && stripIntentBlocks(message.content).trim() && (
+          <div className="mt-1.5 flex items-center gap-1">
+            {canGiveFeedback && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleFeedback(1)
+                  }}
+                  disabled={feedbackState === 'saving'}
+                  className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] transition-colors ${
+                    message.feedbackValue === 1
+                      ? 'text-accent-green'
+                      : 'text-text-secondary/50 hover:bg-bg-hover hover:text-text-secondary'
+                  }`}
+                  title="喜欢这条回复"
                 >
-                  {children}
-                </code>
-              )
-            },
-            p({ children }) {
-              return <p className="mb-3 last:mb-0 leading-relaxed text-text-primary">{children}</p>
-            },
-            h1({ children }) {
-              return <h1 className="text-lg font-bold text-text-primary mt-4 mb-2">{children}</h1>
-            },
-            h2({ children }) {
-              return <h2 className="text-base font-semibold text-text-primary mt-3 mb-2">{children}</h2>
-            },
-            h3({ children }) {
-              return <h3 className="text-sm font-semibold text-text-primary mt-2 mb-1.5">{children}</h3>
-            },
-            ul({ children }) {
-              return <ul className="list-disc list-inside space-y-1 mb-3 text-text-primary ml-2">{children}</ul>
-            },
-            ol({ children }) {
-              return <ol className="list-decimal list-inside space-y-1 mb-3 text-text-primary ml-2">{children}</ol>
-            },
-            li({ children }) {
-              return <li className="leading-relaxed">{children}</li>
-            },
-            blockquote({ children }) {
-              return (
-                <blockquote className="border-l-2 border-accent-blue/50 pl-4 my-3 text-text-secondary italic">
-                  {children}
-                </blockquote>
-              )
-            },
-            a({ href, children }) {
-              const isInternalAnchor = typeof href === 'string' && href.startsWith('#')
-
-              if (isInternalAnchor) {
-                return (
-                  <a
-                    href={href}
-                    className="text-accent-blue hover:text-accent-blue-hover underline underline-offset-2 transition-colors"
-                  >
-                    {children}
-                  </a>
-                )
-              }
-
-              return (
-                <a
-                  href={href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-accent-blue hover:text-accent-blue-hover underline underline-offset-2 transition-colors"
+                  {feedbackState === 'saving' && feedbackPendingValue === 1 ? (
+                    <Loader2 size={11} className="animate-spin" />
+                  ) : (
+                    <ThumbsUp size={11} />
+                  )}
+                  喜欢
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void handleFeedback(-1)
+                  }}
+                  disabled={feedbackState === 'saving'}
+                  className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] transition-colors ${
+                    message.feedbackValue === -1
+                      ? 'text-accent-red'
+                      : 'text-text-secondary/50 hover:bg-bg-hover hover:text-text-secondary'
+                  }`}
+                  title="不喜欢这条回复"
                 >
-                  {children}
-                </a>
-              )
-            },
-            table({ children }) {
-              const headers = tableHeadersRef.current
-              const rows = tableRowsRef.current
-              const tableEl = (
-                <table className="text-xs border-collapse w-full">{children}</table>
-              )
-              // Reset refs for next table
-              tableHeadersRef.current = []
-              tableRowsRef.current = []
-              return (
-                <MarkdownTableChart rawHeaders={headers} rawRows={rows}>
-                  {tableEl}
-                </MarkdownTableChart>
-              )
-            },
-            th({ children }) {
-              tableHeadersRef.current = [...tableHeadersRef.current, String(children ?? '')]
-              return (
-                <th className="border border-bg-border bg-bg-tertiary px-3 py-1.5 text-left text-text-primary font-medium">
-                  {children}
-                </th>
-              )
-            },
-            td({ children }) {
-              return (
-                <td className="border border-bg-border px-3 py-1.5 text-text-secondary">
-                  {children}
-                </td>
-              )
-            },
-            tr({ children, ...props }) {
-              // Capture row data for chart detection — only body rows
-              const isHeader = (props as Record<string, unknown>)['data-header']
-              if (!isHeader) {
-                const cells: (string | number)[] = []
-                React.Children.forEach(children, (child) => {
-                  if (React.isValidElement(child)) {
-                    const text = String((child.props as Record<string, unknown>).children ?? '')
-                    cells.push(text)
-                  }
-                })
-                if (cells.length > 0) {
-                  tableRowsRef.current = [...tableRowsRef.current, cells]
-                }
-              }
-              return <tr>{children}</tr>
-            },
-            hr() {
-              return <hr className="border-bg-border my-4" />
-            },
-            strong({ children }) {
-              return <strong className="font-semibold text-text-primary">{children}</strong>
-            },
-          }}
-        >
-          {stripIntentBlocks(message.content)}
-        </ReactMarkdown>
-        {message.sources && message.sources.length > 0 && (
-          <CitationPanel sources={message.sources} streaming={message.streaming} />
+                  {feedbackState === 'saving' && feedbackPendingValue === -1 ? (
+                    <Loader2 size={11} className="animate-spin" />
+                  ) : (
+                    <ThumbsDown size={11} />
+                  )}
+                  不喜欢
+                </button>
+              </>
+            )}
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-secondary/50 transition-colors hover:bg-bg-hover hover:text-text-secondary"
+              title="复制全文"
+            >
+              {copied ? (
+                <Check size={11} className="text-accent-green" />
+              ) : (
+                <Copy size={11} />
+              )}
+              {copied ? '已复制' : '复制'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void handleBookmark()
+              }}
+              disabled={!canBookmark || bookmarkState === 'saving'}
+              className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] transition-colors ${
+                isBookmarked
+                  ? 'text-amber-400 hover:text-amber-300'
+                  : 'text-text-secondary/50 hover:bg-bg-hover hover:text-text-secondary'
+              } disabled:opacity-40`}
+              title={isBookmarked ? '取消书签' : '添加书签'}
+            >
+              {bookmarkState === 'saving' ? (
+                <Loader2 size={11} className="animate-spin" />
+              ) : isBookmarked ? (
+                <BookmarkCheck size={11} />
+              ) : (
+                <Bookmark size={11} />
+              )}
+              {bookmarkState === 'saving' ? '保存中' : isBookmarked ? '已收藏' : '收藏'}
+            </button>
+            {onFork && !interactionLocked && (
+              <button
+                type="button"
+                onClick={() => onFork(message)}
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-secondary/50 transition-colors hover:bg-bg-hover hover:text-text-secondary"
+                title="从此处分叉新对话"
+              >
+                <GitBranch size={11} />
+                分叉
+              </button>
+            )}
+            {feedbackState === 'error' && (
+              <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-accent-red/15 text-accent-red ring-1 ring-accent-red/30 animate-pulse">
+                ✕ 反馈保存失败
+              </span>
+            )}
+            {bookmarkState === 'error' && (
+              <span className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium bg-accent-red/15 text-accent-red ring-1 ring-accent-red/30 animate-pulse">
+                ✕ 收藏失败
+              </span>
+            )}
+          </div>
+        )}
+        {messageTimeLabel && (
+          <div className="mt-1 text-[10px] text-text-secondary/45">{messageTimeLabel}</div>
         )}
       </div>
     </div>

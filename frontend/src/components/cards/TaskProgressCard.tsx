@@ -1,12 +1,15 @@
 import React, { useEffect } from 'react'
 import { Loader2, CheckCircle, XCircle, Clock, RefreshCw } from 'lucide-react'
 import { useTaskStore, createAndTrackTask } from '../../stores/taskStore'
-import type { TaskStatus } from '../../stores/taskStore'
+import { getTask } from '../../api/client'
+import { useChatStore } from '../../stores/chatStore'
+import type { TaskStatus } from '../../api/client'
 
 const TASK_TYPE_LABELS: Record<string, string> = {
-  analyze_knowledge_base: '分析知识库',
-  generate_report: '生成报告',
-  upload_documents: '导入知识库',
+  analyze_knowledge_base: '知识分析',
+  generate_dashboard: '仪表盘生成',
+  generate_report: '报告生成',
+  upload_documents: '文档导入',
 }
 
 const STATUS_CONFIG: Record<
@@ -41,7 +44,6 @@ const STATUS_CONFIG: Record<
 
 interface TaskProgressCardProps {
   taskId: string
-  /** Initial task type label, shown before first poll */
   taskType?: string
   sessionId?: string
 }
@@ -53,13 +55,11 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
 }) => {
   const task = useTaskStore((s) => s.tasks[taskId])
   const startPolling = useTaskStore((s) => s.startPolling)
+  const currentSessionId = useChatStore((s) => s.currentSessionId)
 
-  // If the task is not yet in the store (e.g. message loaded from history),
-  // attempt a single fetch to populate it and start polling if still active
   useEffect(() => {
     if (!task) {
-      fetch(`/api/tasks/${taskId}`)
-        .then((r) => r.json())
+      getTask(taskId)
         .then((data) => {
           useTaskStore.getState().addTask(data)
           if (data.status === 'pending' || data.status === 'running') {
@@ -70,41 +70,44 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
     }
   }, [taskId, task, startPolling])
 
-  const displayType = task?.task_type ?? taskType ?? 'task'
+  const displayType = task?.task_type ?? taskType ?? '任务'
   const label = TASK_TYPE_LABELS[displayType] ?? displayType
   const status: TaskStatus = task?.status ?? 'pending'
   const progress = task?.progress ?? 0
   const cfg = STATUS_CONFIG[status]
+  const effectiveSessionId = sessionId ?? task?.session_id ?? currentSessionId ?? undefined
+  const restartInterrupted =
+    status === 'failed' &&
+    typeof task?.error === 'string' &&
+    task.error.includes('链嶅姟宸查噸鍚紝浠诲姟鏈兘缁х画鎵ц')
 
   const isTerminal = status === 'completed' || status === 'failed'
 
   const handleRetry = async () => {
     if (!task) return
     try {
-      await createAndTrackTask(task.task_type, task.params ?? {}, sessionId)
+      await createAndTrackTask(task.task_type, task.params ?? {}, effectiveSessionId)
     } catch (e) {
-      console.error('Retry failed', e)
+      console.error('任务重试失败', e)
     }
   }
 
   return (
-    <div className="my-3 rounded-xl border border-bg-border bg-bg-secondary/50 overflow-hidden shadow-sm max-w-sm">
-      {/* Header */}
-      <div className="flex items-center gap-2.5 px-4 py-2.5 border-b border-bg-border/60 bg-bg-tertiary/30">
+    <div className="my-3 max-w-sm overflow-hidden rounded-xl border border-bg-border bg-bg-secondary/50 shadow-sm">
+      <div className="flex items-center gap-2.5 border-b border-bg-border/60 bg-bg-tertiary/30 px-4 py-2.5">
         {cfg.icon}
-        <div className="flex-1 min-w-0">
-          <span className="text-xs font-semibold text-text-primary truncate">{label}</span>
+        <div className="min-w-0 flex-1">
+          <span className="truncate text-xs font-semibold text-text-primary">{label}</span>
         </div>
         <span className={`text-[10px] font-medium ${cfg.color}`}>{cfg.label}</span>
       </div>
 
-      {/* Progress bar */}
-      <div className="px-4 pt-3 pb-1">
-        <div className="flex items-center justify-between mb-1">
+      <div className="px-4 pb-1 pt-3">
+        <div className="mb-1 flex items-center justify-between">
           <span className="text-[10px] text-text-secondary/60">进度</span>
           <span className={`text-[10px] font-semibold ${cfg.color}`}>{progress}%</span>
         </div>
-        <div className="h-1.5 rounded-full bg-bg-tertiary overflow-hidden">
+        <div className="h-1.5 overflow-hidden rounded-full bg-bg-tertiary">
           <div
             className={`h-full rounded-full transition-all duration-500 ease-out ${cfg.barColor} ${
               status === 'running' && progress < 100 ? 'animate-pulse' : ''
@@ -114,28 +117,33 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
         </div>
       </div>
 
-      {/* Result / error */}
       {task?.result && status === 'completed' && (
         <div className="px-4 pb-3 pt-2">
-          <p className="text-[11px] text-text-primary/80 leading-relaxed">{task.result}</p>
+          <p className="text-[11px] leading-relaxed text-text-primary/80">{task.result}</p>
         </div>
       )}
       {task?.error && status === 'failed' && (
-        <div className="px-4 pb-3 pt-2 space-y-2">
-          <p className="text-[11px] text-red-400/80 leading-relaxed">{task.error}</p>
+        <div className="space-y-2 px-4 pb-3 pt-2">
+          {restartInterrupted && (
+            <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-2.5 py-2">
+              <p className="text-[11px] leading-relaxed text-amber-300">
+                任务因服务重启被中断，需要重新启动。
+              </p>
+            </div>
+          )}
+          <p className="text-[11px] leading-relaxed text-red-400/80">{task.error}</p>
           <button
             onClick={handleRetry}
-            className="flex items-center gap-1 text-[11px] text-text-secondary hover:text-text-primary transition-colors"
+            className="flex items-center gap-1 text-[11px] text-text-secondary transition-colors hover:text-text-primary"
           >
-            <RefreshCw size={10} /> 重试
+            <RefreshCw size={10} /> {restartInterrupted ? '重新启动任务' : '重试'}
           </button>
         </div>
       )}
 
-      {/* Task ID (subtle) */}
       {!isTerminal && (
         <div className="px-4 pb-2">
-          <p className="text-[9px] text-text-secondary/30 truncate font-mono">{taskId}</p>
+          <p className="truncate font-mono text-[9px] text-text-secondary/30">{taskId}</p>
         </div>
       )}
     </div>

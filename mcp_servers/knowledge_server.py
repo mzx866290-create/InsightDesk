@@ -3,6 +3,7 @@
 提供内部文档检索和向量库管理功能
 """
 
+import json
 import sys
 import os
 from pathlib import Path
@@ -14,6 +15,8 @@ from mcp.server.fastmcp import FastMCP
 from doc_pipeline import DocPipeline
 
 mcp = FastMCP("knowledge-base")
+DEFAULT_KB_TOP_K = int(os.getenv("KB_TOP_K", "3"))
+DEFAULT_KB_FETCH_K = int(os.getenv("KB_FETCH_K", "10"))
 
 # 初始化文档管道 (延迟加载模型和向量库)
 pipeline = DocPipeline()
@@ -25,8 +28,12 @@ def _ensure_store_loaded():
         pipeline.load_store()
 
 
+def _append_sources_marker(text: str, sources: list[dict]) -> str:
+    return f"{text}\n\n__SOURCES__:{json.dumps(sources, ensure_ascii=False)}"
+
+
 @mcp.tool()
-async def query_knowledge(question: str, top_k: int = 4) -> str:
+async def query_knowledge(question: str, top_k: int = DEFAULT_KB_TOP_K) -> str:
     """
     从企业内部知识库中检索相关文档片段
 
@@ -42,19 +49,32 @@ async def query_knowledge(question: str, top_k: int = 4) -> str:
         if pipeline.vectorstore is None:
             return "⚠️ 知识库未初始化,请先上传文档"
 
-        docs = pipeline.search(question, k=top_k)
+        docs = pipeline.search_with_rerank(
+            question,
+            k=top_k,
+            fetch_k=DEFAULT_KB_FETCH_K,
+        )
 
         if not docs:
             return "未找到相关文档"
 
         # 格式化返回结果
         results = []
+        sources = []
         for i, doc in enumerate(docs, 1):
             source = doc.metadata.get("source", "未知来源")
             content = doc.page_content.strip()
             results.append(f"【文档 {i}: {source}】\n{content}")
+            sources.append(
+                {
+                    "type": "doc",
+                    "title": source,
+                    "snippet": content[:200],
+                    "index": i,
+                }
+            )
 
-        return "\n\n---\n\n".join(results)
+        return _append_sources_marker("\n\n---\n\n".join(results), sources)
 
     except Exception as e:
         return f"❌ 检索失败: {str(e)}"

@@ -5,7 +5,7 @@
 > 当前实际状态如下：
 > - 二段重排已正式落地，默认检索链路为 `FAISS Top 10 -> CrossEncoder Top 3`
 > - 多轮对话记忆已从原规划的进程内存方案升级为 `SQLite` 持久化
-> - 主力产品形态已从 `Streamlit` 演进为 `React + FastAPI`，`app.py` 仅保留为遗留备用入口
+> - 主力产品形态已从 `Streamlit` 演进为 `React + FastAPI`，旧 `app.py` 入口已移除
 > - `auto` Agent 模式已按提供方自适应：本地默认 `langgraph`，云端默认 `function_calling`
 >
 > 当前项目现状请优先参考 `项目介绍.md` 与 `2026040.3-plan.md`。
@@ -143,8 +143,8 @@ async def build_agent(...):
     return agent_with_memory
 ```
 
-#### 2.3 前端集成
-**文件**: `app.py`
+#### 2.3 前端集成（历史方案，已迁移到 React）
+**文件**: `app.py`（已移除）
 
 ```python
 # 初始化 Session ID
@@ -195,8 +195,9 @@ RERANKER_MODEL=BAAI/bge-reranker-base
 # 1. 确保 Ollama 服务运行
 ollama serve
 
-# 2. 启动 Streamlit 应用
-streamlit run app.py
+# 2. 启动后端和前端（当前主链路）
+python -m uvicorn api_server:app --host 127.0.0.1 --port 8000
+cd frontend && npm run dev -- --host 127.0.0.1 --port 5173
 ```
 
 ### 测试 Rerank 功能

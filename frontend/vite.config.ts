@@ -25,6 +25,7 @@ export default defineConfig({
         manualChunks: {
           'react-vendor': ['react', 'react-dom'],
           'markdown-vendor': ['react-markdown', 'remark-gfm', 'react-syntax-highlighter'],
+          'charts-vendor': ['echarts', 'echarts-for-react'],
         },
       },
     },

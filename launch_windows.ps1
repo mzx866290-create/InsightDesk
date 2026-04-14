@@ -389,7 +389,7 @@ switch ($provider) {
 
         $ollamaModel = Read-DotEnvValue -Path $envPath -Name "OLLAMA_MODEL"
         if (-not $ollamaModel) {
-            $ollamaModel = "qwen2.5:7b"
+            $ollamaModel = "qwen3.5-2B:latest"
         }
 
         $tagsResponse = Invoke-RestMethod -Method Get -Uri "$ollamaBaseUrl/api/tags" -TimeoutSec 10

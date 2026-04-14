@@ -2,11 +2,64 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ── 深色主题（默认） ── */
+:root,
+.theme-dark {
+  color-scheme: dark;
+  --bg-primary: #0f0f13;
+  --bg-secondary: #1a1a24;
+  --bg-tertiary: #22222e;
+  --bg-card: #1e1e2a;
+  --bg-hover: #2a2a38;
+  --bg-border: #2e2e3d;
+
+  --accent-blue: #4f8ef7;
+  --accent-blue-hover: #6aa0f8;
+  --accent-purple: #8b5cf6;
+  --accent-green: #10b981;
+  --accent-orange: #f59e0b;
+  --accent-red: #ef4444;
+
+  --text-primary: #e8e8f0;
+  --text-secondary: #9999b3;
+  --text-muted: #666688;
+  --text-disabled: #444458;
+
+  --scrollbar-thumb: #2e2e3d;
+  --scrollbar-thumb-hover: #3e3e52;
+}
+
+/* ── 浅色主题 ── */
+.theme-light {
+  color-scheme: light;
+  --bg-primary: #ffffff;
+  --bg-secondary: #f5f5f7;
+  --bg-tertiary: #ebebef;
+  --bg-card: #f8f8fb;
+  --bg-hover: #e8e8f0;
+  --bg-border: #d8d8e8;
+
+  --accent-blue: #2563eb;
+  --accent-blue-hover: #1d4ed8;
+  --accent-purple: #7c3aed;
+  --accent-green: #059669;
+  --accent-orange: #d97706;
+  --accent-red: #dc2626;
+
+  --text-primary: #111118;
+  --text-secondary: #555570;
+  --text-muted: #888899;
+  --text-disabled: #aaaabc;
+
+  --scrollbar-thumb: #d0d0e0;
+  --scrollbar-thumb-hover: #b8b8cc;
+}
+
 @layer base {
   * {
     box-sizing: border-box;
     scrollbar-width: thin;
-    scrollbar-color: #2e2e3d transparent;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
   }
 
   *::-webkit-scrollbar {
@@ -19,12 +72,12 @@
   }
 
   *::-webkit-scrollbar-thumb {
-    background: #2e2e3d;
+    background: var(--scrollbar-thumb);
     border-radius: 3px;
   }
 
   *::-webkit-scrollbar-thumb:hover {
-    background: #3e3e52;
+    background: var(--scrollbar-thumb-hover);
   }
 
   html,
@@ -39,6 +92,8 @@
   body {
     overflow-x: hidden;
     overflow-y: auto;
+    background: var(--bg-primary);
+    color: var(--text-primary);
   }
 
   #root {
@@ -57,11 +112,11 @@
   }
 
   .btn-danger {
-    @apply text-accent-red hover:bg-accent-red/10 px-3 py-2 rounded-lg transition-colors duration-150 text-sm;
+    @apply text-accent-red hover:bg-bg-hover px-3 py-2 rounded-lg transition-colors duration-150 text-sm;
   }
 
   .input-base {
-    @apply bg-bg-tertiary border border-bg-border text-text-primary placeholder-text-secondary rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent-blue/50 transition-all;
+    @apply bg-bg-tertiary border border-bg-border text-text-primary placeholder:text-text-secondary rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-accent-blue transition-all;
   }
 
   .panel-card {

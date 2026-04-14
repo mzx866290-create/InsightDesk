@@ -3,12 +3,15 @@
 支持 PDF、Word、Markdown、CSV 等格式的文档加载、分块、向量化和检索
 """
 
-import os
-import sys
-import time
 import logging
+import math
+import os
+import shutil
+import sys
+import tempfile
+import time
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 import pandas as pd
 from langchain_community.document_loaders import (
     PyPDFLoader,
@@ -66,6 +69,7 @@ class DocPipeline:
         # 延迟加载: 首次使用时才加载模型,避免启动卡顿
         self._embeddings = None
         self._reranker = None  # 延迟加载 Reranker 模型
+        self._reranker_device = self.device
 
         # 普通文档用 800 字符切分，平衡信息密度和检索精准度
         self.splitter = RecursiveCharacterTextSplitter(
@@ -93,6 +97,67 @@ class DocPipeline:
         )
 
         self.vectorstore: Optional[FAISS] = None
+
+    @staticmethod
+    def _path_has_non_ascii(path: str) -> bool:
+        try:
+            path.encode("ascii")
+            return False
+        except UnicodeEncodeError:
+            return True
+
+    def _should_use_faiss_staging_dir(self) -> bool:
+        resolved = str(Path(self.vector_store_path).resolve())
+        return sys.platform == "win32" and self._path_has_non_ascii(resolved)
+
+    def _make_faiss_staging_dir(self, prefix: str) -> Path:
+        base_dir = Path(tempfile.gettempdir()) / "ai_kb_faiss"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        return Path(tempfile.mkdtemp(prefix=f"{prefix}_", dir=str(base_dir)))
+
+    def _save_vectorstore_local(self) -> None:
+        target_dir = Path(self.vector_store_path)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        if not self._should_use_faiss_staging_dir():
+            self.vectorstore.save_local(str(target_dir))
+            return
+
+        staging_dir = self._make_faiss_staging_dir("save")
+        logger.info(
+            "FAISS save workaround enabled for Windows non-ASCII path: %s",
+            target_dir,
+        )
+        try:
+            self.vectorstore.save_local(str(staging_dir))
+            for file_name in ("index.faiss", "index.pkl"):
+                shutil.copy2(staging_dir / file_name, target_dir / file_name)
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+
+    def _load_vectorstore_local(self) -> FAISS:
+        target_dir = Path(self.vector_store_path)
+        if not self._should_use_faiss_staging_dir():
+            return FAISS.load_local(
+                str(target_dir),
+                self.embeddings,
+                allow_dangerous_deserialization=True,
+            )
+
+        staging_dir = self._make_faiss_staging_dir("load")
+        logger.info(
+            "FAISS load workaround enabled for Windows non-ASCII path: %s",
+            target_dir,
+        )
+        try:
+            for file_name in ("index.faiss", "index.pkl"):
+                shutil.copy2(target_dir / file_name, staging_dir / file_name)
+            return FAISS.load_local(
+                str(staging_dir),
+                self.embeddings,
+                allow_dangerous_deserialization=True,
+            )
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
 
     def _resolve_device(self, device: Optional[str]) -> str:
         """优先使用显卡；若不可用则回退到 CPU。"""
@@ -182,36 +247,158 @@ class DocPipeline:
         """延迟加载 Reranker 模型 (用于二段重排)"""
         if self._reranker is None:
             reranker_model = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base")
-            cache_key = (reranker_model, self.device)
+            self._reranker, self._reranker_device = self._load_reranker(
+                reranker_model,
+                preferred_device=self._reranker_device or self.device,
+            )
+        return self._reranker
+
+    def _should_retry_reranker_on_cpu(self, exc: Exception, device: str) -> bool:
+        if str(device or "").lower() == "cpu":
+            return False
+        lower = str(exc).lower()
+        return any(
+            token in lower
+            for token in (
+                "cuda",
+                "cublas",
+                "out of memory",
+                "torch not compiled with cuda enabled",
+                "device-side assert",
+                "not enough memory",
+            )
+        )
+
+    def _create_reranker(
+        self,
+        model_name: str,
+        device: str,
+        *,
+        local_files_only: bool,
+    ) -> CrossEncoder:
+        hf_token = os.getenv("HF_TOKEN") or None
+        return CrossEncoder(
+            model_name,
+            max_length=512,
+            device=device,
+            local_files_only=local_files_only,
+            token=hf_token,
+        )
+
+    def _load_reranker(
+        self,
+        model_name: str,
+        preferred_device: str,
+    ) -> tuple[CrossEncoder, str]:
+        candidate_devices = [str(preferred_device or self.device or "cpu").strip() or "cpu"]
+        if candidate_devices[0].lower() != "cpu":
+            candidate_devices.append("cpu")
+
+        last_error: Exception | None = None
+        for device in candidate_devices:
+            cache_key = (model_name, device)
             cached = self._reranker_cache.get(cache_key)
             if cached is not None:
-                self._reranker = cached
-                return self._reranker
-            logger.info("加载 Reranker 模型: %s", reranker_model)
-            hf_token = os.getenv("HF_TOKEN") or None
+                logger.info("复用已缓存 Reranker: %s (device=%s)", model_name, device)
+                return cached, device
+
+            logger.info("加载 Reranker 模型: %s (device=%s)", model_name, device)
             try:
-                self._reranker = CrossEncoder(
-                    reranker_model,
-                    max_length=512,
-                    device=self.device,
+                reranker = self._create_reranker(
+                    model_name,
+                    device,
                     local_files_only=True,
-                    token=hf_token,
                 )
             except Exception:
                 logger.warning(
-                    "本地缓存未命中，回退到常规方式加载 Reranker: %s",
-                    reranker_model,
+                    "本地缓存未命中，回退到常规方式加载 Reranker: %s (device=%s)",
+                    model_name,
+                    device,
                     exc_info=True,
                 )
-                self._reranker = CrossEncoder(
-                    reranker_model,
-                    max_length=512,
-                    device=self.device,
-                    token=hf_token,
+                try:
+                    reranker = self._create_reranker(
+                        model_name,
+                        device,
+                        local_files_only=False,
+                    )
+                except Exception as remote_exc:
+                    last_error = remote_exc
+                    if self._should_retry_reranker_on_cpu(remote_exc, device):
+                        logger.warning(
+                            "Reranker 在 %s 上加载失败，自动回退到 CPU: %s",
+                            device,
+                            remote_exc,
+                        )
+                        continue
+                    raise
+
+            self._reranker_cache[cache_key] = reranker
+            logger.info("Reranker 模型加载完成 (device=%s)", device)
+            return reranker, device
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Failed to load reranker model")
+
+    def _predict_rerank_scores(self, query: str, candidates: List[Document]) -> List[float]:
+        pairs = [[query, doc.page_content] for doc in candidates]
+        if not pairs:
+            return []
+
+        reranker_model = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base")
+        try:
+            raw_scores = self.reranker.predict(pairs)
+        except Exception as exc:
+            if self._should_retry_reranker_on_cpu(exc, self._reranker_device):
+                logger.warning(
+                    "Reranker 预测在 %s 上失败，自动回退到 CPU: %s",
+                    self._reranker_device,
+                    exc,
                 )
-            logger.info("Reranker 模型加载完成")
-            self._reranker_cache[cache_key] = self._reranker
-        return self._reranker
+                self._reranker = None
+                self._reranker_device = "cpu"
+                self._reranker, self._reranker_device = self._load_reranker(
+                    reranker_model,
+                    preferred_device="cpu",
+                )
+                raw_scores = self.reranker.predict(pairs)
+            else:
+                raise
+
+        return self._normalize_rerank_scores(raw_scores, expected=len(candidates))
+
+    def _normalize_rerank_scores(self, raw_scores: Any, expected: int) -> List[float]:
+        if hasattr(raw_scores, "tolist"):
+            raw_scores = raw_scores.tolist()
+        elif hasattr(raw_scores, "__iter__") and not isinstance(
+            raw_scores,
+            (str, bytes, list, tuple),
+        ):
+            raw_scores = list(raw_scores)
+
+        if isinstance(raw_scores, (int, float)):
+            raw_scores = [raw_scores]
+        elif not isinstance(raw_scores, (list, tuple)):
+            raw_scores = []
+
+        normalized: List[float] = []
+        for value in raw_scores:
+            scalar = value
+            if isinstance(value, (list, tuple)):
+                scalar = value[0] if value else 0.0
+            try:
+                score = float(scalar)
+            except (TypeError, ValueError):
+                score = 0.0
+            if not math.isfinite(score):
+                score = 0.0
+            normalized.append(score)
+
+        if expected > 0 and len(normalized) < expected:
+            normalized.extend([0.0] * (expected - len(normalized)))
+
+        return normalized[:expected] if expected > 0 else normalized
 
     def _is_resume_doc(self, text: str) -> bool:
         """判断文本是否为简历类文档（命中 2 个及以上关键词则认定）"""
@@ -345,6 +532,10 @@ class DocPipeline:
             文档列表
         """
         file_name = Path(file_path).name
+        if Path(file_path).suffix.lower() == ".xls":
+            raise ValueError(
+                f"暂不支持 .xls 文件: {file_name}。请先另存为 .xlsx 后再上传。"
+            )
         docs: List[Document] = []
         try:
             xls = pd.ExcelFile(file_path, engine="openpyxl")
@@ -630,6 +821,7 @@ class DocPipeline:
             导入的文档片段数量
         """
         all_docs = []
+        failed_files: list[str] = []
         total_files = len(file_paths)
 
         def report(progress: int) -> None:
@@ -658,13 +850,15 @@ class DocPipeline:
             except Exception as e:
                 file_name = Path(fp).name
                 logger.error("  ✗ %s: 加载失败 - %s", file_name, e)
+                failed_files.append(f"{file_name}: {e}")
                 continue
 
             if total_files:
                 report(10 + int(index / total_files * 35))
 
         if not all_docs:
-            raise ValueError("没有成功加载任何文档")
+            detail = "；".join(failed_files[:3]) if failed_files else "未知原因"
+            raise ValueError(f"没有成功加载任何文档。失败原因: {detail}")
 
         logger.info("开始构建向量索引 (共 %d 个片段)", len(all_docs))
         embed_start = time.perf_counter()
@@ -694,9 +888,8 @@ class DocPipeline:
         logger.info("向量化完成，耗时 %.2fs", time.perf_counter() - embed_start)
 
         # 持久化
-        os.makedirs(self.vector_store_path, exist_ok=True)
         save_start = time.perf_counter()
-        self.vectorstore.save_local(self.vector_store_path)
+        self._save_vectorstore_local()
         logger.info(
             "向量索引已保存到: %s (耗时 %.2fs)",
             self.vector_store_path,
@@ -718,11 +911,7 @@ class DocPipeline:
             return False
 
         try:
-            self.vectorstore = FAISS.load_local(
-                self.vector_store_path,
-                self.embeddings,
-                allow_dangerous_deserialization=True,
-            )
+            self.vectorstore = self._load_vectorstore_local()
             logger.info("向量库加载成功: %s", self.vector_store_path)
             return True
         except Exception as e:
@@ -767,22 +956,28 @@ class DocPipeline:
         if self.vectorstore is None:
             raise ValueError("向量库未初始化,请先调用 load_store() 或 ingest()")
 
+        safe_k = max(1, int(k or 1))
+        safe_fetch_k = max(safe_k, int(fetch_k or safe_k))
+        if safe_fetch_k != fetch_k or safe_k != k:
+            logger.warning(
+                "Adjusted rerank parameters: k=%s->%d fetch_k=%s->%d",
+                k,
+                safe_k,
+                fetch_k,
+                safe_fetch_k,
+            )
+
         # 第一阶段: FAISS 粗排 (检索更多候选)
-        candidates = self.vectorstore.similarity_search(query, k=fetch_k)
+        candidates = self.vectorstore.similarity_search(query, k=safe_fetch_k)
 
         if not candidates:
             return []
 
-        # 第二阶段: Reranker 精排
-        # 构造 (query, doc) 对
-        pairs = [[query, doc.page_content] for doc in candidates]
-
         try:
-            # 使用 CrossEncoder 计算相关性得分
-            scores = self.reranker.predict(pairs)
+            scores = self._predict_rerank_scores(query, candidates)
         except Exception:
             logger.exception("Reranker 失败，回退到 FAISS similarity_search")
-            return candidates[:k]
+            return candidates[:safe_k]
 
         # 按得分降序排序
         ranked_results = sorted(
@@ -790,16 +985,16 @@ class DocPipeline:
         )
 
         # 返回 Top k
-        top_docs = [doc for doc, score in ranked_results[:k]]
+        top_docs = [doc for doc, score in ranked_results[:safe_k]]
 
         logger.info(
             "[Rerank] query=%s... fetch_k=%d top_k=%d scores=%s",
             query[:30],
-            fetch_k,
-            k,
-            [f"{s:.4f}" for _, s in ranked_results[:k]],
+            safe_fetch_k,
+            safe_k,
+            [f"{s:.4f}" for _, s in ranked_results[:safe_k]],
         )
-        for i, (doc, score) in enumerate(ranked_results[:k], 1):
+        for i, (doc, score) in enumerate(ranked_results[:safe_k], 1):
             source = doc.metadata.get("source", "未知")
             logger.debug("  %d. %s (得分: %.4f)", i, source, score)
 

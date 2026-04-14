@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
-import { Database, Layers3 } from 'lucide-react'
+import { Database, Layers3, Palette } from 'lucide-react'
+import { getConnectionTypeLabel } from '../../api/client'
 import type { ModelConfig } from '../../api/client'
 import { Button } from '../ui/Button'
 import { Modal } from '../ui/Modal'
@@ -17,8 +18,30 @@ interface DeckGenerationModalProps {
   onSubmit: (payload: {
     panel_config: ModelConfig
     target_slide_count: number
+    theme: 'default' | 'midnight' | 'sunrise'
   }) => Promise<void> | void
 }
+
+const DECK_THEMES = [
+  {
+    value: 'default',
+    label: '经典蓝图',
+    description: '清爽蓝白，适合通用汇报。',
+    preview: 'from-slate-50 via-white to-blue-50 border-blue-100',
+  },
+  {
+    value: 'midnight',
+    label: '深夜简报',
+    description: '深色高对比，适合战略或技术汇报。',
+    preview: 'from-slate-950 via-slate-900 to-sky-950 border-slate-700',
+  },
+  {
+    value: 'sunrise',
+    label: '晨曦回顾',
+    description: '暖色评审风格，适合复盘和业务回顾。',
+    preview: 'from-orange-50 via-amber-50 to-rose-100 border-orange-200',
+  },
+] as const
 
 export const DeckGenerationModal: React.FC<DeckGenerationModalProps> = ({
   open,
@@ -29,12 +52,14 @@ export const DeckGenerationModal: React.FC<DeckGenerationModalProps> = ({
 }) => {
   const [selectedPanelId, setSelectedPanelId] = useState('')
   const [targetSlideCount, setTargetSlideCount] = useState(8)
+  const [selectedTheme, setSelectedTheme] = useState<'default' | 'midnight' | 'sunrise'>('default')
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
     if (!open) return
     setSelectedPanelId((current) => current || panels[0]?.id || '')
     setTargetSlideCount(8)
+    setSelectedTheme('default')
   }, [open, panels])
 
   const selectedPanel = panels.find((panel) => panel.id === selectedPanelId) ?? panels[0] ?? null
@@ -46,6 +71,7 @@ export const DeckGenerationModal: React.FC<DeckGenerationModalProps> = ({
       await onSubmit({
         panel_config: selectedPanel.modelConfig,
         target_slide_count: targetSlideCount,
+        theme: selectedTheme,
       })
       onClose()
     } finally {
@@ -81,7 +107,7 @@ export const DeckGenerationModal: React.FC<DeckGenerationModalProps> = ({
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-sm font-medium text-text-primary">面板 {index + 1}</span>
                     <span className="text-[11px] uppercase tracking-wide text-text-secondary">
-                      {panel.modelConfig.provider}
+                      {getConnectionTypeLabel(panel.modelConfig)}
                     </span>
                   </div>
                   <p className="mt-2 text-sm text-text-primary/90">{panel.modelConfig.model}</p>
@@ -125,6 +151,37 @@ export const DeckGenerationModal: React.FC<DeckGenerationModalProps> = ({
             <p className="mt-2 text-xs leading-5 text-text-secondary">
               默认 8 页。系统会宁少勿水，内容不足时会自动缩页，不会硬凑空话。
             </p>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-bg-border bg-bg-primary/60 p-4">
+          <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
+            <Palette size={16} />
+            主题模板
+          </div>
+          <p className="mt-2 text-sm leading-6 text-text-secondary">
+            先选定视觉方向，生成后仍可在编辑器里继续切换。
+          </p>
+          <div className="mt-4 grid gap-3 sm:grid-cols-3">
+            {DECK_THEMES.map((theme) => {
+              const active = theme.value === selectedTheme
+              return (
+                <button
+                  key={theme.value}
+                  type="button"
+                  onClick={() => setSelectedTheme(theme.value)}
+                  className={`rounded-2xl border px-3 py-3 text-left transition-colors ${
+                    active
+                      ? 'border-accent-blue/40 bg-accent-blue/10'
+                      : 'border-bg-border bg-bg-secondary hover:border-accent-blue/25 hover:bg-bg-hover'
+                  }`}
+                >
+                  <div className={`h-20 rounded-xl border bg-gradient-to-br ${theme.preview}`} />
+                  <div className="mt-3 text-sm font-medium text-text-primary">{theme.label}</div>
+                  <p className="mt-1 text-xs leading-5 text-text-secondary">{theme.description}</p>
+                </button>
+              )
+            })}
           </div>
         </div>
 
