@@ -84,6 +84,40 @@ def test_stage_upload_files_cleans_up_when_read_fails(monkeypatch, tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_stage_upload_files_rejects_unsupported_suffix(monkeypatch, tmp_path):
+    _install_tempfile_factory(monkeypatch, tmp_path)
+    uploads = [FakeUpload("malware.exe", b"boom")]
+
+    with pytest.raises(ValueError, match="不支持的文件类型"):
+        asyncio.run(api_document_helpers.stage_upload_files(uploads))
+
+
+def test_stage_upload_files_rejects_too_many_files(monkeypatch, tmp_path):
+    _install_tempfile_factory(monkeypatch, tmp_path)
+    uploads = [FakeUpload(f"doc-{index}.txt", b"x") for index in range(3)]
+
+    with pytest.raises(ValueError, match="单次最多上传 2 个文件"):
+        asyncio.run(
+            api_document_helpers.stage_upload_files_with_limits(
+                uploads,
+                max_file_count=2,
+            )
+        )
+
+
+def test_stage_upload_files_rejects_oversized_payload(monkeypatch, tmp_path):
+    _install_tempfile_factory(monkeypatch, tmp_path)
+    uploads = [FakeUpload("large.txt", b"abcdef")]
+
+    with pytest.raises(ValueError, match="文件过大"):
+        asyncio.run(
+            api_document_helpers.stage_upload_files_with_limits(
+                uploads,
+                max_file_bytes=4,
+            )
+        )
+
+
 def test_build_upload_documents_task_record_sets_pending_status():
     record = api_document_helpers.build_upload_documents_task_record(
         temp_paths=["/tmp/a.txt"],

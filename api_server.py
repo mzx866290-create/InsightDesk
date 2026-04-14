@@ -232,6 +232,13 @@ SUPPORTED_CHAT_FILE_EXTENSIONS = {
     ".xls",
     ".xlsx",
 }
+DOCUMENT_UPLOAD_MAX_COUNT = int(os.getenv("DOCUMENT_UPLOAD_MAX_COUNT", "20"))
+DOCUMENT_UPLOAD_MAX_FILE_BYTES = int(
+    os.getenv("DOCUMENT_UPLOAD_MAX_FILE_BYTES", str(25 * 1024 * 1024))
+)
+DOCUMENT_UPLOAD_MAX_TOTAL_BYTES = int(
+    os.getenv("DOCUMENT_UPLOAD_MAX_TOTAL_BYTES", str(100 * 1024 * 1024))
+)
 
 
 @dataclass
@@ -375,6 +382,25 @@ def _content_hash(value: Any) -> str:
             separators=(",", ":"),
         )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _audit_security_event(
+    action: str,
+    request: Request,
+    *,
+    result: str = "ok",
+    details: str = "",
+) -> None:
+    request_id = getattr(request.state, "request_id", "")
+    logger.info(
+        "security_event action=%s result=%s request_id=%s ip=%s local=%s details=%s",
+        action,
+        result,
+        request_id,
+        _request_client_ip(request),
+        _request_is_local(request),
+        details,
+    )
 
 
 def _resolve_project_subdir(candidate: str) -> Path:
@@ -2036,6 +2062,11 @@ async def create_session_share_link(session_id: str, request: Request):
         created_by_ip=_request_client_ip(request),
         created_user_agent=_request_user_agent(request),
     )
+    _audit_security_event(
+        "create_session_share_link",
+        request,
+        details=f"session_id={session_id}",
+    )
     return ShareLinkResponse(**payload, expires_at=record.expires_at)
 
 
@@ -2402,11 +2433,29 @@ async def upload_documents(
 
         asyncio.create_task(_run_task(record))
         logger.info("task_id=%s task_type=upload_documents 已创建", record.task_id)
+        _audit_security_event(
+            "upload_documents",
+            request,
+            details=(
+                f"file_count={len(file_names)} "
+                f"vector_store_path={effective_vector_store_path}"
+            ),
+        )
         return upload_documents_response(
             record,
             file_count=len(file_names),
             vector_store_path=effective_vector_store_path,
         )
+    except ValueError as e:
+        if temp_paths:
+            cleanup_temp_paths(temp_paths)
+        _audit_security_event(
+            "upload_documents",
+            request,
+            result="rejected",
+            details=str(e),
+        )
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         if temp_paths:
             cleanup_temp_paths(temp_paths)
@@ -2467,6 +2516,11 @@ async def save_config(request: Request, payload: SaveConfigRequest):
     if payload.tavily_api_key is not None:
         os.environ["TAVILY_API_KEY"] = payload.tavily_api_key
         # 清除 agent cache 以便下次重建时使用新 key
+    _audit_security_event(
+        "save_config",
+        request,
+        details=f"tavily_api_key_set={payload.tavily_api_key is not None}",
+    )
     return {"ok": True}
 
 
@@ -2475,6 +2529,7 @@ async def reset_agents(request: Request):
     """清除 agent 缓存，下次请求时重新构建"""
     _require_remote_admin(request)
     await _clear_agent_cache()
+    _audit_security_event("reset_agents", request)
     return {"ok": True, "message": "智能体缓存已清除"}
 
 
@@ -2784,6 +2839,11 @@ async def create_deck_share_link(deck_id: str, request: Request):
         created_by_ip=_request_client_ip(request),
         created_user_agent=_request_user_agent(request),
     )
+    _audit_security_event(
+        "create_deck_share_link",
+        request,
+        details=f"deck_id={deck_id}",
+    )
     return ShareLinkResponse(**payload, expires_at=record.expires_at)
 
 
@@ -2905,7 +2965,7 @@ async def update_knowledge_base_chunk(
 
     _require_remote_admin(request)
     store_path = _effective_vector_store_path(path)
-    return update_kb_chunk_payload(
+    result = update_kb_chunk_payload(
         chunk_id=chunk_id,
         request=payload,
         field_set=_request_field_set(payload),
@@ -2919,6 +2979,12 @@ async def update_knowledge_base_chunk(
         ),
         current_time=time.time,
     )
+    _audit_security_event(
+        "update_knowledge_base_chunk",
+        request,
+        details=f"chunk_id={chunk_id} path={store_path}",
+    )
+    return result
 
 
 @app.delete("/api/knowledge-base/chunks/{chunk_id}")
@@ -2931,12 +2997,18 @@ async def delete_knowledge_base_chunk(
 
     _require_remote_admin(request)
     store_path = _effective_vector_store_path(path)
-    return delete_kb_chunk_payload(
+    result = delete_kb_chunk_payload(
         chunk_id=chunk_id,
         pipeline_factory=lambda: DocPipeline(vector_store_path=store_path),
         docstore_dict=_kb_docstore_dict,
         rebuild_from_documents=_kb_rebuild_from_documents,
     )
+    _audit_security_event(
+        "delete_knowledge_base_chunk",
+        request,
+        details=f"chunk_id={chunk_id} path={store_path}",
+    )
+    return result
 
 
 @app.get("/api/knowledge-bases")
@@ -3010,7 +3082,7 @@ async def delete_knowledge_base(request: Request, path: Optional[str] = None):
     _require_remote_admin(request)
     target_path = _resolve_deletable_knowledge_base(_effective_vector_store_path(path))
     try:
-        return await delete_kb_directory(
+        result = await delete_kb_directory(
             target_path,
             remove_tree=shutil.rmtree,
             clear_agent_cache=_clear_agent_cache,
@@ -3018,6 +3090,12 @@ async def delete_knowledge_base(request: Request, path: Optional[str] = None):
             on_success=lambda abs_path: logger.info("Knowledge base deleted: %s", abs_path),
             on_failure=lambda: logger.exception("Failed to delete knowledge base"),
         )
+        _audit_security_event(
+            "delete_knowledge_base",
+            request,
+            details=f"path={target_path}",
+        )
+        return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -3029,12 +3107,18 @@ async def delete_knowledge_base_by_path(request: Request, path: str):
     _require_remote_admin(request)
     target_path = _resolve_deletable_knowledge_base(path)
     try:
-        return await delete_kb_directory(
+        result = await delete_kb_directory(
             target_path,
             remove_tree=shutil.rmtree,
             clear_agent_cache=_clear_agent_cache,
             success_message="已删除：{path}",
         )
+        _audit_security_event(
+            "delete_knowledge_base_by_path",
+            request,
+            details=f"path={target_path}",
+        )
+        return result
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -3046,6 +3130,11 @@ async def revoke_share_link(share_token: str, request: Request):
     _require_remote_admin(request)
     if not _share_link_store.revoke(share_token):
         raise HTTPException(status_code=404, detail="未找到分享链接")
+    _audit_security_event(
+        "revoke_share_link",
+        request,
+        details=f"share_token={share_token}",
+    )
     return RevokeShareLinkResponse(ok=True)
 
 
