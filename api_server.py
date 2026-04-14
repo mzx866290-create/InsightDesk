@@ -12,6 +12,7 @@ import logging
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import sys
 import threading
@@ -207,6 +208,8 @@ CHAT_ATTACHMENT_PREVIEW_CHARS = int(
 )
 SHARE_LINK_SECRET = os.getenv("SHARE_LINK_SECRET", "local-share-secret")
 SHARE_LINK_TTL_SECONDS = int(os.getenv("SHARE_LINK_TTL_SECONDS", str(7 * 24 * 60 * 60)))
+DEFAULT_SHARE_LINK_SECRET = "local-share-secret"
+MIN_SHARE_LINK_SECRET_LENGTH = 16
 SESSION_MEMORY_AUTO_SUMMARY_MIN_TURNS = int(
     os.getenv("SESSION_MEMORY_AUTO_SUMMARY_MIN_TURNS", "12")
 )
@@ -298,6 +301,65 @@ def _request_client_ip(request: Request) -> str:
 
 def _request_user_agent(request: Request) -> str:
     return str(request.headers.get("user-agent") or "").strip()
+
+
+def _request_is_local(request: Request) -> bool:
+    client = getattr(request, "client", None)
+    host = getattr(client, "host", "") if client is not None else ""
+    return _is_loopback_host(host)
+
+
+def _current_admin_api_token() -> str:
+    return str(os.getenv("ADMIN_API_TOKEN", "") or "").strip()
+
+
+def _extract_admin_token(request: Request) -> str:
+    header_token = str(request.headers.get("X-Admin-Token") or "").strip()
+    if header_token:
+        return header_token
+    authorization = str(request.headers.get("Authorization") or "").strip()
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return ""
+
+
+def _current_share_link_secret() -> str:
+    return str(os.getenv("SHARE_LINK_SECRET", SHARE_LINK_SECRET) or "").strip()
+
+
+def _share_link_secret_is_weak() -> bool:
+    secret = _current_share_link_secret()
+    return (
+        not secret
+        or secret == DEFAULT_SHARE_LINK_SECRET
+        or len(secret) < MIN_SHARE_LINK_SECRET_LENGTH
+    )
+
+
+def _require_remote_admin(request: Request) -> None:
+    if not ALLOW_REMOTE_CLIENTS or _request_is_local(request):
+        return
+
+    configured_token = _current_admin_api_token()
+    if not configured_token:
+        raise HTTPException(
+            status_code=503,
+            detail="远程管理接口已禁用，请先配置 ADMIN_API_TOKEN",
+        )
+
+    provided_token = _extract_admin_token(request)
+    if not provided_token or not secrets.compare_digest(provided_token, configured_token):
+        raise HTTPException(status_code=403, detail="缺少有效的管理令牌")
+
+
+def _require_remote_share_secret(request: Request) -> None:
+    if not ALLOW_REMOTE_CLIENTS or _request_is_local(request):
+        return
+    if _share_link_secret_is_weak():
+        raise HTTPException(
+            status_code=503,
+            detail="远程分享已禁用，请配置强 SHARE_LINK_SECRET 后再启用",
+        )
 
 
 def _content_hash(value: Any) -> str:
@@ -468,6 +530,13 @@ async def restrict_remote_clients(request: Request, call_next):
     process_time_ms = (time.perf_counter() - started_at) * 1000.0
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Process-Time-Ms"] = f"{process_time_ms:.2f}"
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=()",
+    )
     logger.info(
         "request_id=%s method=%s path=%s status=%s latency_ms=%.2f",
         request_id,
@@ -1946,6 +2015,7 @@ async def delete_bookmark_endpoint(bookmark_id: str):
 async def create_session_share_link(session_id: str, request: Request):
     from chat_store import get_session
 
+    _require_remote_share_secret(request)
     session = get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="未找到会话")
@@ -2390,16 +2460,18 @@ async def get_config():
 
 
 @app.post("/api/config")
-async def save_config(request: SaveConfigRequest):
-    if request.tavily_api_key is not None:
-        os.environ["TAVILY_API_KEY"] = request.tavily_api_key
+async def save_config(request: Request, payload: SaveConfigRequest):
+    _require_remote_admin(request)
+    if payload.tavily_api_key is not None:
+        os.environ["TAVILY_API_KEY"] = payload.tavily_api_key
         # 清除 agent cache 以便下次重建时使用新 key
     return {"ok": True}
 
 
 @app.post("/api/agents/reset")
-async def reset_agents():
+async def reset_agents(request: Request):
     """清除 agent 缓存，下次请求时重新构建"""
+    _require_remote_admin(request)
     await _clear_agent_cache()
     return {"ok": True, "message": "智能体缓存已清除"}
 
@@ -2415,28 +2487,30 @@ async def list_prompts():
 
 
 @app.post("/api/prompts")
-async def create_prompt(request: CreatePromptRequest):
+async def create_prompt(request: Request, payload: CreatePromptRequest):
     from chat_store import create_system_prompt
 
+    _require_remote_admin(request)
     prompt = create_system_prompt(
-        request.name,
-        request.content,
-        vector_store_id=request.vector_store_id or "",
-        dashboard_template=request.dashboard_template or {},
+        payload.name,
+        payload.content,
+        vector_store_id=payload.vector_store_id or "",
+        dashboard_template=payload.dashboard_template or {},
     )
     return prompt
 
 
 @app.put("/api/prompts/{prompt_id}")
-async def update_prompt(prompt_id: str, request: UpdatePromptRequest):
+async def update_prompt(prompt_id: str, request: Request, payload: UpdatePromptRequest):
     from chat_store import update_system_prompt
 
+    _require_remote_admin(request)
     prompt = update_system_prompt(
         prompt_id,
-        request.name,
-        request.content,
-        vector_store_id=request.vector_store_id or "",
-        dashboard_template=request.dashboard_template or {},
+        payload.name,
+        payload.content,
+        vector_store_id=payload.vector_store_id or "",
+        dashboard_template=payload.dashboard_template or {},
     )
     if not prompt:
         raise HTTPException(status_code=404, detail="未找到提示词")
@@ -2445,9 +2519,10 @@ async def update_prompt(prompt_id: str, request: UpdatePromptRequest):
 
 
 @app.delete("/api/prompts/{prompt_id}")
-async def delete_prompt(prompt_id: str):
+async def delete_prompt(prompt_id: str, request: Request):
     from chat_store import delete_system_prompt
 
+    _require_remote_admin(request)
     ok = delete_system_prompt(prompt_id)
     if not ok:
         raise HTTPException(
@@ -2459,10 +2534,11 @@ async def delete_prompt(prompt_id: str):
 
 
 @app.post("/api/prompts/{prompt_id}/activate")
-async def activate_prompt(prompt_id: str):
+async def activate_prompt(prompt_id: str, request: Request):
     from chat_store import activate_system_prompt, get_all_system_prompts
     from doc_pipeline import DocPipeline
 
+    _require_remote_admin(request)
     ok = activate_system_prompt(prompt_id)
     if not ok:
         raise HTTPException(status_code=404, detail="未找到提示词")
@@ -2684,6 +2760,7 @@ async def export_deck(deck_id: str, format: str = "pptx"):
 
 @app.post("/api/decks/{deck_id}/share", response_model=ShareLinkResponse)
 async def create_deck_share_link(deck_id: str, request: Request):
+    _require_remote_share_secret(request)
     try:
         _deck_store.get(deck_id)
     except KeyError as exc:
@@ -2919,8 +2996,9 @@ async def test_retrieval(request: TestRetrievalRequest):
 
 
 @app.delete("/api/knowledge-base")
-async def delete_knowledge_base(path: Optional[str] = None):
+async def delete_knowledge_base(request: Request, path: Optional[str] = None):
     """删除当前默认知识库"""
+    _require_remote_admin(request)
     target_path = _resolve_deletable_knowledge_base(_effective_vector_store_path(path))
     try:
         return await delete_kb_directory(
@@ -2936,9 +3014,10 @@ async def delete_knowledge_base(path: Optional[str] = None):
 
 
 @app.delete("/api/knowledge-base/by-path")
-async def delete_knowledge_base_by_path(path: str):
+async def delete_knowledge_base_by_path(request: Request, path: str):
     """按路径删除指定知识库"""
 
+    _require_remote_admin(request)
     target_path = _resolve_deletable_knowledge_base(path)
     try:
         return await delete_kb_directory(
@@ -2954,7 +3033,8 @@ async def delete_knowledge_base_by_path(path: str):
 # ── 静态文件（生产模式）─────────────────────────
 
 @app.delete("/api/share-links/{share_token}", response_model=RevokeShareLinkResponse)
-async def revoke_share_link(share_token: str):
+async def revoke_share_link(share_token: str, request: Request):
+    _require_remote_admin(request)
     if not _share_link_store.revoke(share_token):
         raise HTTPException(status_code=404, detail="未找到分享链接")
     return RevokeShareLinkResponse(ok=True)
@@ -2962,6 +3042,7 @@ async def revoke_share_link(share_token: str):
 
 @app.get("/shared/{share_token}")
 async def open_shared_resource(share_token: str, request: Request):
+    _require_remote_share_secret(request)
     try:
         link_record = _share_link_store.get_active(share_token)
         if link_record is None:

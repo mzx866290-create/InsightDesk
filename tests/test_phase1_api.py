@@ -1020,17 +1020,19 @@ def test_update_prompt_clears_agent_cache(monkeypatch):
 
     monkeypatch.setattr(chat_store, "update_system_prompt", fake_update_system_prompt)
 
-    result = asyncio.run(
-        api_server.update_prompt(
-            "prompt-1",
-            api_server.UpdatePromptRequest(
-                name="Prompt",
-                content="updated",
-                vector_store_id="kb-1",
-                dashboard_template={"layout": "briefing"},
-            ),
-        )
+    client = TestClient(api_server.app)
+
+    result = client.put(
+        "/api/prompts/prompt-1",
+        json={
+            "name": "Prompt",
+            "content": "updated",
+            "vector_store_id": "kb-1",
+            "dashboard_template": {"layout": "briefing"},
+        },
     )
+    assert result.status_code == 200
+    result = result.json()
 
     assert result["id"] == "prompt-1"
     assert api_server._agent_cache == {}
