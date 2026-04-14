@@ -330,6 +330,36 @@ def _extract_admin_token(request: Request) -> str:
     return ""
 
 
+def _admin_auth_mode(request: Request) -> str:
+    if _request_is_local(request):
+        return "local"
+    if str(request.headers.get("X-Admin-Token") or "").strip():
+        return "header"
+    authorization = str(request.headers.get("Authorization") or "").strip()
+    if authorization.lower().startswith("bearer "):
+        return "bearer"
+    return "missing"
+
+
+def _sanitize_log_value(value: Any, *, max_length: int = 256) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"[\r\n\t]+", " ", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    if len(text) > max_length:
+        return f"{text[: max_length - 3]}..."
+    return text
+
+
+def _request_user_id(request: Request) -> str:
+    return _sanitize_log_value(request.headers.get("X-User-Id"), max_length=128)
+
+
+def _request_user_role(request: Request) -> str:
+    return _sanitize_log_value(request.headers.get("X-User-Role"), max_length=64)
+
+
 def _current_share_link_secret() -> str:
     return str(os.getenv("SHARE_LINK_SECRET", SHARE_LINK_SECRET) or "").strip()
 
@@ -349,6 +379,12 @@ def _require_remote_admin(request: Request) -> None:
 
     configured_token = _current_admin_api_token()
     if not configured_token:
+        _audit_security_event(
+            "remote_admin_guard",
+            request,
+            result="blocked",
+            details="reason=admin_token_not_configured",
+        )
         raise HTTPException(
             status_code=503,
             detail="远程管理接口已禁用，请先配置 ADMIN_API_TOKEN",
@@ -356,6 +392,13 @@ def _require_remote_admin(request: Request) -> None:
 
     provided_token = _extract_admin_token(request)
     if not provided_token or not secrets.compare_digest(provided_token, configured_token):
+        reason = "missing_admin_token" if not provided_token else "invalid_admin_token"
+        _audit_security_event(
+            "remote_admin_guard",
+            request,
+            result="rejected",
+            details=f"reason={reason}",
+        )
         raise HTTPException(status_code=403, detail="缺少有效的管理令牌")
 
 
@@ -363,6 +406,12 @@ def _require_remote_share_secret(request: Request) -> None:
     if not ALLOW_REMOTE_CLIENTS or _request_is_local(request):
         return
     if _share_link_secret_is_weak():
+        _audit_security_event(
+            "remote_share_guard",
+            request,
+            result="blocked",
+            details="reason=weak_share_link_secret",
+        )
         raise HTTPException(
             status_code=503,
             detail="远程分享已禁用，请配置强 SHARE_LINK_SECRET 后再启用",
@@ -393,13 +442,19 @@ def _audit_security_event(
 ) -> None:
     request_id = getattr(request.state, "request_id", "")
     logger.info(
-        "security_event action=%s result=%s request_id=%s ip=%s local=%s details=%s",
+        (
+            "security_event action=%s result=%s request_id=%s ip=%s local=%s "
+            "auth=%s user_id=%s user_role=%s details=%s"
+        ),
         action,
         result,
         request_id,
         _request_client_ip(request),
         _request_is_local(request),
-        details,
+        _admin_auth_mode(request),
+        _request_user_id(request),
+        _request_user_role(request),
+        _sanitize_log_value(details, max_length=512),
     )
 
 
@@ -2464,14 +2519,20 @@ async def upload_documents(
 
 
 @app.get("/api/documents/stats")
-async def get_document_stats(path: Optional[str] = None):
+async def get_document_stats(request: Request, path: Optional[str] = None):
     from doc_pipeline import DocPipeline
 
+    _require_remote_admin(request)
     pipeline = DocPipeline(vector_store_path=_effective_vector_store_path(path))
     try:
         pipeline.load_store()
         stats = pipeline.get_stats()
         stats.setdefault("store_path", pipeline.vector_store_path)
+        _audit_security_event(
+            "get_document_stats",
+            request,
+            details=f"path={pipeline.vector_store_path}",
+        )
         return stats
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -2497,8 +2558,9 @@ async def get_ollama_models(base_url: str = "http://localhost:11434"):
 
 
 @app.get("/api/config")
-async def get_config():
-    return {
+async def get_config(request: Request):
+    _require_remote_admin(request)
+    payload = {
         "tavily_api_key_set": bool(os.environ.get("TAVILY_API_KEY")),
         "llm_provider": os.environ.get("LLM_PROVIDER", "ollama"),
         "ollama_model": os.environ.get("OLLAMA_MODEL", "qwen3.5-2B:latest"),
@@ -2508,6 +2570,8 @@ async def get_config():
             "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
         ),
     }
+    _audit_security_event("get_config", request)
+    return payload
 
 
 @app.post("/api/config")
@@ -2537,10 +2601,17 @@ async def reset_agents(request: Request):
 
 
 @app.get("/api/prompts")
-async def list_prompts():
+async def list_prompts(request: Request):
     from chat_store import get_all_system_prompts
 
-    return {"prompts": get_all_system_prompts()}
+    _require_remote_admin(request)
+    payload = {"prompts": get_all_system_prompts()}
+    _audit_security_event(
+        "list_prompts",
+        request,
+        details=f"prompt_count={len(payload['prompts'])}",
+    )
+    return payload
 
 
 @app.post("/api/prompts")
@@ -2927,6 +2998,7 @@ async def download_report_pptx(session_id: str):
 
 @app.get("/api/knowledge-base/chunks")
 async def list_knowledge_base_chunks(
+    request: Request,
     path: Optional[str] = None,
     query: str = "",
     source: str = "",
@@ -2935,9 +3007,10 @@ async def list_knowledge_base_chunks(
 ):
     from doc_pipeline import DocPipeline
 
+    _require_remote_admin(request)
     store_path = _effective_vector_store_path(path)
     abs_store = str(_resolve_project_subdir(store_path))
-    return list_kb_chunks_payload(
+    payload = list_kb_chunks_payload(
         store_path=store_path,
         abs_store=abs_store,
         index_exists=(Path(abs_store) / "index.faiss").exists(),
@@ -2951,6 +3024,15 @@ async def list_knowledge_base_chunks(
         collect_chunks=_kb_collect_chunks,
         filter_chunks=filter_kb_chunks,
     )
+    _audit_security_event(
+        "list_knowledge_base_chunks",
+        request,
+        details=(
+            f"path={store_path} query={query or '<empty>'} source={source or '<empty>'} "
+            f"offset={offset} limit={limit}"
+        ),
+    )
+    return payload
 
 
 @app.patch("/api/knowledge-base/chunks/{chunk_id}")
@@ -3012,17 +3094,18 @@ async def delete_knowledge_base_chunk(
 
 
 @app.get("/api/knowledge-bases")
-async def list_knowledge_bases():
+async def list_knowledge_bases(request: Request):
     """列出可用的知识库目录"""
     import glob as glob_module
     from doc_pipeline import DocPipeline
 
+    _require_remote_admin(request)
     base_dir = os.path.dirname(os.path.abspath(__file__))
     try:
         current_effective_path = _effective_vector_store_path()
     except HTTPException:
         current_effective_path = None
-    return knowledge_bases_payload(
+    payload = knowledge_bases_payload(
         base_dir=base_dir,
         active_vector_store_id=_active_vector_store_id(),
         current_effective_path=current_effective_path,
@@ -3034,15 +3117,22 @@ async def list_knowledge_bases():
             vector_store_path=vector_store_path
         ),
     )
+    _audit_security_event(
+        "list_knowledge_bases",
+        request,
+        details=f"knowledge_base_count={len(payload.get('knowledge_bases', []))}",
+    )
+    return payload
 
 
 @app.get("/api/knowledge-base/health")
-async def get_kb_health(path: Optional[str] = None):
+async def get_kb_health(request: Request, path: Optional[str] = None):
     """知识库健康检查 - 返回详细状态信息"""
     from doc_pipeline import DocPipeline
 
+    _require_remote_admin(request)
     target_path = _resolve_project_subdir(_effective_vector_store_path(path))
-    return kb_health_payload(
+    payload = kb_health_payload(
         target_path,
         embedding_model=os.getenv("EMBEDDING_MODEL", "BAAI/bge-large-zh-v1.5"),
         faiss_safe_store_path=_faiss_safe_store_path,
@@ -3051,25 +3141,40 @@ async def get_kb_health(path: Optional[str] = None):
         ),
         logger=logger,
     )
+    _audit_security_event(
+        "get_knowledge_base_health",
+        request,
+        details=f"path={target_path}",
+    )
+    return payload
 
 
 @app.post("/api/knowledge-base/test-retrieval")
-async def test_retrieval(request: TestRetrievalRequest):
+async def test_retrieval(request: Request, payload: TestRetrievalRequest):
     """执行测试检索，用于诊断知识库"""
     from doc_pipeline import DocPipeline
 
-    pipeline = DocPipeline(
-        vector_store_path=_effective_vector_store_path(request.vector_store_path)
-    )
+    _require_remote_admin(request)
+    vector_store_path = _effective_vector_store_path(payload.vector_store_path)
+    pipeline = DocPipeline(vector_store_path=vector_store_path)
     try:
-        return retrieval_test_payload(
-            request.query,
+        result = retrieval_test_payload(
+            payload.query,
             pipeline,
             current_time=time.time,
-            search_k=request.search_k or 5,
-            fetch_k=request.fetch_k or 10,
-            use_rerank=request.use_rerank or False,
+            search_k=payload.search_k or 5,
+            fetch_k=payload.fetch_k or 10,
+            use_rerank=payload.use_rerank or False,
         )
+        _audit_security_event(
+            "test_knowledge_base_retrieval",
+            request,
+            details=(
+                f"path={vector_store_path} query_hash={_content_hash(payload.query)} "
+                f"results_count={result.get('results_count', 0)}"
+            ),
+        )
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as e:

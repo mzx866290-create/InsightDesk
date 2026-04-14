@@ -1,3 +1,5 @@
+import logging
+
 from fastapi.testclient import TestClient
 
 import api_server
@@ -72,3 +74,51 @@ def test_remote_document_upload_requires_admin_token(monkeypatch, tmp_path):
         files=[("files", ("demo.txt", b"hello world", "text/plain"))],
     )
     assert allowed.status_code != 403
+
+
+def test_remote_read_sensitive_routes_require_admin_token(monkeypatch):
+    monkeypatch.setattr(api_server, "ALLOW_REMOTE_CLIENTS", True)
+    monkeypatch.setattr(api_server, "_request_is_local", lambda request: False)
+    monkeypatch.setenv("ADMIN_API_TOKEN", "demo-admin-token")
+    client = TestClient(api_server.app)
+
+    cases = [
+        ("get", "/api/config", {}),
+        ("get", "/api/prompts", {}),
+        ("get", "/api/documents/stats", {}),
+        ("get", "/api/knowledge-bases", {}),
+        ("get", "/api/knowledge-base/health", {}),
+        ("get", "/api/knowledge-base/chunks", {}),
+        ("post", "/api/knowledge-base/test-retrieval", {"json": {"query": "alpha"}}),
+    ]
+
+    for method, url, kwargs in cases:
+        response = getattr(client, method)(url, **kwargs)
+        assert response.status_code == 403, url
+        assert response.json()["detail"] == "缺少有效的管理令牌"
+
+
+def test_security_audit_logs_include_auth_and_identity_metadata(
+    monkeypatch, caplog
+):
+    monkeypatch.setattr(api_server, "ALLOW_REMOTE_CLIENTS", True)
+    monkeypatch.setattr(api_server, "_request_is_local", lambda request: False)
+    monkeypatch.setenv("ADMIN_API_TOKEN", "demo-admin-token")
+    client = TestClient(api_server.app)
+
+    with caplog.at_level(logging.INFO, logger=api_server.logger.name):
+        response = client.get(
+            "/api/config",
+            headers={
+                "X-Admin-Token": "demo-admin-token",
+                "X-User-Id": "alice\nops",
+                "X-User-Role": "platform\tadmin",
+            },
+        )
+
+    assert response.status_code == 200
+    messages = "\n".join(caplog.messages)
+    assert "action=get_config" in messages
+    assert "auth=header" in messages
+    assert "user_id=alice ops" in messages
+    assert "user_role=platform admin" in messages
