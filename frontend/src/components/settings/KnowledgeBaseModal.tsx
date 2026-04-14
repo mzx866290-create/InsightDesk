@@ -22,6 +22,7 @@ import {
   X,
   HardDrive,
 } from 'lucide-react'
+import { AdminTokenPanel } from '../admin/AdminTokenPanel'
 import { Modal } from '../ui/Modal'
 import {
   getKBHealth,
@@ -37,6 +38,7 @@ import {
   type RetrievalTestResult,
   type TaskRecord,
 } from '../../api/client'
+import { isAdminAccessError } from '../admin/adminAccess'
 
 // ── 类型 ────────────────────────────────────────────
 
@@ -46,15 +48,6 @@ interface DocGroup {
   source: string
   chunks: KnowledgeBaseChunk[]
   totalChars: number
-}
-
-function isAdminAccessError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? '')
-  return (
-    message.includes('管理令牌') ||
-    message.includes('ADMIN_API_TOKEN') ||
-    message.includes('远程管理接口已禁用')
-  )
 }
 
 // ── 工具函数 ─────────────────────────────────────────
@@ -758,57 +751,21 @@ export const KnowledgeBaseModal: React.FC<KnowledgeBaseModalProps> = ({ open, on
 
   return (
     <Modal open={open} onClose={onClose} title="知识库管理" width="max-w-2xl">
-      <div className="mb-4 rounded-xl border border-bg-border bg-bg-tertiary/30 p-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-semibold text-text-primary">远程管理员令牌</h3>
-            <p className="mt-1 text-xs leading-5 text-text-secondary">
-              远程访问知识库管理接口时需要。令牌只保存在当前浏览器本地，不会回写服务端。
-            </p>
-          </div>
-          <span className={`rounded-full px-2 py-1 text-[11px] ${
-            adminToken.trim()
-              ? 'bg-accent-green/10 text-accent-green'
-              : 'bg-bg-secondary text-text-secondary'
-          }`}>
-            {adminToken.trim() ? '已保存' : '未配置'}
-          </span>
-        </div>
-
-        <div className="mt-3 flex gap-2">
-          <input
-            className="input-base flex-1 text-sm"
-            type="password"
-            placeholder="输入 ADMIN_API_TOKEN"
-            value={adminToken}
-            onChange={(e) => setAdminToken(e.target.value)}
-          />
-          <button
-            onClick={handleSaveAdminToken}
-            className="px-3 py-2 rounded-lg text-sm font-medium bg-accent-blue text-white hover:bg-accent-blue/80 transition-colors"
-          >
-            {adminTokenSaved ? '已保存' : '保存令牌'}
-          </button>
-          <button
-            onClick={() => {
-              setAdminToken('')
-              saveAdminApiToken('')
-              setAdminTokenSaved(false)
-              setAdminAccessError(null)
-              setRefreshKey((key) => key + 1)
-            }}
-            className="px-3 py-2 rounded-lg text-sm font-medium border border-bg-border text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
-          >
-            清除
-          </button>
-        </div>
-
-        {adminAccessError && (
-          <div className="mt-3 rounded-lg border border-accent-red/30 bg-accent-red/10 px-3 py-2 text-xs text-accent-red">
-            {adminAccessError}
-          </div>
-        )}
-      </div>
+      <AdminTokenPanel
+        token={adminToken}
+        saved={adminTokenSaved}
+        error={adminAccessError}
+        description="远程访问知识库管理接口时需要。可在这里直接保存后刷新当前知识库视图。"
+        onTokenChange={setAdminToken}
+        onSave={handleSaveAdminToken}
+        onClear={() => {
+          setAdminToken('')
+          saveAdminApiToken('')
+          setAdminTokenSaved(false)
+          setAdminAccessError(null)
+          setRefreshKey((key) => key + 1)
+        }}
+      />
 
       {/* Tab 导航 */}
       <div className="flex gap-1 mb-5 p-1 bg-bg-tertiary rounded-xl border border-bg-border">
