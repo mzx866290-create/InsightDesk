@@ -30,6 +30,8 @@ import {
   testKBRetrieval,
   uploadDocuments,
   getTask,
+  getAdminApiToken,
+  saveAdminApiToken,
   type KBHealthData,
   type KnowledgeBaseChunk,
   type RetrievalTestResult,
@@ -44,6 +46,15 @@ interface DocGroup {
   source: string
   chunks: KnowledgeBaseChunk[]
   totalChars: number
+}
+
+function isAdminAccessError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return (
+    message.includes('管理令牌') ||
+    message.includes('ADMIN_API_TOKEN') ||
+    message.includes('远程管理接口已禁用')
+  )
 }
 
 // ── 工具函数 ─────────────────────────────────────────
@@ -79,9 +90,10 @@ function formatDate(ts: number | null): string {
 
 interface DocumentsTabProps {
   onDeleted?: () => void
+  onAdminAccessError?: (message: string | null) => void
 }
 
-const DocumentsTab: React.FC<DocumentsTabProps> = ({ onDeleted }) => {
+const DocumentsTab: React.FC<DocumentsTabProps> = ({ onDeleted, onAdminAccessError }) => {
   const [loading, setLoading] = useState(true)
   const [groups, setGroups] = useState<DocGroup[]>([])
   const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set())
@@ -106,12 +118,15 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ onDeleted }) => {
         offset += limit
       }
       setGroups(groupChunksBySource(allChunks))
+      onAdminAccessError?.(null)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '加载失败')
+      const message = e instanceof Error ? e.message : '加载失败'
+      setError(message)
+      if (isAdminAccessError(e)) onAdminAccessError?.(message)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [onAdminAccessError])
 
   useEffect(() => { load() }, [load])
 
@@ -132,7 +147,9 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ onDeleted }) => {
       await load()
       onDeleted?.()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '删除失败')
+      const message = e instanceof Error ? e.message : '删除失败'
+      setError(message)
+      if (isAdminAccessError(e)) onAdminAccessError?.(message)
     } finally {
       setDeletingChunk(null)
     }
@@ -150,7 +167,9 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ onDeleted }) => {
       await load()
       onDeleted?.()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '删除失败')
+      const message = e instanceof Error ? e.message : '删除失败'
+      setError(message)
+      if (isAdminAccessError(e)) onAdminAccessError?.(message)
     } finally {
       setDeletingSource(null)
     }
@@ -310,7 +329,10 @@ const DocumentsTab: React.FC<DocumentsTabProps> = ({ onDeleted }) => {
 
 // ── 子组件：上传文档 Tab ─────────────────────────────
 
-const UploadTab: React.FC<{ onUploaded?: () => void }> = ({ onUploaded }) => {
+const UploadTab: React.FC<{
+  onUploaded?: () => void
+  onAdminAccessError?: (message: string | null) => void
+}> = ({ onUploaded, onAdminAccessError }) => {
   const [dragging, setDragging] = useState(false)
   const [files, setFiles] = useState<File[]>([])
   const [uploading, setUploading] = useState(false)
@@ -369,9 +391,12 @@ const UploadTab: React.FC<{ onUploaded?: () => void }> = ({ onUploaded }) => {
     try {
       const res = await uploadDocuments(files)
       startPolling(res.task_id)
+      onAdminAccessError?.(null)
     } catch (e: unknown) {
       setUploading(false)
-      setError(e instanceof Error ? e.message : '上传失败')
+      const message = e instanceof Error ? e.message : '上传失败'
+      setError(message)
+      if (isAdminAccessError(e)) onAdminAccessError?.(message)
     }
   }
 
@@ -470,7 +495,9 @@ const UploadTab: React.FC<{ onUploaded?: () => void }> = ({ onUploaded }) => {
 
 // ── 子组件：检索测试 Tab ─────────────────────────────
 
-const RetrievalTab: React.FC = () => {
+const RetrievalTab: React.FC<{ onAdminAccessError?: (message: string | null) => void }> = ({
+  onAdminAccessError,
+}) => {
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<RetrievalTestResult | null>(null)
@@ -485,8 +512,11 @@ const RetrievalTab: React.FC = () => {
       const res = await testKBRetrieval(query.trim())
       setResult(res)
       if (res.error) setError(res.error)
+      onAdminAccessError?.(null)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '检索失败')
+      const message = e instanceof Error ? e.message : '检索失败'
+      setError(message)
+      if (isAdminAccessError(e)) onAdminAccessError?.(message)
     } finally {
       setLoading(false)
     }
@@ -559,7 +589,9 @@ const RetrievalTab: React.FC = () => {
 
 // ── 子组件：健康状态 Tab ─────────────────────────────
 
-const HealthTab: React.FC = () => {
+const HealthTab: React.FC<{ onAdminAccessError?: (message: string | null) => void }> = ({
+  onAdminAccessError,
+}) => {
   const [loading, setLoading] = useState(true)
   const [health, setHealth] = useState<KBHealthData | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -570,12 +602,15 @@ const HealthTab: React.FC = () => {
     try {
       const data = await getKBHealth()
       setHealth(data)
+      onAdminAccessError?.(null)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '获取状态失败')
+      const message = e instanceof Error ? e.message : '获取状态失败'
+      setError(message)
+      if (isAdminAccessError(e)) onAdminAccessError?.(message)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [onAdminAccessError])
 
   useEffect(() => { load() }, [load])
 
@@ -698,11 +733,83 @@ const TABS: { key: TabKey; icon: React.ReactNode; label: string }[] = [
 export const KnowledgeBaseModal: React.FC<KnowledgeBaseModalProps> = ({ open, onClose }) => {
   const [activeTab, setActiveTab] = useState<TabKey>('documents')
   const [refreshKey, setRefreshKey] = useState(0)
+  const [adminToken, setAdminToken] = useState('')
+  const [adminTokenSaved, setAdminTokenSaved] = useState(false)
+  const [adminAccessError, setAdminAccessError] = useState<string | null>(null)
 
   const handleDataChanged = () => setRefreshKey(k => k + 1)
 
+  useEffect(() => {
+    if (!open) return
+    setAdminToken(getAdminApiToken())
+    setAdminTokenSaved(false)
+    setAdminAccessError(null)
+  }, [open])
+
+  const handleSaveAdminToken = () => {
+    const normalized = adminToken.trim()
+    saveAdminApiToken(normalized)
+    setAdminToken(normalized)
+    setAdminTokenSaved(true)
+    setAdminAccessError(null)
+    setRefreshKey((key) => key + 1)
+    window.setTimeout(() => setAdminTokenSaved(false), 2500)
+  }
+
   return (
     <Modal open={open} onClose={onClose} title="知识库管理" width="max-w-2xl">
+      <div className="mb-4 rounded-xl border border-bg-border bg-bg-tertiary/30 p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-text-primary">远程管理员令牌</h3>
+            <p className="mt-1 text-xs leading-5 text-text-secondary">
+              远程访问知识库管理接口时需要。令牌只保存在当前浏览器本地，不会回写服务端。
+            </p>
+          </div>
+          <span className={`rounded-full px-2 py-1 text-[11px] ${
+            adminToken.trim()
+              ? 'bg-accent-green/10 text-accent-green'
+              : 'bg-bg-secondary text-text-secondary'
+          }`}>
+            {adminToken.trim() ? '已保存' : '未配置'}
+          </span>
+        </div>
+
+        <div className="mt-3 flex gap-2">
+          <input
+            className="input-base flex-1 text-sm"
+            type="password"
+            placeholder="输入 ADMIN_API_TOKEN"
+            value={adminToken}
+            onChange={(e) => setAdminToken(e.target.value)}
+          />
+          <button
+            onClick={handleSaveAdminToken}
+            className="px-3 py-2 rounded-lg text-sm font-medium bg-accent-blue text-white hover:bg-accent-blue/80 transition-colors"
+          >
+            {adminTokenSaved ? '已保存' : '保存令牌'}
+          </button>
+          <button
+            onClick={() => {
+              setAdminToken('')
+              saveAdminApiToken('')
+              setAdminTokenSaved(false)
+              setAdminAccessError(null)
+              setRefreshKey((key) => key + 1)
+            }}
+            className="px-3 py-2 rounded-lg text-sm font-medium border border-bg-border text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
+          >
+            清除
+          </button>
+        </div>
+
+        {adminAccessError && (
+          <div className="mt-3 rounded-lg border border-accent-red/30 bg-accent-red/10 px-3 py-2 text-xs text-accent-red">
+            {adminAccessError}
+          </div>
+        )}
+      </div>
+
       {/* Tab 导航 */}
       <div className="flex gap-1 mb-5 p-1 bg-bg-tertiary rounded-xl border border-bg-border">
         {TABS.map(tab => (
@@ -722,10 +829,20 @@ export const KnowledgeBaseModal: React.FC<KnowledgeBaseModalProps> = ({ open, on
       </div>
 
       {/* Tab 内容 */}
-      {activeTab === 'documents' && <DocumentsTab key={`docs-${refreshKey}`} onDeleted={handleDataChanged} />}
-      {activeTab === 'upload' && <UploadTab onUploaded={handleDataChanged} />}
-      {activeTab === 'retrieval' && <RetrievalTab />}
-      {activeTab === 'health' && <HealthTab key={`health-${refreshKey}`} />}
+      {activeTab === 'documents' && (
+        <DocumentsTab
+          key={`docs-${refreshKey}`}
+          onDeleted={handleDataChanged}
+          onAdminAccessError={setAdminAccessError}
+        />
+      )}
+      {activeTab === 'upload' && (
+        <UploadTab onUploaded={handleDataChanged} onAdminAccessError={setAdminAccessError} />
+      )}
+      {activeTab === 'retrieval' && <RetrievalTab onAdminAccessError={setAdminAccessError} />}
+      {activeTab === 'health' && (
+        <HealthTab key={`health-${refreshKey}`} onAdminAccessError={setAdminAccessError} />
+      )}
     </Modal>
   )
 }

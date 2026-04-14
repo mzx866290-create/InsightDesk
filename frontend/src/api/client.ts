@@ -1538,7 +1538,7 @@ export async function listTasks(limit = 20): Promise<TaskRecord[]> {
 
 export async function getDocStats(): Promise<DocStats> {
   const res = await fetch(`${BASE}/documents/stats`)
-  if (!res.ok) throw new Error('获取统计信息失败。')
+  if (!res.ok) throw new Error(await readErrorDetail(res, '获取统计信息失败'))
   return res.json()
 }
 
@@ -1561,7 +1561,7 @@ export async function createSystemPrompt(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, content, dashboard_template: dashboard_template ?? {} }),
   })
-  if (!res.ok) throw new Error('创建角色失败。')
+  if (!res.ok) throw new Error(await readErrorDetail(res, '创建角色失败'))
   return res.json()
 }
 
@@ -1576,7 +1576,7 @@ export async function updateSystemPrompt(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, content, dashboard_template: dashboard_template ?? {} }),
   })
-  if (!res.ok) throw new Error('更新角色失败。')
+  if (!res.ok) throw new Error(await readErrorDetail(res, '更新角色失败'))
   return res.json()
 }
 
@@ -1587,7 +1587,7 @@ export async function deleteSystemPrompt(id: string): Promise<void> {
 
 export async function activateSystemPrompt(id: string): Promise<{ ok: boolean; kb_status?: string }> {
   const res = await fetch(`${BASE}/prompts/${id}/activate`, { method: 'POST' })
-  if (!res.ok) throw new Error('启用角色失败。')
+  if (!res.ok) throw new Error(await readErrorDetail(res, '启用角色失败'))
   return res.json()
 }
 
@@ -1607,7 +1607,7 @@ export async function createSystemPromptWithKB(
       dashboard_template: dashboardTemplate ?? {},
     }),
   })
-  if (!res.ok) throw new Error('创建角色失败。')
+  if (!res.ok) throw new Error(await readErrorDetail(res, '创建角色失败'))
   return res.json()
 }
 
@@ -1628,7 +1628,7 @@ export async function updateSystemPromptWithKB(
       dashboard_template: dashboardTemplate ?? {},
     }),
   })
-  if (!res.ok) throw new Error('更新角色失败。')
+  if (!res.ok) throw new Error(await readErrorDetail(res, '更新角色失败'))
   return res.json()
 }
 
@@ -1748,8 +1748,7 @@ export async function getKnowledgeBases(): Promise<KnowledgeBase[]> {
 export async function getKBHealth(): Promise<KBHealthData> {
   const res = await fetch(`${BASE}/knowledge-base/health`)
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: '获取知识库健康状态失败。' }))
-    throw new Error(err.detail ?? '获取知识库健康状态失败。')
+    throw new Error(await readErrorDetail(res, '获取知识库健康状态失败'))
   }
   return res.json()
 }
@@ -1834,7 +1833,7 @@ export async function testKBRetrieval(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, ...options }),
   })
-  if (!res.ok) throw new Error('检索测试失败。')
+  if (!res.ok) throw new Error(await readErrorDetail(res, '检索测试失败'))
   return res.json()
 }
 
@@ -1844,7 +1843,6 @@ export async function deleteKnowledgeBase(path?: string): Promise<void> {
     : `${BASE}/knowledge-base`
   const res = await fetch(url, { method: 'DELETE' })
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail ?? res.statusText)
+    throw new Error(await readErrorDetail(res, res.statusText))
   }
 }
