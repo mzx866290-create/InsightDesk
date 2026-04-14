@@ -1,5 +1,6 @@
 import React, { Suspense, useEffect, useState } from 'react'
 import { ChevronLeft, ChevronRight, Download, ExternalLink, Copy, Check, X } from 'lucide-react'
+import { InlineNotice } from '../ui/InlineNotice'
 
 interface ReportPreviewModalProps {
   open: boolean
@@ -39,6 +40,7 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
   const [currentSlide, setCurrentSlide] = useState(0)
   const [copied, setCopied] = useState(false)
   const [downloading, setDownloading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   if (!open) return null
 
@@ -48,6 +50,7 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
   useEffect(() => {
     if (open) {
       setCurrentSlide(0)
+      setError(null)
     }
   }, [open, markdown])
 
@@ -69,11 +72,12 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
 
   const handleDownloadPptx = async () => {
     setDownloading(true)
+    setError(null)
     try {
       const res = await fetch(`/api/reports/download/${sessionId}`)
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }))
-        alert('下载失败: ' + (err.detail ?? res.statusText))
+        setError(`下载失败：${err.detail ?? res.statusText}`)
         return
       }
       const blob = await res.blob()
@@ -84,7 +88,7 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
       a.click()
       URL.revokeObjectURL(url)
     } catch (e) {
-      alert('下载失败: ' + (e as Error).message)
+      setError(`下载失败：${(e as Error).message}`)
     } finally {
       setDownloading(false)
     }
@@ -158,6 +162,12 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
           </button>
         </div>
       </div>
+
+      {error && (
+        <div className="px-4 pt-3 sm:px-5">
+          <InlineNotice message={error} tone="error" />
+        </div>
+      )}
 
       {/* Slide preview */}
       <div className="flex-1 min-h-0 px-4 py-4 sm:px-6">
