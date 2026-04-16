@@ -214,6 +214,57 @@ class SQLiteShareLinkStore:
             return None
         return record
 
+    def list_links(
+        self,
+        *,
+        resource_type: str = "",
+        active_only: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ShareLinkRecord]:
+        self._init_db()
+        normalized_resource_type = str(resource_type or "").strip()
+        normalized_limit = max(1, min(int(limit or 100), 500))
+        normalized_offset = max(0, int(offset or 0))
+
+        clauses: list[str] = []
+        params: list[Any] = []
+
+        if normalized_resource_type:
+            clauses.append("resource_type = ?")
+            params.append(normalized_resource_type)
+        if active_only:
+            clauses.append("revoked_at IS NULL")
+            clauses.append("expires_at > ?")
+            params.append(time.time())
+
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+        with connect_sqlite(self.db_path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    share_token,
+                    resource_type,
+                    resource_id,
+                    created_at,
+                    expires_at,
+                    revoked_at,
+                    created_by_ip,
+                    created_user_agent,
+                    access_count,
+                    last_accessed_at,
+                    last_accessed_ip,
+                    last_accessed_user_agent
+                FROM share_links
+                {where_sql}
+                ORDER BY created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (*params, normalized_limit, normalized_offset),
+            ).fetchall()
+        return [record for row in rows if (record := self._from_row(row)) is not None]
+
     def revoke(self, share_token: str) -> bool:
         self._init_db()
         with connect_sqlite(self.db_path) as conn:

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Send, Globe, Square, Database, ImagePlus, Paperclip, X } from 'lucide-react'
+import { Send, Globe, Square, Database, ImagePlus, Paperclip, Sparkles, Loader2, X } from 'lucide-react'
 import { useChatStore } from '../../stores/chatStore'
 import {
   streamChat,
@@ -7,8 +7,8 @@ import {
   getSystemPrompts,
   truncateSessionMessagesFromAnswerGroup,
 } from '../../api/client'
-import type { ChatFile, ChatImage, SSEChunk, SystemPrompt } from '../../api/client'
-import { useTaskStore } from '../../stores/taskStore'
+import type { ChatFile, ChatImage, SSEChunk, SourceItem, SystemPrompt } from '../../api/client'
+import { createAndTrackTask, useTaskStore } from '../../stores/taskStore'
 import type { ActiveStreamControl } from './streamControl'
 import { parseWorkflowEvent } from '../../api/workflowClient'
 import { useWorkflowStore } from '../../stores/workflowStore'
@@ -201,6 +201,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     setWebSearchEnabled,
     knowledgeBaseEnabled,
     setKnowledgeBaseEnabled,
+    enabledMcpServers,
     addUserMessage,
     appendChunk,
     setAssistantMessage,
@@ -219,11 +220,13 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     composerSeed,
     adjustWorkspaceSessionCount,
   } = useChatStore()
+  const tasksMap = useTaskStore((state) => state.tasks)
 
   const [input, setInput] = useState('')
   const [images, setImages] = useState<ChatImage[]>([])
   const [files, setFiles] = useState<ChatFile[]>([])
   const [isLoading, setIsLoading] = useState(false)
+  const [isResearchStarting, setIsResearchStarting] = useState(false)
   const [pendingEditAnswerGroupId, setPendingEditAnswerGroupId] = useState<string | null>(null)
   const [systemPrompts, setSystemPrompts] = useState<SystemPrompt[]>([])
   const [suggestions, setSuggestions] = useState<ComposerSuggestion[]>([])
@@ -234,6 +237,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const attachmentInputRef = useRef<HTMLInputElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
   const streamingMsgIds = useRef<Map<string, string>>(new Map())
+  const syncedResearchTaskSignaturesRef = useRef<Map<string, string>>(new Map())
 
   useEffect(() => {
     if (composerSeed.token === 0) return
@@ -262,6 +266,79 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       disposed = true
     }
   }, [])
+
+  useEffect(() => {
+    const taskRecords = Object.values(tasksMap)
+
+    for (const panel of panels) {
+      for (const message of panel.messages) {
+        if (
+          message.role !== 'assistant' ||
+          message.taskType !== 'web_research' ||
+          !message.answerGroupId
+        ) {
+          continue
+        }
+
+        const task = taskRecords
+          .filter((item) => {
+            if (item.task_type !== 'web_research') return false
+            if ((item.session_id ?? '') !== (currentSessionId ?? '')) return false
+            const params = item.params ?? {}
+            return (
+              params.answer_group_id === message.answerGroupId &&
+              params.panel_id === panel.id
+            )
+          })
+          .sort((a, b) => (b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at))[0]
+        if (!task) continue
+
+        if (task.status === 'completed' && typeof task.result === 'string' && task.result.trim()) {
+          const signature = `completed:${task.updated_at ?? task.created_at}:${task.result}`
+          if (syncedResearchTaskSignaturesRef.current.get(task.task_id) === signature) {
+            continue
+          }
+
+          const taskSources = Array.isArray(task.params?.research_sources)
+            ? task.params.research_sources
+            : undefined
+          const taskWorkflowNodes = Array.isArray(task.params?.research_workflow_nodes)
+            ? task.params.research_workflow_nodes
+            : undefined
+
+          replaceAssistantMessageByAnswerGroup(panel.id, message.answerGroupId, {
+            content: task.result,
+            streaming: false,
+            sources: taskSources as SourceItem[] | undefined,
+            workflowNodes: taskWorkflowNodes as any,
+            taskId: task.task_id,
+            taskType: task.task_type,
+          })
+          if (taskWorkflowNodes && taskWorkflowNodes.length > 0) {
+            useWorkflowStore.getState().hydrateWorkflow(panel.id, taskWorkflowNodes as any)
+          }
+          syncedResearchTaskSignaturesRef.current.set(task.task_id, signature)
+          continue
+        }
+
+        if (task.status === 'failed' && typeof task.error === 'string' && task.error.trim()) {
+          const failureContent = `联网研究任务失败：${task.error}`
+          const signature = `failed:${task.updated_at ?? task.created_at}:${failureContent}`
+          if (syncedResearchTaskSignaturesRef.current.get(task.task_id) === signature) {
+            continue
+          }
+
+          replaceAssistantMessageByAnswerGroup(panel.id, message.answerGroupId, {
+            content: failureContent,
+            streaming: false,
+            taskId: task.task_id,
+            taskType: task.task_type,
+          })
+          syncedResearchTaskSignaturesRef.current.set(task.task_id, signature)
+        }
+      }
+    }
+  }, [currentSessionId, panels, replaceAssistantMessageByAnswerGroup, tasksMap])
 
   const adjustHeight = () => {
     const ta = textareaRef.current
@@ -463,6 +540,26 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     )
   }
 
+  const classifyStreamFailure = (error: string) => {
+    const normalizedError = error.trim() || 'Request failed while processing.'
+    const isNetworkError = /failed to fetch|network|backend returned an empty response body/i.test(
+      normalizedError,
+    )
+    const isTimeoutError = /timeout|timed out|504|超时/i.test(normalizedError)
+
+    return {
+      content: isNetworkError
+        ? 'Network connection failed. Unable to reach the backend service.'
+        : isTimeoutError
+          ? 'The request timed out before the model finished responding.'
+          : normalizedError,
+      errorCode: isNetworkError ? 'NETWORK_ERROR' : isTimeoutError ? 'TIMEOUT' : 'REQUEST_FAILED',
+      suggestion: isNetworkError || isTimeoutError
+        ? undefined
+        : 'Please adjust the message or attachments and try again.',
+    }
+  }
+
   const handleStop = () => {
     abortControllerRef.current?.abort()
     setIsLoading(false)
@@ -499,6 +596,123 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     })
   }
 
+  const buildAnswerGroupId = (preferredAnswerGroupId?: string | null): string =>
+    preferredAnswerGroupId?.trim() ||
+    (globalThis.crypto?.randomUUID?.() ?? `grp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+
+  const ensureActiveSession = async (sessionTitleSeed: string): Promise<string | null> => {
+    if (currentSessionId) return currentSessionId
+
+    try {
+      const session = await apiCreateSession(sessionTitleSeed.slice(0, 40), {
+        workspace_id: currentWorkspaceId ?? undefined,
+      })
+      const nextSessionId = session.session_id
+      setCurrentSession(nextSessionId)
+      addSession({
+        session_id: nextSessionId,
+        title: session.title,
+        created_at: Date.now() / 1000,
+        updated_at: Date.now() / 1000,
+        message_count: 0,
+        is_archived: false,
+        is_favorite: false,
+        is_pinned: false,
+        session_order: 0,
+        tags: [],
+        workspace_id: session.workspace_id ?? currentWorkspaceId ?? 'workspace-default',
+      })
+      adjustWorkspaceSessionCount(
+        session.workspace_id ?? currentWorkspaceId ?? 'workspace-default',
+        1,
+      )
+      return nextSessionId
+    } catch (error) {
+      console.error('Failed to create session', error)
+      return null
+    }
+  }
+
+  const handleStartResearch = async () => {
+    const query = input.trim()
+    const pendingImages = [...images]
+    const pendingFiles = [...files]
+    if (
+      query.length === 0 ||
+      pendingImages.length > 0 ||
+      pendingFiles.length > 0 ||
+      pendingEditAnswerGroupId ||
+      isLoading ||
+      isResearchStarting ||
+      isInteractionLocked
+    ) {
+      return
+    }
+
+    setIsResearchStarting(true)
+    const sessionTitleSeed = query
+    const sessionId = await ensureActiveSession(sessionTitleSeed)
+    if (!sessionId) {
+      setIsResearchStarting(false)
+      return
+    }
+
+    const currentSession = sessions.find((session) => session.session_id === sessionId)
+    const answerGroupId = buildAnswerGroupId()
+    const primaryPanelId = panels[0]?.id
+    const assistantMessageId = `assistant-research-${Date.now()}`
+    const researchModelId = 'web_research'
+
+    try {
+      const task = await createAndTrackTask(
+        'web_research',
+        {
+          query,
+          providers: ['tavily'],
+          research_mode: 'deep',
+          search_depth: 'advanced',
+          max_results: 8,
+          max_results_per_query: 4,
+          max_rounds: 2,
+          panel_id: primaryPanelId ?? '',
+          answer_group_id: answerGroupId,
+          model_id: researchModelId,
+          panel_config: panels[0]?.modelConfig,
+        },
+        sessionId,
+      )
+
+      addUserMessage(query, [], [], answerGroupId)
+
+      if (primaryPanelId) {
+        appendChunk(primaryPanelId, assistantMessageId, '', {
+          answerGroupId,
+          modelId: researchModelId,
+        })
+        setAssistantMessage(
+          primaryPanelId,
+          assistantMessageId,
+          '已发起联网研究任务，系统会整理实时网页来源并在任务完成后显示摘要。',
+          false,
+        )
+        setTaskId(primaryPanelId, assistantMessageId, task.task_id, task.task_type)
+      }
+
+      syncSessionMetaFromPanels(sessionId)
+
+      if (currentSession && currentSession.message_count === 0 && sessionTitleSeed) {
+        updateSessionTitle(sessionId, sessionTitleSeed.slice(0, 40))
+      }
+
+      resetComposer()
+    } catch (error) {
+      console.error('Failed to create web research task', error)
+      window.alert((error as Error).message || '联网研究任务创建失败，请稍后重试。')
+    } finally {
+      setIsResearchStarting(false)
+    }
+  }
+
   const handleSend = async () => {
     const msg = input.trim()
     const pendingImages = [...images]
@@ -512,8 +726,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     ) {
       return
     }
-    const answerGroupId = (isEditRegenerationRequested ? editingAnswerGroupId : '') ||
-      (globalThis.crypto?.randomUUID?.() ?? `grp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+    const answerGroupId = buildAnswerGroupId(isEditRegenerationRequested ? editingAnswerGroupId : '')
 
     resetComposer()
     setIsLoading(true)
@@ -525,31 +738,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       (pendingImages.length > 0 ? 'Image chat' : '')
 
     if (!sessionId) {
-      try {
-        const session = await apiCreateSession(sessionTitleSeed.slice(0, 40), {
-          workspace_id: currentWorkspaceId ?? undefined,
-        })
-        sessionId = session.session_id
-        setCurrentSession(sessionId)
-        addSession({
-          session_id: sessionId,
-          title: session.title,
-          created_at: Date.now() / 1000,
-          updated_at: Date.now() / 1000,
-          message_count: 0,
-          is_archived: false,
-          is_favorite: false,
-          is_pinned: false,
-          session_order: 0,
-          tags: [],
-          workspace_id: session.workspace_id ?? currentWorkspaceId ?? 'workspace-default',
-        })
-        adjustWorkspaceSessionCount(
-          session.workspace_id ?? currentWorkspaceId ?? 'workspace-default',
-          1,
-        )
-      } catch (error) {
-        console.error('Failed to create session', error)
+      sessionId = await ensureActiveSession(sessionTitleSeed)
+      if (!sessionId) {
         setIsLoading(false)
         return
       }
@@ -619,6 +809,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       panels.map((panel) => panel.modelConfig),
       webSearchEnabled,
       knowledgeBaseEnabled,
+      enabledMcpServers,
       pendingImages,
       pendingFiles,
       answerGroupId,
@@ -633,6 +824,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               toolName: workflowEvent.tool_name,
               toolParams: workflowEvent.tool_params,
               toolResult: workflowEvent.tool_result_summary,
+              retrievalMeta: workflowEvent.retrieval_meta,
               error: workflowEvent.error,
             },
           )
@@ -684,6 +876,10 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             chunk.content ?? 'Request failed while processing.',
             chunk.error_code,
             chunk.suggestion,
+            {
+              answerGroupId,
+              retryMode: 'rerun',
+            },
           )
           onStreamingChange(chunk.panel_id, false)
           donePanels.add(chunk.panel_id)
@@ -702,10 +898,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         setActiveStreamControl(null)
       },
       (err) => {
-        const normalizedError = err?.trim() || 'Request failed while processing.'
-        const isNetworkError = /failed to fetch|network|backend returned an empty response body/i.test(
-          normalizedError,
-        )
+        const failure = classifyStreamFailure(err ?? '')
         panels.forEach((panel) => {
           const msgId = streamingMsgIds.current.get(panel.id)
           if (msgId) {
@@ -713,13 +906,13 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           }
           addErrorMessage(
             panel.id,
-            isNetworkError
-              ? 'Network connection failed. Unable to reach the backend service.'
-              : normalizedError,
-            isNetworkError ? 'NETWORK_ERROR' : 'REQUEST_FAILED',
-            isNetworkError
-              ? 'Please check the network connection and verify the backend is running.'
-              : 'Please adjust the message or attachments and try again.',
+            failure.content,
+            failure.errorCode,
+            failure.suggestion,
+            {
+              answerGroupId,
+              retryMode: 'rerun',
+            },
           )
           onStreamingChange(panel.id, false)
         })
@@ -786,10 +979,27 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         ? '某个面板正在继续生成，可以停止它，或等待完成后再发送新消息。'
         : '正在生成回答，请等待完成后再发送新消息。'
   const composerLocked = isInteractionLocked && !isLoading
+  const composerBusy = isLoading || isResearchStarting
   const canSend = input.trim().length > 0 || images.length > 0 || files.length > 0
+  const canResearch =
+    input.trim().length > 0 &&
+    images.length === 0 &&
+    files.length === 0 &&
+    !pendingEditAnswerGroupId &&
+    !composerBusy &&
+    !composerLocked
+  const researchButtonTitle =
+    pendingEditAnswerGroupId
+      ? '编辑重发模式下暂不支持联网研究'
+      : images.length > 0 || files.length > 0
+        ? '联网研究暂不支持图片或文件附件'
+        : '发起联网研究任务'
 
   return (
-    <div className="sticky bottom-0 z-10 shrink-0 border-t border-bg-border bg-bg-primary/95 px-4 py-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] backdrop-blur-sm">
+    <div
+      className="sticky bottom-0 z-10 shrink-0 border-t border-bg-border bg-bg-primary/95 px-4 py-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] backdrop-blur-sm"
+      data-testid="message-composer"
+    >
       <div className="mx-auto max-w-4xl">
         {pendingEditAnswerGroupId && (
           <div className="mb-2 flex items-center justify-between rounded-xl border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
@@ -894,6 +1104,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
               <textarea
                 ref={textareaRef}
+                data-testid="composer-input"
                 className="min-h-[24px] max-h-[180px] w-full resize-none bg-transparent text-sm leading-relaxed text-text-primary outline-none placeholder:text-text-secondary"
                 placeholder={
                   composerLocked
@@ -917,7 +1128,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 }}
                 onKeyDown={handleKeyDown}
                 rows={1}
-                disabled={isLoading || composerLocked}
+                disabled={composerBusy || composerLocked}
               />
             </div>
 
@@ -926,6 +1137,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               type="file"
               accept="image/*"
               multiple
+              data-testid="composer-image-input"
               className="hidden"
               onChange={(event) => {
                 void handleSelectImages(event)
@@ -937,6 +1149,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               type="file"
               accept=".pdf,.doc,.docx,.txt,.md,.csv,.xls,.xlsx"
               multiple
+              data-testid="composer-attachment-input"
               className="hidden"
               onChange={(event) => {
                 void handleSelectFiles(event)
@@ -948,6 +1161,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 type="button"
                 onClick={() => setWebSearchEnabled(!webSearchEnabled)}
                 disabled={composerLocked}
+                data-testid="composer-web-search-toggle"
                 className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs transition-colors ${
                   webSearchEnabled
                     ? 'bg-accent-blue/20 text-accent-blue'
@@ -962,6 +1176,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 type="button"
                 onClick={() => setKnowledgeBaseEnabled(!knowledgeBaseEnabled)}
                 disabled={composerLocked}
+                data-testid="composer-knowledge-base-toggle"
                 className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs transition-colors ${
                   knowledgeBaseEnabled
                     ? 'bg-accent-green/20 text-accent-green'
@@ -975,7 +1190,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               <button
                 type="button"
                 onClick={() => attachmentInputRef.current?.click()}
-                disabled={isLoading || composerLocked}
+                disabled={composerBusy || composerLocked}
+                data-testid="composer-attachment-button"
                 className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
                 title="附加文件"
               >
@@ -985,11 +1201,33 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               <button
                 type="button"
                 onClick={() => imageInputRef.current?.click()}
-                disabled={isLoading || composerLocked}
+                disabled={composerBusy || composerLocked}
                 className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
                 title="上传图片"
               >
                 <ImagePlus size={13} />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  void handleStartResearch()
+                }}
+                disabled={!canResearch}
+                data-testid="composer-research"
+                className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                  canResearch
+                    ? 'bg-amber-400/15 text-amber-300 hover:bg-amber-400/20'
+                    : 'text-text-secondary'
+                }`}
+                title={researchButtonTitle}
+              >
+                {isResearchStarting ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <Sparkles size={13} />
+                )}
+                <span>研究</span>
               </button>
 
               {activeStopHandler ? (
@@ -1007,7 +1245,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                   onClick={() => {
                     void handleSend()
                   }}
-                  disabled={!canSend || composerLocked}
+                  disabled={!canSend || composerBusy || composerLocked}
+                  data-testid="composer-send"
                   className="flex h-8 w-8 items-center justify-center rounded-xl bg-accent-blue text-white transition-colors hover:bg-accent-blue-hover disabled:cursor-not-allowed disabled:opacity-30"
                   title="发送"
                 >

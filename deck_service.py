@@ -95,6 +95,8 @@ class DeckMeta(BaseModel):
     session_id: str
     source_mode: DeckSourceMode
     generator_panel_id: str
+    source_answer_group_id: str = ""
+    source_panel_id: str = ""
 
 
 class DeckGeneration(BaseModel):
@@ -1332,6 +1334,8 @@ def _build_deck_from_generated(
             session_id=session_id,
             source_mode=pack.source_mode,
             generator_panel_id=getattr(panel_config, "panel_id", "panel"),
+            source_answer_group_id=str(source_answer_group_id or "").strip(),
+            source_panel_id=str(source_panel_id or "").strip(),
         ),
         generation=DeckGeneration(
             source=pack.source_mode,
@@ -1354,6 +1358,8 @@ async def build_deck(
     vector_store_path: str | None = None,
     system_prompt: str | None = None,
     theme: DeckThemeName = "default",
+    source_answer_group_id: str = "",
+    source_panel_id: str = "",
 ) -> DeckSpec:
     qa_pairs = ensure_deckable_chat(messages)
     pack = _build_source_pack(
@@ -2913,7 +2919,7 @@ def export_deck_to_pptx(deck: DeckSpec) -> bytes:
     presentation.core_properties.title = deck.meta.title
     presentation.core_properties.author = deck.meta.author or "system"
     presentation.core_properties.subject = deck.meta.subtitle or deck.meta.purpose
-    presentation.core_properties.keywords = "deck,pptx,ai-knowledge-base"
+    presentation.core_properties.keywords = "deck,pptx,insightdesk"
 
     blank_layout = presentation.slide_layouts[6]
     for index, slide in enumerate(deck.slides):

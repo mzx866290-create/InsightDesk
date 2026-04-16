@@ -11,6 +11,15 @@ export interface WorkflowNode {
   toolName?: string
   toolParams?: Record<string, any>
   toolResult?: string
+  retrievalMeta?: {
+    primary_mode?: string
+    modes?: string[]
+    channels?: string[]
+    source_count?: number
+    source_titles?: string[]
+    matched_terms?: string[]
+    top_score?: number | null
+  }
   error?: string
 }
 
@@ -132,10 +141,22 @@ export const useWorkflowStore = create<WorkflowStoreState>((set, get) => ({
     set((state) => {
       const newWorkflows = new Map(state.workflows)
       const workflow = newWorkflows.get(panelId) ?? createWorkflow(panelId)
-      
+      const normalizedNodeId = nodeId.trim()
+      const existingNode = workflow.nodes.find((node) => node.id === normalizedNodeId)
       const now = Date.now()
-      const updatedNodes = workflow.nodes.map((node) => {
-        if (node.id === nodeId) {
+      const baseNodes = existingNode
+        ? workflow.nodes
+        : [
+            ...workflow.nodes,
+            {
+              id: normalizedNodeId,
+              name: normalizedNodeId,
+              displayName: meta.displayName || normalizedNodeId,
+              status: 'pending' as const,
+            },
+          ]
+      const updatedNodes = baseNodes.map((node) => {
+        if (node.id === normalizedNodeId) {
           const startTime = node.startTime || (status === 'running' ? now : undefined)
           const endTime = status === 'completed' || status === 'failed' ? now : undefined
           const duration = startTime && endTime ? endTime - startTime : undefined
@@ -157,8 +178,8 @@ export const useWorkflowStore = create<WorkflowStoreState>((set, get) => ({
         nodes: updatedNodes,
         currentNodeId:
           status === 'running'
-            ? nodeId
-            : workflow.currentNodeId === nodeId
+            ? normalizedNodeId
+            : workflow.currentNodeId === normalizedNodeId
               ? null
               : workflow.currentNodeId,
       })

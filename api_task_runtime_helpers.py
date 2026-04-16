@@ -86,6 +86,7 @@ async def enqueue_task(
     run_task: Callable[[TaskRecord], Awaitable[None]],
     spawn_background_task: Callable[[Awaitable[None]], Any],
     logger: logging.Logger,
+    on_record_created: Optional[Callable[[TaskRecord], None]] = None,
 ) -> dict[str, Any]:
     task_id = str(uuid.uuid4())
     now = time.time()
@@ -103,6 +104,11 @@ async def enqueue_task(
         prune_in_memory(now)
     persist_record(record)
     prune_persisted()
+    if on_record_created is not None:
+        try:
+            on_record_created(record)
+        except Exception:
+            logger.exception("task_id=%s on_record_created callback failed", task_id)
 
     spawn_background_task(run_task(record))
     logger.info("task_id=%s task_type=%s created", task_id, task_type)

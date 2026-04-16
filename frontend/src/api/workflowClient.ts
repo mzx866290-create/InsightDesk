@@ -8,6 +8,15 @@ export interface WorkflowStateEvent {
   tool_name?: string
   tool_params?: Record<string, unknown>
   tool_result_summary?: string
+  retrieval_meta?: {
+    primary_mode?: string
+    modes?: string[]
+    channels?: string[]
+    source_count?: number
+    source_titles?: string[]
+    matched_terms?: string[]
+    top_score?: number | null
+  }
   error?: string
   timestamp: number
 }
@@ -25,6 +34,7 @@ export function parseWorkflowEvent(chunk: SSEChunk): WorkflowStateEvent | null {
     tool_name: chunk.tool_name,
     tool_params: chunk.tool_params,
     tool_result_summary: chunk.tool_result_summary,
+    retrieval_meta: chunk.retrieval_meta,
     error: chunk.error,
     timestamp: chunk.timestamp || Date.now(),
   }

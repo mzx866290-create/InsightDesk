@@ -3,15 +3,34 @@ import { useChatStore } from '../../stores/chatStore'
 import { MessageBubble } from './MessageBubble'
 import type { Panel, PanelMessage } from '../../stores/chatStore'
 import { Bot, Presentation } from 'lucide-react'
-import { clearSessionMessages, createSession, getSessionMessages, getSystemPrompts, promotePanelAnswer, streamSingleChat } from '../../api/client'
+import {
+  clearSessionMessages,
+  createSession,
+  getSystemPrompts,
+  importSessionMessages,
+  promotePanelAnswer,
+  streamSingleChat,
+} from '../../api/client'
 import { useTaskStore } from '../../stores/taskStore'
 import type { ActiveStreamControl } from './streamControl'
 import { useWorkflowStore } from '../../stores/workflowStore'
 import { WorkflowVisualizer } from '../workflow/WorkflowVisualizer'
 import { parseWorkflowEvent } from '../../api/workflowClient'
-import type { SystemPrompt } from '../../api/client'
+import {
+  getAnswerGroupReview,
+  promoteRecommendedAnswerGroup,
+} from '../../api/client'
+import type {
+  AnswerGroupReviewResponse,
+  ChatFile,
+  ChatImage,
+  Message,
+  PromoteAnswerResponse,
+  SystemPrompt,
+} from '../../api/client'
 import { exportConversationAsMarkdown } from '../../utils/exportConversation'
 import { ChatPanelHeader } from './ChatPanelHeader'
+import { AnswerReviewModal } from './AnswerReviewModal'
 
 // 默认快捷提问（当角色没有特定提示时使用）
 const DEFAULT_STARTERS = [
@@ -35,6 +54,37 @@ function getStartersForPrompt(prompt: SystemPrompt | null): string[] {
     return ['分析候选人简历', '生成岗位职责描述', '提取简历关键信息', '对比多份简历']
   }
   return DEFAULT_STARTERS
+}
+
+function mapMessages(messages: Message[]): PanelMessage[] {
+  return messages.map((message, index) => ({
+    id: typeof message.id === 'number' ? `db-${message.id}` : `loaded-${index}`,
+    serverMessageId: message.id,
+    role: message.role,
+    content: message.content,
+    images: message.images,
+    files: message.files,
+    sources: message.sources,
+    modelId: message.model_id,
+    panelId: message.panel_id,
+    answerGroupId: message.answer_group_id,
+    taskId: message.task_id,
+    taskType: message.task_type,
+    workflowNodes: message.workflow_nodes,
+    timestamp: message.timestamp,
+    feedbackValue: message.feedback_value,
+  }))
+}
+
+function findLatestWorkflowNodes(messages: Message[]) {
+  const latestAssistantMessage = [...messages]
+    .reverse()
+    .find(
+      (message) =>
+        message.role === 'assistant' && (message.workflow_nodes?.length ?? 0) > 0,
+    )
+
+  return latestAssistantMessage?.workflow_nodes ?? []
 }
 
 interface EmptyStateProps {
@@ -75,6 +125,7 @@ const EmptyState: React.FC<EmptyStateProps> = ({ modelName, activePrompt, onSele
 interface ChatPanelProps {
   panel: Panel
   isStreaming: boolean
+  loadingElapsedMs: number
   isInteractionLocked: boolean
   activeStreamControl: ActiveStreamControl | null
   setActiveStreamControl: (control: ActiveStreamControl | null) => void
@@ -85,6 +136,7 @@ interface ChatPanelProps {
 export const ChatPanel: React.FC<ChatPanelProps> = ({
   panel,
   isStreaming,
+  loadingElapsedMs,
   isInteractionLocked,
   activeStreamControl,
   setActiveStreamControl,
@@ -100,17 +152,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     updateSession,
     webSearchEnabled,
     knowledgeBaseEnabled,
+    enabledMcpServers,
     appendChunk,
     setAssistantStreaming,
     setSources,
     addErrorMessage,
     setTaskId,
     replaceAssistantMessageByAnswerGroup,
+    removeMessage,
     pushComposerSeed,
     addSession,
     setCurrentSession,
+    setPanels,
     adjustWorkspaceSessionCount,
-    loadMessagesToAllPanels,
     sessions,
     jumpTarget,
     clearJumpTarget,
@@ -128,6 +182,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [deckHintDismissed, setDeckHintDismissed] = useState(false)
+  const [reviewAnswerGroupId, setReviewAnswerGroupId] = useState<string | null>(null)
+  const [reviewData, setReviewData] = useState<AnswerGroupReviewResponse | null>(null)
+  const [reviewLoading, setReviewLoading] = useState(false)
+  const [reviewError, setReviewError] = useState<string | null>(null)
+  const [reviewPromotingPanelId, setReviewPromotingPanelId] = useState<string | null>(null)
+  const [reviewPromotingRecommended, setReviewPromotingRecommended] = useState(false)
 
   useEffect(() => {
     getSystemPrompts()
@@ -263,11 +323,87 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       activeStreamControl?.mode === 'single_rerun' ||
       activeStreamControl?.mode === 'single_continue'
     ) &&
-    activeStreamControl.panelId === panel.id
+      activeStreamControl.panelId === panel.id
+
+  const applyPromotedAnswer = (payload: PromoteAnswerResponse) => {
+    const targetPanelId = payload.target_panel_id?.trim() || primaryPanelId || ''
+    const answerGroupId = payload.answer_group_id?.trim()
+    if (!targetPanelId || !answerGroupId) return
+
+    replaceAssistantMessageByAnswerGroup(targetPanelId, answerGroupId, {
+      content: payload.content,
+      sources: payload.sources ?? [],
+      modelId: payload.model_id,
+      taskId: payload.task_id,
+      taskType: payload.task_type,
+      workflowNodes: payload.workflow_nodes ?? [],
+    })
+    if (payload.workflow_nodes && payload.workflow_nodes.length > 0) {
+      hydrateWorkflow(targetPanelId, payload.workflow_nodes)
+    }
+    touchSession()
+  }
+
+  const loadAnswerReview = async (answerGroupId: string) => {
+    if (!currentSessionId) return
+    setReviewLoading(true)
+    setReviewError(null)
+    try {
+      const payload = await getAnswerGroupReview(currentSessionId, answerGroupId)
+      setReviewData(payload)
+    } catch (error) {
+      setReviewError((error as Error).message || '加载答案评审失败')
+      setReviewData(null)
+    } finally {
+      setReviewLoading(false)
+    }
+  }
+
+  const handleOpenAnswerReview = async (message: PanelMessage) => {
+    if (!currentSessionId || !message.answerGroupId) return
+    setReviewAnswerGroupId(message.answerGroupId)
+    setReviewData(null)
+    setReviewError(null)
+    await loadAnswerReview(message.answerGroupId)
+  }
+
+  const handleRefreshAnswerReview = async () => {
+    if (!reviewAnswerGroupId) return
+    await loadAnswerReview(reviewAnswerGroupId)
+  }
+
+  const handlePromoteReviewedPanel = async (sourcePanelId: string) => {
+    if (!currentSessionId || !reviewAnswerGroupId) return
+    setReviewPromotingPanelId(sourcePanelId)
+    setReviewError(null)
+    try {
+      const payload = await promotePanelAnswer(currentSessionId, reviewAnswerGroupId, sourcePanelId)
+      applyPromotedAnswer(payload)
+      setReviewAnswerGroupId(null)
+    } catch (error) {
+      setReviewError((error as Error).message || '设置主答案失败')
+    } finally {
+      setReviewPromotingPanelId(null)
+    }
+  }
+
+  const handlePromoteRecommendedAnswer = async () => {
+    if (!currentSessionId || !reviewAnswerGroupId) return
+    setReviewPromotingRecommended(true)
+    setReviewError(null)
+    try {
+      const payload = await promoteRecommendedAnswerGroup(currentSessionId, reviewAnswerGroupId)
+      applyPromotedAnswer(payload)
+      setReviewAnswerGroupId(null)
+    } catch (error) {
+      setReviewError((error as Error).message || '采用推荐答案失败')
+    } finally {
+      setReviewPromotingRecommended(false)
+    }
+  }
 
   const handleFork = async (message: PanelMessage) => {
     if (!currentSessionId) return
-    // 找到该消息在列表中的位置，取其之前的所有消息（含该消息）
     const msgIndex = panel.messages.findIndex((m) => m.id === message.id)
     if (msgIndex < 0) return
     const historySlice = panel.messages.slice(0, msgIndex + 1)
@@ -278,12 +414,31 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       const newSession = await createSession(forkTitle.slice(0, 40), {
         workspace_id: currentWorkspaceId ?? undefined,
       })
+      const imported = await importSessionMessages(newSession.session_id, {
+        panels: panels.map((item) => item.modelConfig),
+        messages: historySlice
+          .filter((item) => item.role !== 'error')
+          .map((item) => ({
+            role: item.role as 'user' | 'assistant',
+            content: item.content,
+            images: item.images,
+            files: item.files,
+            sources: item.sources,
+            model_id: item.modelId,
+            panel_id: item.role === 'assistant' ? panel.id : undefined,
+            answer_group_id: item.answerGroupId,
+            task_id: item.taskId,
+            task_type: item.taskType,
+            workflow_nodes: item.workflowNodes,
+          })),
+      })
+
       addSession({
         session_id: newSession.session_id,
         title: newSession.title,
         created_at: Date.now() / 1000,
         updated_at: Date.now() / 1000,
-        message_count: historySlice.filter((m) => m.role !== 'error').length,
+        message_count: imported.total_messages,
         is_archived: false,
         is_favorite: false,
         is_pinned: false,
@@ -296,23 +451,36 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         1,
       )
       setCurrentSession(newSession.session_id)
-      // 把历史消息加载到所有面板
-      loadMessagesToAllPanels(
-        historySlice
-          .filter((m) => m.role !== 'error')
-          .map((m) => ({
-            role: m.role as 'user' | 'assistant',
-            content: m.content,
-            images: m.images,
-            files: m.files,
-            sources: m.sources,
-            model_id: m.modelId,
-            answer_group_id: m.answerGroupId,
-            task_id: m.taskId,
-            task_type: m.taskType,
-            workflow_nodes: m.workflowNodes,
+
+      if (imported.panels && imported.panels.length > 0) {
+        const nextPanelIds = new Set(imported.panels.map((item) => item.panel_id))
+        setPanels(
+          imported.panels.map((item) => ({
+            id: item.panel_id,
+            modelConfig: item.model_config,
+            messages: mapMessages(imported.panel_messages?.[item.panel_id] ?? imported.messages),
           })),
-      )
+        )
+        imported.panels.forEach((item) => {
+          const restoredMessages = imported.panel_messages?.[item.panel_id] ?? imported.messages
+          const workflowNodes = findLatestWorkflowNodes(restoredMessages)
+          if (workflowNodes.length > 0) {
+            hydrateWorkflow(item.panel_id, workflowNodes)
+          } else {
+            clearWorkflow(item.panel_id)
+          }
+        })
+        panels.forEach((item) => {
+          if (!nextPanelIds.has(item.id)) {
+            clearWorkflow(item.id)
+          }
+        })
+      }
+
+      updateSession(newSession.session_id, {
+        message_count: imported.total_messages,
+        updated_at: Date.now() / 1000,
+      })
     } catch (e) {
       console.error('分叉失败', e)
     }
@@ -325,32 +493,299 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     })
   }
 
+  const findUserMessageByAnswerGroup = (answerGroupId: string) =>
+    [...panel.messages]
+      .reverse()
+      .find(
+        (candidate) =>
+          candidate.role === 'user' && candidate.answerGroupId === answerGroupId,
+      )
+
+  const findAssistantMessageByAnswerGroup = (answerGroupId: string) =>
+    [...panel.messages]
+      .reverse()
+      .find(
+        (candidate) =>
+          candidate.role === 'assistant' && candidate.answerGroupId === answerGroupId,
+      )
+
+  const hasRunnableInput = (message: PanelMessage | undefined): message is PanelMessage =>
+    Boolean(
+      message &&
+      (
+        message.content.trim().length > 0 ||
+        (message.images?.length ?? 0) > 0 ||
+        (message.files?.length ?? 0) > 0
+      ),
+    )
+
+  const classifySingleStreamFailure = (
+    error: string,
+    fallbackMessage: string,
+    requestFailedSuggestion: string,
+  ) => {
+    const normalizedError = error.trim() || fallbackMessage
+    const isNetworkError = /failed to fetch|network|backend returned an empty response body/i.test(
+      normalizedError,
+    )
+    const isTimeoutError = /timeout|timed out|504|超时/i.test(normalizedError)
+
+    return {
+      content: isNetworkError
+        ? 'Network connection failed. Unable to reach the backend service.'
+        : isTimeoutError
+          ? 'The request timed out before the model finished responding.'
+          : normalizedError,
+      errorCode: isNetworkError ? 'NETWORK_ERROR' : isTimeoutError ? 'TIMEOUT' : 'REQUEST_FAILED',
+      suggestion: isNetworkError || isTimeoutError ? undefined : requestFailedSuggestion,
+    }
+  }
+
+  type SinglePanelRetryMode = NonNullable<PanelMessage['retryMode']>
+  interface SinglePanelStreamOptions {
+    answerGroupId: string
+    prompt: string
+    images: ChatImage[]
+    files: ChatFile[]
+    existingAssistantMessage?: PanelMessage
+    activeMode: Extract<ActiveStreamControl['mode'], 'single_rerun' | 'single_continue'>
+    retryMode: SinglePanelRetryMode
+    sseErrorFallback: string
+    requestErrorFallback: string
+    requestFailedSuggestion: string
+  }
+
+  const runSinglePanelStream = ({
+    answerGroupId,
+    prompt,
+    images,
+    files,
+    existingAssistantMessage,
+    activeMode,
+    retryMode,
+    sseErrorFallback,
+    requestErrorFallback,
+    requestFailedSuggestion,
+  }: SinglePanelStreamOptions) => {
+    if (isInteractionLocked || isStreaming || !currentSessionId) return
+
+    const targetMessageId =
+      existingAssistantMessage?.id ?? `assistant-${panel.id}-${Date.now()}`
+    const previousAssistantState = existingAssistantMessage
+      ? {
+          content: existingAssistantMessage.content,
+          sources: existingAssistantMessage.sources,
+          modelId: existingAssistantMessage.modelId,
+          taskId: existingAssistantMessage.taskId,
+          taskType: existingAssistantMessage.taskType,
+          workflowNodes: existingAssistantMessage.workflowNodes,
+          timestamp: existingAssistantMessage.timestamp,
+        }
+      : null
+    const assistantMeta = {
+      answerGroupId,
+      modelId: panel.modelConfig.model,
+    }
+
+    const hasVisibleAssistantState = (): boolean => {
+      const currentPanel = useChatStore.getState().panels.find((item) => item.id === panel.id)
+      const currentMessage = currentPanel?.messages.find(
+        (item) => item.id === targetMessageId && item.role === 'assistant',
+      )
+      return Boolean(
+        currentMessage &&
+        (
+          currentMessage.content.trim().length > 0 ||
+          (currentMessage.sources?.length ?? 0) > 0 ||
+          currentMessage.taskId
+        ),
+      )
+    }
+
+    const restorePreviousAssistant = () => {
+      if (!previousAssistantState) {
+        removeMessage(panel.id, targetMessageId)
+        clearWorkflow(panel.id)
+        return
+      }
+
+      replaceAssistantMessageByAnswerGroup(panel.id, answerGroupId, {
+        ...previousAssistantState,
+        streaming: false,
+      })
+      if (previousAssistantState.workflowNodes && previousAssistantState.workflowNodes.length > 0) {
+        hydrateWorkflow(panel.id, previousAssistantState.workflowNodes)
+      } else {
+        clearWorkflow(panel.id)
+      }
+    }
+
+    const stopCurrentSingleRun = () => {
+      rerunAbortControllerRef.current?.abort()
+      rerunAbortControllerRef.current = null
+      if (hasVisibleAssistantState()) {
+        setAssistantStreaming(panel.id, targetMessageId, false)
+      } else {
+        restorePreviousAssistant()
+      }
+      onStreamingChange(panel.id, false)
+      setActiveStreamControl(null)
+      touchSession()
+    }
+
+    if (existingAssistantMessage) {
+      replaceAssistantMessageByAnswerGroup(panel.id, answerGroupId, {
+        content: '',
+        sources: [],
+        modelId: panel.modelConfig.model,
+        streaming: true,
+        taskId: undefined,
+        taskType: undefined,
+        workflowNodes: undefined,
+        timestamp: Date.now() / 1000,
+      })
+    } else {
+      appendChunk(panel.id, targetMessageId, '', assistantMeta)
+    }
+    resetWorkflow(panel.id)
+    onStreamingChange(panel.id, true)
+
+    const controller = streamSingleChat(
+      currentSessionId,
+      prompt,
+      panel.modelConfig,
+      webSearchEnabled,
+      knowledgeBaseEnabled,
+      enabledMcpServers,
+      images,
+      files,
+      answerGroupId,
+      true,
+      (chunk) => {
+        if (chunk.panel_id !== panel.id) return
+
+        const workflowEvent = parseWorkflowEvent(chunk)
+        if (workflowEvent) {
+          useWorkflowStore.getState().updateNodeStatus(
+            panel.id,
+            workflowEvent.node_name,
+            workflowEvent.status,
+            {
+              toolName: workflowEvent.tool_name,
+              toolParams: workflowEvent.tool_params,
+              toolResult: workflowEvent.tool_result_summary,
+              retrievalMeta: workflowEvent.retrieval_meta,
+              error: workflowEvent.error,
+            },
+          )
+          return
+        }
+
+        if (chunk.type === 'chunk' && chunk.content) {
+          appendChunk(panel.id, targetMessageId, chunk.content, assistantMeta)
+          return
+        }
+
+        if (chunk.type === 'sources' && chunk.sources) {
+          setSources(panel.id, targetMessageId, chunk.sources, assistantMeta)
+          return
+        }
+
+        if (chunk.type === 'task_created' && chunk.task_id) {
+          const taskStore = useTaskStore.getState()
+          taskStore.addTask({
+            task_id: chunk.task_id,
+            task_type: chunk.task_type ?? 'task',
+            status: 'pending',
+            progress: 0,
+            created_at: Date.now() / 1000,
+            updated_at: Date.now() / 1000,
+          })
+          taskStore.startPolling(chunk.task_id)
+          setTaskId(panel.id, targetMessageId, chunk.task_id, chunk.task_type)
+          return
+        }
+
+        if (chunk.type === 'done') {
+          const workflowSnapshot = useWorkflowStore.getState().getWorkflow(panel.id)?.nodes
+          if (workflowSnapshot && workflowSnapshot.length > 0) {
+            replaceAssistantMessageByAnswerGroup(panel.id, answerGroupId, {
+              workflowNodes: workflowSnapshot,
+            })
+          }
+          rerunAbortControllerRef.current = null
+          setAssistantStreaming(panel.id, targetMessageId, false)
+          onStreamingChange(panel.id, false)
+          setActiveStreamControl(null)
+          touchSession()
+          return
+        }
+
+        if (chunk.type === 'error') {
+          rerunAbortControllerRef.current = null
+          restorePreviousAssistant()
+          addErrorMessage(
+            panel.id,
+            chunk.content ?? sseErrorFallback,
+            chunk.error_code,
+            chunk.suggestion,
+            {
+              answerGroupId,
+              retryMode,
+            },
+          )
+          onStreamingChange(panel.id, false)
+          setActiveStreamControl(null)
+        }
+      },
+      () => {
+        rerunAbortControllerRef.current = null
+        setAssistantStreaming(panel.id, targetMessageId, false)
+        onStreamingChange(panel.id, false)
+        setActiveStreamControl(null)
+      },
+      (err) => {
+        rerunAbortControllerRef.current = null
+        restorePreviousAssistant()
+        const failure = classifySingleStreamFailure(
+          err ?? '',
+          requestErrorFallback,
+          requestFailedSuggestion,
+        )
+        addErrorMessage(
+          panel.id,
+          failure.content,
+          failure.errorCode,
+          failure.suggestion,
+          {
+            answerGroupId,
+            retryMode,
+          },
+        )
+        onStreamingChange(panel.id, false)
+        setActiveStreamControl(null)
+      },
+    )
+
+    rerunAbortControllerRef.current = controller
+    setActiveStreamControl({
+      mode: activeMode,
+      panelId: panel.id,
+      stop: stopCurrentSingleRun,
+    })
+  }
+
   const handlePromote = async (message: PanelMessage) => {
     if (isInteractionLocked) return
     if (!currentSessionId || !message.answerGroupId || !primaryPanelId) return
-    await promotePanelAnswer(currentSessionId, message.answerGroupId, panel.id)
-    replaceAssistantMessageByAnswerGroup(primaryPanelId, message.answerGroupId, {
-      content: message.content,
-      sources: message.sources,
-      modelId: panel.modelConfig.model,
-      taskId: message.taskId,
-      taskType: message.taskType,
-      workflowNodes: message.workflowNodes,
-    })
-    if (message.workflowNodes && message.workflowNodes.length > 0) {
-      hydrateWorkflow(primaryPanelId, message.workflowNodes)
-    }
+    const payload = await promotePanelAnswer(currentSessionId, message.answerGroupId, panel.id)
+    applyPromotedAnswer(payload)
   }
 
   const handleRerun = async (message: PanelMessage) => {
     if (isInteractionLocked || isStreaming || !currentSessionId || !message.answerGroupId) return
 
-    const matchedUserMessage = [...panel.messages]
-      .reverse()
-      .find(
-        (candidate) =>
-          candidate.role === 'user' && candidate.answerGroupId === message.answerGroupId,
-      )
+    const matchedUserMessage = findUserMessageByAnswerGroup(message.answerGroupId)
 
     if (!matchedUserMessage) {
       addErrorMessage(
@@ -367,7 +802,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       (matchedUserMessage.images?.length ?? 0) > 0 ||
       (matchedUserMessage.files?.length ?? 0) > 0
 
-    if (!hasOriginalInput) {
+    if (!hasRunnableInput(matchedUserMessage)) {
       addErrorMessage(
         panel.id,
         '这条回答暂时无法重跑，因为原始输入没有完整保存在当前会话里。',
@@ -377,6 +812,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       return
     }
 
+    runSinglePanelStream({
+      answerGroupId: message.answerGroupId,
+      prompt: matchedUserMessage.content,
+      images: matchedUserMessage.images ?? [],
+      files: matchedUserMessage.files ?? [],
+      existingAssistantMessage: message,
+      activeMode: 'single_rerun',
+      retryMode: 'rerun',
+      sseErrorFallback: 'Single-model rerun failed.',
+      requestErrorFallback: 'Single-model rerun failed.',
+      requestFailedSuggestion: 'Please try again later, or resend this question.',
+    })
+    return
+    /*
     const previousAssistantState = {
       content: message.content,
       sources: message.sources,
@@ -446,6 +895,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       panel.modelConfig,
       webSearchEnabled,
       knowledgeBaseEnabled,
+      enabledMcpServers,
       matchedUserMessage.images ?? [],
       matchedUserMessage.files ?? [],
       message.answerGroupId,
@@ -463,6 +913,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               toolName: workflowEvent.tool_name,
               toolParams: workflowEvent.tool_params,
               toolResult: workflowEvent.tool_result_summary,
+              retrievalMeta: workflowEvent.retrieval_meta,
               error: workflowEvent.error,
             },
           )
@@ -555,17 +1006,112 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       panelId: panel.id,
       stop: stopCurrentRerun,
     })
+    */
+  }
+
+  /*
+  const handleRetryError = async (message: PanelMessage) => {
+    if (isInteractionLocked || isStreaming || !currentSessionId || !message.answerGroupId) return
+
+    const matchedAssistantMessage = findAssistantMessageByAnswerGroup(message.answerGroupId)
+    if (message.retryMode === 'continue' && matchedAssistantMessage) {
+      await handleContinue(matchedAssistantMessage)
+      return
+    }
+
+    if (matchedAssistantMessage) {
+      await handleRerun(matchedAssistantMessage)
+      return
+    }
+
+    const matchedUserMessage = findUserMessageByAnswerGroup(message.answerGroupId)
+    if (!matchedUserMessage) {
+      addErrorMessage(
+        panel.id,
+        '鏃犳硶閲嶆柊鐢熸垚杩欐潯鍥炵瓟锛屽洜涓烘病鏈夋壘鍒板搴旂殑鐢ㄦ埛鎻愰棶銆?,
+        'RERUN_CONTEXT_MISSING',
+        '璇烽噸鏂板彂閫佽繖鏉￠棶棰樺悗鍐嶈瘯銆?,
+      )
+      return
+    }
+
+    if (!hasRunnableInput(matchedUserMessage)) {
+      addErrorMessage(
+        panel.id,
+        '杩欐潯鍥炵瓟鏆傛椂鏃犳硶閲嶈窇锛屽洜涓哄師濮嬭緭鍏ユ病鏈夊畬鏁翠繚瀛樺湪褰撳墠浼氳瘽閲屻€?,
+        'RERUN_INPUT_UNAVAILABLE',
+        '濡傛灉杩欐槸鍒锋柊鍚庣殑绾檮浠舵秷鎭紝璇烽噸鏂板彂閫佷竴娆″啀璇曘€?,
+      )
+      return
+    }
+
+    runSinglePanelStream({
+      answerGroupId: message.answerGroupId,
+      prompt: matchedUserMessage.content,
+      images: matchedUserMessage.images ?? [],
+      files: matchedUserMessage.files ?? [],
+      activeMode: 'single_rerun',
+      retryMode: 'rerun',
+      sseErrorFallback: 'Single-model rerun failed.',
+      requestErrorFallback: 'Single-model rerun failed.',
+      requestFailedSuggestion: 'Please try again later, or resend this question.',
+    })
+  }
+
+  */
+
+  const handleRetryError = async (message: PanelMessage) => {
+    if (isInteractionLocked || isStreaming || !currentSessionId || !message.answerGroupId) return
+
+    const matchedAssistantMessage = findAssistantMessageByAnswerGroup(message.answerGroupId)
+    if (message.retryMode === 'continue' && matchedAssistantMessage) {
+      await handleContinue(matchedAssistantMessage)
+      return
+    }
+
+    if (matchedAssistantMessage) {
+      await handleRerun(matchedAssistantMessage)
+      return
+    }
+
+    const matchedUserMessage = findUserMessageByAnswerGroup(message.answerGroupId)
+    if (!matchedUserMessage) {
+      addErrorMessage(
+        panel.id,
+        'Unable to retry this answer because the original user message could not be found.',
+        'RERUN_CONTEXT_MISSING',
+        'Please resend this question and try again.',
+      )
+      return
+    }
+
+    if (!hasRunnableInput(matchedUserMessage)) {
+      addErrorMessage(
+        panel.id,
+        'This answer cannot be rerun because the original input is no longer available in this session.',
+        'RERUN_INPUT_UNAVAILABLE',
+        'If this came from a refreshed session, please resend the original question once and retry.',
+      )
+      return
+    }
+
+    runSinglePanelStream({
+      answerGroupId: message.answerGroupId,
+      prompt: matchedUserMessage.content,
+      images: matchedUserMessage.images ?? [],
+      files: matchedUserMessage.files ?? [],
+      activeMode: 'single_rerun',
+      retryMode: 'rerun',
+      sseErrorFallback: 'Single-model rerun failed.',
+      requestErrorFallback: 'Single-model rerun failed.',
+      requestFailedSuggestion: 'Please try again later, or resend this question.',
+    })
   }
 
   const handleContinue = async (message: PanelMessage) => {
     if (isInteractionLocked || isStreaming || !currentSessionId || !message.answerGroupId) return
 
-    const matchedUserMessage = [...panel.messages]
-      .reverse()
-      .find(
-        (candidate) =>
-          candidate.role === 'user' && candidate.answerGroupId === message.answerGroupId,
-      )
+    const matchedUserMessage = findUserMessageByAnswerGroup(message.answerGroupId)
 
     if (!matchedUserMessage) {
       addErrorMessage(
@@ -598,6 +1144,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     )
     const continuePrompt = continuePromptParts.join('\n\n')
 
+    runSinglePanelStream({
+      answerGroupId: message.answerGroupId,
+      prompt: continuePrompt,
+      images: matchedUserMessage.images ?? [],
+      files: matchedUserMessage.files ?? [],
+      existingAssistantMessage: message,
+      activeMode: 'single_continue',
+      retryMode: 'continue',
+      sseErrorFallback: 'Continue generation failed.',
+      requestErrorFallback: 'Continue generation failed.',
+      requestFailedSuggestion: 'Please try again later, or switch to rerun for this panel.',
+    })
+    return
+    /*
     const previousAssistantState = {
       content: message.content,
       sources: message.sources,
@@ -668,6 +1228,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       panel.modelConfig,
       webSearchEnabled,
       knowledgeBaseEnabled,
+      enabledMcpServers,
       matchedUserMessage.images ?? [],
       matchedUserMessage.files ?? [],
       message.answerGroupId,
@@ -685,6 +1246,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               toolName: workflowEvent.tool_name,
               toolParams: workflowEvent.tool_params,
               toolResult: workflowEvent.tool_result_summary,
+              retrievalMeta: workflowEvent.retrieval_meta,
               error: workflowEvent.error,
             },
           )
@@ -777,14 +1339,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       panelId: panel.id,
       stop: stopCurrentContinue,
     })
+    */
   }
 
   return (
-    <div className="panel-card min-w-0 flex-1 min-h-[22rem] lg:min-h-0 flex flex-col">
+    <div
+      className="panel-card min-w-0 flex-1 min-h-[22rem] lg:min-h-0 flex flex-col"
+      data-testid="chat-panel"
+      data-panel-id={panel.id}
+    >
       <ChatPanelHeader
         panel={panel}
         canRemove={canRemove}
         isStreaming={isStreaming}
+        loadingElapsedMs={loadingElapsedMs}
         isInteractionLocked={isInteractionLocked}
         isStoppingSingleRunAvailable={isStoppingSingleRunAvailable}
         activeStreamControl={activeStreamControl}
@@ -844,11 +1412,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 panelId={panel.id}
                 isPrimaryPanel={isPrimaryPanel}
                 interactionLocked={isInteractionLocked}
+                onReview={handleOpenAnswerReview}
                 onPromote={handlePromote}
                 onRerun={handleRerun}
                 canRerun={msg.id === latestAssistantMessageId && !isInteractionLocked}
                 onContinue={handleContinue}
                 canContinue={msg.id === latestAssistantMessageId && !isInteractionLocked}
+                onRetryError={msg.role === 'error' ? handleRetryError : undefined}
                 onFork={msg.role === 'assistant' && !isInteractionLocked ? handleFork : undefined}
               />
             </div>
@@ -872,6 +1442,31 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         )}
         <div ref={bottomRef} />
       </div>
+      <AnswerReviewModal
+        open={Boolean(reviewAnswerGroupId)}
+        review={reviewData}
+        loading={reviewLoading}
+        error={reviewError}
+        primaryPanelId={primaryPanelId}
+        promotingPanelId={reviewPromotingPanelId}
+        promotingRecommended={reviewPromotingRecommended}
+        onClose={() => {
+          setReviewAnswerGroupId(null)
+          setReviewData(null)
+          setReviewError(null)
+          setReviewPromotingPanelId(null)
+          setReviewPromotingRecommended(false)
+        }}
+        onRefresh={() => {
+          void handleRefreshAnswerReview()
+        }}
+        onPromotePanel={(sourcePanelId) => {
+          void handlePromoteReviewedPanel(sourcePanelId)
+        }}
+        onPromoteRecommended={() => {
+          void handlePromoteRecommendedAnswer()
+        }}
+      />
     </div>
   )
 }

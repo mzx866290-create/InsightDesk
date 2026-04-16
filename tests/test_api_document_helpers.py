@@ -253,6 +253,74 @@ def test_retrieval_test_payload_returns_results_and_latency():
     assert payload["top_results"][1]["source"]
 
 
+def test_retrieval_test_payload_prefers_debug_retrieval_when_available():
+    class FakePipeline:
+        def load_store(self):
+            return True
+
+        def debug_retrieval(
+            self,
+            query,
+            *,
+            search_k,
+            fetch_k,
+            retrieval_mode,
+            use_rerank,
+        ):
+            assert query == "alpha"
+            assert search_k == 3
+            assert fetch_k == 9
+            assert retrieval_mode == "hybrid"
+            assert use_rerank is True
+            return {
+                "results_count": 1,
+                "search_mode": "hybrid_rerank",
+                "retrieval_mode": "hybrid",
+                "search_k": 3,
+                "top_k": 3,
+                "fetch_k": 9,
+                "rewrite_query": "alpha",
+                "rewrite_applied": False,
+                "query_terms": ["alpha"],
+                "coverage": {
+                    "unique_sources": 1,
+                    "source_ratio": 1.0,
+                    "matched_terms": ["alpha"],
+                    "matched_term_count": 1,
+                },
+                "top_results": [
+                    {
+                        "rank": 1,
+                        "source": "alpha.md",
+                        "snippet": "Alpha findings and supporting detail",
+                        "score": 0.88,
+                        "channel": "hybrid_rerank",
+                    }
+                ],
+                "semantic_candidates": [],
+                "keyword_candidates": [],
+                "fused_candidates": [],
+            }
+
+    times = iter([10.0, 10.05])
+    payload = api_document_helpers.retrieval_test_payload(
+        "alpha",
+        FakePipeline(),
+        current_time=lambda: next(times),
+        search_k=3,
+        fetch_k=9,
+        use_rerank=True,
+        retrieval_mode="hybrid",
+    )
+
+    assert payload["results_count"] == 1
+    assert payload["search_mode"] == "hybrid_rerank"
+    assert payload["retrieval_mode"] == "hybrid"
+    assert payload["coverage"]["matched_term_count"] == 1
+    assert payload["top_results"][0]["source"] == "alpha.md"
+    assert payload["latency_ms"] == 50.0
+
+
 def test_retrieval_test_payload_returns_exception_payload():
     class FakePipeline:
         def load_store(self):

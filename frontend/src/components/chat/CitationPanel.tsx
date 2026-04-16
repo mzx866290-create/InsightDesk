@@ -135,6 +135,48 @@ export const CitationPanel: React.FC<CitationPanelProps> = ({
     )
   }
 
+  const renderRetrievalMeta = (source: SourceItem) => {
+    const bits: string[] = []
+    const positiveCount = typeof source.feedback_positive_count === 'number' ? source.feedback_positive_count : 0
+    const negativeCount = typeof source.feedback_negative_count === 'number' ? source.feedback_negative_count : 0
+    const netFeedback = typeof source.feedback_net === 'number' ? source.feedback_net : positiveCount - negativeCount
+    const feedbackBoost = typeof source.feedback_boost === 'number' ? source.feedback_boost : 0
+    const hasFeedbackSignal =
+      positiveCount > 0 ||
+      negativeCount > 0 ||
+      netFeedback !== 0 ||
+      Math.abs(feedbackBoost) >= 0.0005
+
+    if (source.retrieval_mode) bits.push(source.retrieval_mode)
+    if (source.search_channel && source.search_channel !== source.retrieval_mode) {
+      bits.push(source.search_channel)
+    }
+    if (typeof source.score === 'number') bits.push(`score ${source.score.toFixed(3)}`)
+    if (hasFeedbackSignal) {
+      bits.push(`反馈 +${positiveCount}/-${negativeCount}`)
+      bits.push(`净值 ${netFeedback >= 0 ? '+' : ''}${netFeedback}`)
+      bits.push(`boost ${feedbackBoost >= 0 ? '+' : ''}${feedbackBoost.toFixed(3)}`)
+    }
+    if (bits.length === 0 && (!source.matched_terms || source.matched_terms.length === 0)) {
+      return null
+    }
+
+    return (
+      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-text-secondary/60">
+        {bits.map((bit) => (
+          <span key={bit} className="rounded-full bg-bg-secondary px-1.5 py-0.5">
+            {bit}
+          </span>
+        ))}
+        {source.matched_terms && source.matched_terms.length > 0 && (
+          <span className="truncate">
+            命中词: {source.matched_terms.slice(0, 4).join(' / ')}
+          </span>
+        )}
+      </div>
+    )
+  }
+
   const jumpToAnswerGroup = (answerGroupId?: string) => {
     const targetGroupId = (answerGroupId ?? '').trim()
     if (!targetGroupId) return
@@ -204,6 +246,7 @@ export const CitationPanel: React.FC<CitationPanelProps> = ({
                           )}
                         </button>
                       )}
+                      {renderRetrievalMeta(src)}
                       {!streaming && renderSourceFeedback(src, 'blue')}
                     </div>
 
@@ -363,6 +406,7 @@ export const CitationPanel: React.FC<CitationPanelProps> = ({
                           )}
                         </button>
                       )}
+                      {renderRetrievalMeta(src)}
                       {!streaming && renderSourceFeedback(src, 'green')}
                     </div>
 

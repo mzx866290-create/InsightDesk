@@ -1,15 +1,19 @@
-import React, { useEffect } from 'react'
-import { Loader2, CheckCircle, XCircle, Clock, RefreshCw } from 'lucide-react'
-import { useTaskStore, createAndTrackTask } from '../../stores/taskStore'
-import { getTask } from '../../api/client'
+import React, { useEffect, useState } from 'react'
+import { CheckCircle, Clock, Loader2, RefreshCw, XCircle } from 'lucide-react'
+import { getDeck, getTask } from '../../api/client'
+import type { DeckSpec, TaskStatus } from '../../api/client'
 import { useChatStore } from '../../stores/chatStore'
-import type { TaskStatus } from '../../api/client'
+import { createAndTrackTask, useTaskStore } from '../../stores/taskStore'
+import { DeckEditorModal } from '../reports/DeckEditorModal'
+import { ReportPreviewModal } from '../reports/ReportPreviewModal'
 
 const TASK_TYPE_LABELS: Record<string, string> = {
-  analyze_knowledge_base: '知识分析',
+  analyze_knowledge_base: '知识库分析',
   generate_dashboard: '仪表盘生成',
+  generate_deck: '演示稿生成',
   generate_report: '报告生成',
   upload_documents: '文档导入',
+  web_research: '联网研究',
 }
 
 const STATUS_CONFIG: Record<
@@ -18,13 +22,13 @@ const STATUS_CONFIG: Record<
 > = {
   pending: {
     label: '等待中',
-    icon: <Clock size={13} className="text-text-secondary/70 animate-pulse" />,
+    icon: <Clock size={13} className="animate-pulse text-text-secondary/70" />,
     color: 'text-text-secondary/70',
     barColor: 'bg-text-secondary/40',
   },
   running: {
     label: '执行中',
-    icon: <Loader2 size={13} className="text-accent-blue animate-spin" />,
+    icon: <Loader2 size={13} className="animate-spin text-accent-blue" />,
     color: 'text-accent-blue',
     barColor: 'bg-accent-blue',
   },
@@ -55,19 +59,24 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
 }) => {
   const task = useTaskStore((s) => s.tasks[taskId])
   const startPolling = useTaskStore((s) => s.startPolling)
+  const panels = useChatStore((s) => s.panels)
   const currentSessionId = useChatStore((s) => s.currentSessionId)
+  const [reportPreviewOpen, setReportPreviewOpen] = useState(false)
+  const [deckOpen, setDeckOpen] = useState(false)
+  const [deckData, setDeckData] = useState<DeckSpec | null>(null)
+  const [deckLoading, setDeckLoading] = useState(false)
+  const [deckError, setDeckError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!task) {
-      getTask(taskId)
-        .then((data) => {
-          useTaskStore.getState().addTask(data)
-          if (data.status === 'pending' || data.status === 'running') {
-            startPolling(taskId)
-          }
-        })
-        .catch(() => {})
-    }
+    if (task) return
+    getTask(taskId)
+      .then((data) => {
+        useTaskStore.getState().addTask(data)
+        if (data.status === 'pending' || data.status === 'running') {
+          startPolling(taskId)
+        }
+      })
+      .catch(() => {})
   }, [taskId, task, startPolling])
 
   const displayType = task?.task_type ?? taskType ?? '任务'
@@ -79,21 +88,60 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
   const restartInterrupted =
     status === 'failed' &&
     typeof task?.error === 'string' &&
-    task.error.includes('链嶅姟宸查噸鍚紝浠诲姟鏈兘缁х画鎵ц')
-
+    task.error.includes('服务已重启')
   const isTerminal = status === 'completed' || status === 'failed'
+
+  const reportMarkdown =
+    typeof task?.params?.report_markdown === 'string' ? task.params.report_markdown : ''
+  const reportTitle =
+    typeof task?.params?.report_title === 'string' ? task.params.report_title : '研究报告'
+  const reportArtifactId =
+    typeof task?.params?.artifact_id === 'string' ? task.params.artifact_id : undefined
+  const reportAnswerGroupId =
+    typeof task?.params?.answer_group_id === 'string' ? task.params.answer_group_id : undefined
+  const reportPanelId =
+    typeof task?.params?.panel_id === 'string' ? task.params.panel_id : undefined
+
+  const deckId = typeof task?.params?.deck_id === 'string' ? task.params.deck_id : ''
+  const deckTitle =
+    typeof task?.params?.deck_title === 'string' ? task.params.deck_title : '演示稿草稿'
 
   const handleRetry = async () => {
     if (!task) return
     try {
       await createAndTrackTask(task.task_type, task.params ?? {}, effectiveSessionId)
-    } catch (e) {
-      console.error('任务重试失败', e)
+    } catch (error) {
+      console.error('Task retry failed', error)
+    }
+  }
+
+  const handleOpenDeck = async () => {
+    if (!deckId || deckLoading) return
+    if (deckData && deckData.deck_id === deckId) {
+      setDeckOpen(true)
+      return
+    }
+
+    setDeckLoading(true)
+    setDeckError(null)
+    try {
+      const deck = await getDeck(deckId)
+      setDeckData(deck)
+      setDeckOpen(true)
+    } catch (error) {
+      setDeckError((error as Error).message || '打开 Deck 失败。')
+    } finally {
+      setDeckLoading(false)
     }
   }
 
   return (
-    <div className="my-3 max-w-sm overflow-hidden rounded-xl border border-bg-border bg-bg-secondary/50 shadow-sm">
+    <div
+      className="my-3 max-w-sm overflow-hidden rounded-xl border border-bg-border bg-bg-secondary/50 shadow-sm"
+      data-testid="task-progress-card"
+      data-task-id={taskId}
+      data-task-type={displayType}
+    >
       <div className="flex items-center gap-2.5 border-b border-bg-border/60 bg-bg-tertiary/30 px-4 py-2.5">
         {cfg.icon}
         <div className="min-w-0 flex-1">
@@ -120,14 +168,39 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
       {task?.result && status === 'completed' && (
         <div className="px-4 pb-3 pt-2">
           <p className="text-[11px] leading-relaxed text-text-primary/80">{task.result}</p>
+          {reportMarkdown && (
+            <button
+              type="button"
+              onClick={() => setReportPreviewOpen(true)}
+              className="mt-2 inline-flex items-center gap-1 text-[11px] text-accent-blue transition-colors hover:text-accent-blue/80"
+            >
+              查看报告
+            </button>
+          )}
+          {deckId && (
+            <button
+              type="button"
+              onClick={() => {
+                void handleOpenDeck()
+              }}
+              disabled={deckLoading}
+              className="mt-2 ml-3 inline-flex items-center gap-1 text-[11px] text-accent-blue transition-colors hover:text-accent-blue/80 disabled:opacity-50"
+            >
+              {deckLoading ? '打开中...' : `查看 Deck${deckTitle ? `: ${deckTitle}` : ''}`}
+            </button>
+          )}
+          {deckError && (
+            <p className="mt-2 text-[11px] leading-relaxed text-red-400/80">{deckError}</p>
+          )}
         </div>
       )}
+
       {task?.error && status === 'failed' && (
         <div className="space-y-2 px-4 pb-3 pt-2">
           {restartInterrupted && (
             <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-2.5 py-2">
               <p className="text-[11px] leading-relaxed text-amber-300">
-                任务因服务重启被中断，需要重新启动。
+                任务因服务重启被中断，需要重新发起。
               </p>
             </div>
           )}
@@ -145,6 +218,29 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
         <div className="px-4 pb-2">
           <p className="truncate font-mono text-[9px] text-text-secondary/30">{taskId}</p>
         </div>
+      )}
+
+      {reportMarkdown && (
+        <ReportPreviewModal
+          open={reportPreviewOpen}
+          onClose={() => setReportPreviewOpen(false)}
+          markdown={reportMarkdown}
+          title={reportTitle}
+          sessionId={effectiveSessionId ?? ''}
+          artifactId={reportArtifactId}
+          answerGroupId={reportAnswerGroupId}
+          panelId={reportPanelId}
+        />
+      )}
+
+      {deckData && (
+        <DeckEditorModal
+          open={deckOpen}
+          onClose={() => setDeckOpen(false)}
+          deck={deckData}
+          panels={panels}
+          onDeckChange={setDeckData}
+        />
       )}
     </div>
   )

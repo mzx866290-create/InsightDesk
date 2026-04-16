@@ -17,6 +17,10 @@ def all_done_event() -> str:
     return encode_sse({"type": "all_done"})
 
 
+def heartbeat_event() -> str:
+    return encode_sse({"type": "heartbeat"})
+
+
 def done_event(panel_id: str) -> str:
     return panel_event(panel_id, "done")
 
@@ -69,13 +73,44 @@ async def stream_single_sse(
     source: AsyncIterable[str],
     *,
     is_disconnected: Callable[[], Awaitable[bool]],
+    heartbeat_interval_seconds: float = 5.0,
 ) -> AsyncGenerator[str, None]:
+    queue: asyncio.Queue[Any] = asyncio.Queue()
+    producer_done = object()
     disconnected = False
-    async for item in source:
-        if await is_disconnected():
-            disconnected = True
-            break
-        yield item
+    poll_timeout = min(0.5, max(0.01, heartbeat_interval_seconds))
+    last_emit_at = asyncio.get_running_loop().time()
+
+    async def feed() -> None:
+        try:
+            async for item in source:
+                await queue.put(item)
+        finally:
+            await queue.put(producer_done)
+
+    task = asyncio.create_task(feed())
+
+    try:
+        while True:
+            if await is_disconnected():
+                disconnected = True
+                break
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=poll_timeout)
+            except asyncio.TimeoutError:
+                now = asyncio.get_running_loop().time()
+                if now - last_emit_at >= heartbeat_interval_seconds:
+                    yield heartbeat_event()
+                    last_emit_at = now
+                continue
+            if item is producer_done:
+                break
+            yield item
+            last_emit_at = asyncio.get_running_loop().time()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
     if not disconnected:
         yield all_done_event()
 
@@ -85,6 +120,7 @@ async def stream_parallel_sse(
     *,
     is_disconnected: Callable[[], Awaitable[bool]],
     logger: logging.Logger | None = None,
+    heartbeat_interval_seconds: float = 5.0,
 ) -> AsyncGenerator[str, None]:
     queue: asyncio.Queue[Any] = asyncio.Queue()
     producer_done = object()
@@ -92,6 +128,8 @@ async def stream_parallel_sse(
     pending_producers = len(sources)
     disconnected = False
     active_logger = logger or logging.getLogger(__name__)
+    poll_timeout = min(0.5, max(0.01, heartbeat_interval_seconds))
+    last_emit_at = asyncio.get_running_loop().time()
 
     async def feed(source: AsyncIterable[str]) -> None:
         try:
@@ -114,8 +152,12 @@ async def stream_parallel_sse(
                 disconnected = True
                 break
             try:
-                item = await asyncio.wait_for(queue.get(), timeout=0.5)
+                item = await asyncio.wait_for(queue.get(), timeout=poll_timeout)
             except asyncio.TimeoutError:
+                now = asyncio.get_running_loop().time()
+                if now - last_emit_at >= heartbeat_interval_seconds:
+                    yield heartbeat_event()
+                    last_emit_at = now
                 continue
             if item is producer_done:
                 pending_producers -= 1
@@ -123,6 +165,7 @@ async def stream_parallel_sse(
                     all_producers_done.set()
                 continue
             yield item
+            last_emit_at = asyncio.get_running_loop().time()
     finally:
         for task in tasks:
             task.cancel()

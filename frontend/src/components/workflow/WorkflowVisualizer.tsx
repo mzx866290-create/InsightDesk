@@ -102,6 +102,29 @@ export const WorkflowVisualizer: React.FC<WorkflowVisualizerProps> = ({ panelId 
                         结果: {node.toolResult}
                       </div>
                     )}
+
+                    {node.retrievalMeta && (
+                      <div className="mt-1 space-y-0.5 text-[10px] text-text-secondary/65">
+                        {node.retrievalMeta.primary_mode && (
+                          <div className="truncate">
+                            检索模式: {node.retrievalMeta.primary_mode}
+                          </div>
+                        )}
+                        {typeof node.retrievalMeta.source_count === 'number' && (
+                          <div className="truncate">
+                            来源数: {node.retrievalMeta.source_count}
+                            {node.retrievalMeta.top_score !== null && node.retrievalMeta.top_score !== undefined
+                              ? ` · top score ${Number(node.retrievalMeta.top_score).toFixed(3)}`
+                              : ''}
+                          </div>
+                        )}
+                        {node.retrievalMeta.matched_terms && node.retrievalMeta.matched_terms.length > 0 && (
+                          <div className="truncate">
+                            命中词: {node.retrievalMeta.matched_terms.join(' / ')}
+                          </div>
+                        )}
+                      </div>
+                    )}
                     
                     {/* Error message */}
                     {node.error && (

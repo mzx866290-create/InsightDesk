@@ -23,6 +23,7 @@ _UNSET = object()
 DEFAULT_WORKSPACE_ID = "workspace-default"
 DEFAULT_WORKSPACE_NAME = "默认工作区"
 WORKSPACE_COLOR_CHOICES = {"slate", "blue", "green", "amber", "rose"}
+WORKSPACE_DECK_THEME_CHOICES = {"default", "midnight", "sunrise"}
 
 
 def connect_sqlite(db_path: str = DB_PATH) -> sqlite3.Connection:
@@ -268,6 +269,9 @@ def _init_workspaces_table(conn: sqlite3.Connection) -> None:
             name TEXT NOT NULL,
             description TEXT DEFAULT '',
             color TEXT DEFAULT 'blue',
+            default_panels_json TEXT DEFAULT '[]',
+            tool_config_json TEXT DEFAULT '{}',
+            output_preset_json TEXT DEFAULT '{}',
             is_active INTEGER DEFAULT 0,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
@@ -281,6 +285,21 @@ def _init_workspaces_table(conn: sqlite3.Connection) -> None:
     if "color" not in existing_columns:
         cursor.execute("ALTER TABLE workspaces ADD COLUMN color TEXT DEFAULT 'blue'")
         logger.info("Migrated workspaces table: added 'color' column")
+    if "default_panels_json" not in existing_columns:
+        cursor.execute(
+            "ALTER TABLE workspaces ADD COLUMN default_panels_json TEXT DEFAULT '[]'"
+        )
+        logger.info("Migrated workspaces table: added 'default_panels_json' column")
+    if "tool_config_json" not in existing_columns:
+        cursor.execute(
+            "ALTER TABLE workspaces ADD COLUMN tool_config_json TEXT DEFAULT '{}'"
+        )
+        logger.info("Migrated workspaces table: added 'tool_config_json' column")
+    if "output_preset_json" not in existing_columns:
+        cursor.execute(
+            "ALTER TABLE workspaces ADD COLUMN output_preset_json TEXT DEFAULT '{}'"
+        )
+        logger.info("Migrated workspaces table: added 'output_preset_json' column")
     if "is_active" not in existing_columns:
         cursor.execute("ALTER TABLE workspaces ADD COLUMN is_active INTEGER DEFAULT 0")
         logger.info("Migrated workspaces table: added 'is_active' column")
@@ -294,9 +313,10 @@ def _init_workspaces_table(conn: sqlite3.Connection) -> None:
     cursor.execute(
         """
         INSERT OR IGNORE INTO workspaces (
-            workspace_id, name, description, color, is_active, created_at, updated_at
+            workspace_id, name, description, color, default_panels_json, tool_config_json,
+            output_preset_json, is_active, created_at, updated_at
         )
-        VALUES (?, ?, '', 'blue', 1, ?, ?)
+        VALUES (?, ?, '', 'blue', '[]', '{}', '{}', 1, ?, ?)
         """,
         (
             DEFAULT_WORKSPACE_ID,
@@ -304,6 +324,15 @@ def _init_workspaces_table(conn: sqlite3.Connection) -> None:
             now,
             now,
         ),
+    )
+    cursor.execute(
+        "UPDATE workspaces SET default_panels_json = '[]' WHERE COALESCE(default_panels_json, '') = ''"
+    )
+    cursor.execute(
+        "UPDATE workspaces SET tool_config_json = '{}' WHERE COALESCE(tool_config_json, '') = ''"
+    )
+    cursor.execute(
+        "UPDATE workspaces SET output_preset_json = '{}' WHERE COALESCE(output_preset_json, '') = ''"
     )
     cursor.execute(
         "SELECT workspace_id FROM workspaces WHERE COALESCE(is_active, 0) = 1 LIMIT 1"
@@ -594,6 +623,86 @@ def _normalize_workspace_color(color: Any = None) -> str:
     if normalized not in WORKSPACE_COLOR_CHOICES:
         return "blue"
     return normalized
+
+
+def _normalize_workspace_panel_configs(value: Any = None) -> List[Dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+
+    normalized_configs: List[Dict[str, Any]] = []
+    seen_panel_ids: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            continue
+        panel_id = str(item.get("panel_id") or "").strip() or f"panel-preset-{index + 1}"
+        if panel_id in seen_panel_ids:
+            continue
+        seen_panel_ids.add(panel_id)
+
+        provider = str(item.get("provider") or item.get("connection_type") or "ollama").strip()
+        connection_type = str(
+            item.get("connection_type") or item.get("provider") or provider or "ollama"
+        ).strip()
+        try:
+            temperature = float(item.get("temperature") or 0.3)
+        except (TypeError, ValueError):
+            temperature = 0.3
+        temperature = max(0.0, min(2.0, temperature))
+        agent_mode = str(item.get("agent_mode") or "auto").strip().lower() or "auto"
+        if agent_mode not in {"auto", "langgraph", "function_calling", "plain_chat"}:
+            agent_mode = "auto"
+
+        normalized_configs.append(
+            {
+                "panel_id": panel_id,
+                "provider": provider or "ollama",
+                "connection_type": connection_type or "ollama",
+                "model": str(item.get("model") or "").strip(),
+                "base_url": str(item.get("base_url") or "").strip(),
+                "api_key": "",
+                "temperature": temperature,
+                "agent_mode": agent_mode,
+            }
+        )
+
+    return normalized_configs[:6]
+
+
+def _normalize_workspace_tool_config(value: Any = None) -> Dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    raw_servers = payload.get("mcp_servers_enabled")
+    if isinstance(raw_servers, list):
+        mcp_servers_enabled = []
+        seen_servers: set[str] = set()
+        for item in raw_servers:
+            server_name = str(item or "").strip()
+            if not server_name or server_name in seen_servers:
+                continue
+            mcp_servers_enabled.append(server_name)
+            seen_servers.add(server_name)
+    else:
+        mcp_servers_enabled = ["knowledge-base", "web-search"]
+    return {
+        "web_search_enabled": bool(payload.get("web_search_enabled", False)),
+        "knowledge_base_enabled": bool(payload.get("knowledge_base_enabled", True)),
+        "mcp_servers_enabled": mcp_servers_enabled,
+    }
+
+
+def _normalize_workspace_output_preset(value: Any = None) -> Dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    deck_theme = str(payload.get("deck_theme") or "default").strip().lower() or "default"
+    if deck_theme not in WORKSPACE_DECK_THEME_CHOICES:
+        deck_theme = "default"
+    try:
+        target_slide_count = int(payload.get("target_slide_count") or 8)
+    except (TypeError, ValueError):
+        target_slide_count = 8
+    target_slide_count = max(4, min(10, target_slide_count))
+    return {
+        "deck_theme": deck_theme,
+        "target_slide_count": target_slide_count,
+    }
 
 
 def _normalize_message_feedback_value(value: Any = None) -> int:
@@ -1342,10 +1451,15 @@ def _row_to_workspace(row: tuple) -> Dict[str, Any]:
         "name": _normalize_workspace_display_name(row[0], row[1]),
         "description": str(row[2] or ""),
         "color": _normalize_workspace_color(row[3]),
-        "is_active": bool(row[4]),
-        "created_at": float(row[5] or 0),
-        "updated_at": float(row[6] or 0),
-        "session_count": int(row[7] or 0) if len(row) > 7 else 0,
+        "preset": {
+            "default_panels": _normalize_workspace_panel_configs(_parse_json_list(row[4])),
+            "tool_config": _normalize_workspace_tool_config(_parse_json_object(row[5])),
+            "output_preset": _normalize_workspace_output_preset(_parse_json_object(row[6])),
+        },
+        "is_active": bool(row[7]),
+        "created_at": float(row[8] or 0),
+        "updated_at": float(row[9] or 0),
+        "session_count": int(row[10] or 0) if len(row) > 10 else 0,
     }
 
 
@@ -1638,6 +1752,9 @@ def _fetch_workspace_row(
             w.name,
             COALESCE(w.description, ''),
             COALESCE(w.color, 'blue'),
+            COALESCE(w.default_panels_json, '[]'),
+            COALESCE(w.tool_config_json, '{}'),
+            COALESCE(w.output_preset_json, '{}'),
             COALESCE(w.is_active, 0),
             w.created_at,
             w.updated_at,
@@ -1651,6 +1768,9 @@ def _fetch_workspace_row(
             w.name,
             w.description,
             w.color,
+            w.default_panels_json,
+            w.tool_config_json,
+            w.output_preset_json,
             w.is_active,
             w.created_at,
             w.updated_at
@@ -1840,6 +1960,9 @@ def list_workspaces(
                 w.name,
                 COALESCE(w.description, ''),
                 COALESCE(w.color, 'blue'),
+                COALESCE(w.default_panels_json, '[]'),
+                COALESCE(w.tool_config_json, '{}'),
+                COALESCE(w.output_preset_json, '{}'),
                 COALESCE(w.is_active, 0),
                 w.created_at,
                 w.updated_at,
@@ -1852,6 +1975,9 @@ def list_workspaces(
                 w.name,
                 w.description,
                 w.color,
+                w.default_panels_json,
+                w.tool_config_json,
+                w.output_preset_json,
                 w.is_active,
                 w.created_at,
                 w.updated_at
@@ -1883,12 +2009,18 @@ def create_workspace(
     *,
     description: str = "",
     color: str = "blue",
+    default_panels: Optional[List[Dict[str, Any]]] = None,
+    tool_config: Optional[Dict[str, Any]] = None,
+    output_preset: Optional[Dict[str, Any]] = None,
     activate: bool = True,
     db_path: str = "./chat_history.db",
 ) -> Dict[str, Any]:
     normalized_name = _normalize_workspace_name(name)
     normalized_description = _normalize_workspace_description(description)
     normalized_color = _normalize_workspace_color(color)
+    normalized_default_panels = _normalize_workspace_panel_configs(default_panels)
+    normalized_tool_config = _normalize_workspace_tool_config(tool_config)
+    normalized_output_preset = _normalize_workspace_output_preset(output_preset)
     workspace_id = str(uuid.uuid4())
     now = time.time()
 
@@ -1900,15 +2032,19 @@ def create_workspace(
         cursor.execute(
             """
             INSERT INTO workspaces (
-                workspace_id, name, description, color, is_active, created_at, updated_at
+                workspace_id, name, description, color, default_panels_json, tool_config_json,
+                output_preset_json, is_active, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 workspace_id,
                 normalized_name,
                 normalized_description,
                 normalized_color,
+                json.dumps(normalized_default_panels, ensure_ascii=False),
+                json.dumps(normalized_tool_config, ensure_ascii=False),
+                json.dumps(normalized_output_preset, ensure_ascii=False),
                 1 if activate else 0,
                 now,
                 now,
@@ -1927,6 +2063,9 @@ def update_workspace(
     name: Optional[str] = None,
     description: Optional[str] = None,
     color: Optional[str] = None,
+    default_panels: Optional[List[Dict[str, Any]]] = None,
+    tool_config: Optional[Dict[str, Any]] = None,
+    output_preset: Optional[Dict[str, Any]] = None,
     db_path: str = "./chat_history.db",
 ) -> Optional[Dict[str, Any]]:
     with connect_sqlite(db_path) as conn:
@@ -1947,6 +2086,30 @@ def update_workspace(
         if color is not None:
             updates.append("color = ?")
             params.append(_normalize_workspace_color(color))
+        if default_panels is not None:
+            updates.append("default_panels_json = ?")
+            params.append(
+                json.dumps(
+                    _normalize_workspace_panel_configs(default_panels),
+                    ensure_ascii=False,
+                )
+            )
+        if tool_config is not None:
+            updates.append("tool_config_json = ?")
+            params.append(
+                json.dumps(
+                    _normalize_workspace_tool_config(tool_config),
+                    ensure_ascii=False,
+                )
+            )
+        if output_preset is not None:
+            updates.append("output_preset_json = ?")
+            params.append(
+                json.dumps(
+                    _normalize_workspace_output_preset(output_preset),
+                    ensure_ascii=False,
+                )
+            )
 
         if not updates:
             return get_workspace(workspace_id, db_path=db_path)
@@ -2323,6 +2486,56 @@ def list_retrieval_feedback(
             "source_key": str(row[0] or ""),
             "feedback_value": _normalize_message_feedback_value(row[1]),
             "updated_at": float(row[2] or 0),
+        }
+        for row in rows
+    ]
+
+
+def aggregate_retrieval_feedback_by_source(
+    *,
+    source_type: Optional[str] = None,
+    db_path: str = "./chat_history.db",
+) -> List[Dict[str, Any]]:
+    normalized_source_type = str(source_type or "").strip().lower()
+
+    query = """
+        SELECT
+            source_type,
+            source_title,
+            source_url,
+            SUM(CASE WHEN feedback_value = 1 THEN 1 ELSE 0 END) AS positive_count,
+            SUM(CASE WHEN feedback_value = -1 THEN 1 ELSE 0 END) AS negative_count,
+            SUM(feedback_value) AS net_feedback,
+            COUNT(*) AS total_count,
+            MAX(updated_at) AS last_updated_at
+        FROM retrieval_feedback
+        WHERE feedback_value != 0
+    """
+    params: list[Any] = []
+    if normalized_source_type:
+        query += " AND source_type = ?"
+        params.append(normalized_source_type)
+    query += """
+        GROUP BY source_type, source_title, source_url
+        ORDER BY net_feedback DESC, positive_count DESC, negative_count ASC, last_updated_at DESC
+    """
+
+    with connect_sqlite(db_path) as conn:
+        _init_retrieval_feedback_table(conn)
+        cursor = conn.cursor()
+        cursor.execute(query, tuple(params))
+        rows = cursor.fetchall()
+
+    return [
+        {
+            "source_type": str(row[0] or "").strip().lower(),
+            "source_title": str(row[1] or "").strip(),
+            "source_url": str(row[2] or "").strip(),
+            "positive_count": int(row[3] or 0),
+            "negative_count": int(row[4] or 0),
+            "net_feedback": int(row[5] or 0),
+            "total_count": int(row[6] or 0),
+            "last_updated_at": float(row[7] or 0),
         }
         for row in rows
     ]

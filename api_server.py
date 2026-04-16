@@ -19,9 +19,21 @@ import threading
 import time
 from urllib.parse import quote
 import uuid
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Literal, Optional
 
 import httpx
+from artifact_service import (
+    SQLiteArtifactStore,
+    artifact_export_formats,
+    build_deck_artifact,
+    build_report_artifact,
+    sync_deck_artifact,
+)
+from agent_mcp_helpers import (
+    default_mcp_server_names,
+    list_mcp_server_catalog,
+    normalize_mcp_server_names,
+)
 from api_session_helpers import (
     build_answer_group_review_payload as _build_answer_group_review_payload,
     build_session_messages_payload as _build_session_messages_payload,
@@ -86,6 +98,7 @@ from api_deck_report_helpers import (
     create_share_link_payload,
     export_deck_payload,
     replace_deck_slide,
+    resolve_report_messages,
     report_download_payload,
     report_markdown_payload,
 )
@@ -156,11 +169,15 @@ from api_task_runtime_helpers import (
     task_record_payload,
 )
 from api_task_execution_helpers import (
+    persist_web_research_task_placeholder,
+    persist_web_research_task_result,
     run_analyze_knowledge_base_task,
+    run_generate_deck_task,
     run_generate_report_task,
     run_placeholder_task,
     run_promote_attachment_to_kb_task,
     run_upload_documents_task,
+    run_web_research_task,
 )
 from api_task_store import SQLiteTaskStore, TaskRecord, TaskStatus
 from deck_service import (
@@ -300,6 +317,20 @@ def _hash_secret(secret: str) -> str:
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:12]
 
 
+def _token_fingerprint(token: str) -> str:
+    normalized = str(token or "").strip()
+    if not normalized:
+        return "empty"
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+
+
+def _token_preview(token: str) -> str:
+    normalized = str(token or "").strip()
+    if len(normalized) <= 10:
+        return normalized
+    return f"{normalized[:6]}...{normalized[-4:]}"
+
+
 def _request_client_ip(request: Request) -> str:
     client = getattr(request, "client", None)
     host = getattr(client, "host", "") if client is not None else ""
@@ -358,6 +389,15 @@ def _request_user_id(request: Request) -> str:
 
 def _request_user_role(request: Request) -> str:
     return _sanitize_log_value(request.headers.get("X-User-Role"), max_length=64)
+
+
+def _sanitize_request_path(path: str) -> str:
+    normalized = str(path or "").strip() or "/"
+    if normalized.startswith("/api/share-links/"):
+        return "/api/share-links/<token>"
+    if normalized.startswith("/shared/"):
+        return "/shared/<token>"
+    return normalized
 
 
 def _current_share_link_secret() -> str:
@@ -458,6 +498,67 @@ def _audit_security_event(
     )
 
 
+def _share_link_audit_payload(record: Any, *, now: Optional[float] = None) -> dict[str, Any]:
+    current_time = time.time() if now is None else float(now)
+    revoked_at = getattr(record, "revoked_at", None)
+    expires_at = float(getattr(record, "expires_at", 0) or 0)
+    share_token = str(getattr(record, "share_token", "") or "").strip()
+    return {
+        "resource_type": str(getattr(record, "resource_type", "") or "").strip(),
+        "resource_id": str(getattr(record, "resource_id", "") or "").strip(),
+        "created_at": float(getattr(record, "created_at", 0) or 0),
+        "expires_at": expires_at,
+        "revoked_at": float(revoked_at) if revoked_at is not None else None,
+        "is_active": revoked_at is None and expires_at > current_time,
+        "created_by_ip": str(getattr(record, "created_by_ip", "") or "").strip(),
+        "created_user_agent": str(getattr(record, "created_user_agent", "") or "").strip(),
+        "access_count": int(getattr(record, "access_count", 0) or 0),
+        "last_accessed_at": (
+            float(getattr(record, "last_accessed_at", 0))
+            if getattr(record, "last_accessed_at", None) is not None
+            else None
+        ),
+        "last_accessed_ip": str(getattr(record, "last_accessed_ip", "") or "").strip(),
+        "last_accessed_user_agent": str(
+            getattr(record, "last_accessed_user_agent", "") or ""
+        ).strip(),
+        "share_token_preview": _token_preview(share_token),
+        "share_token_fingerprint": _token_fingerprint(share_token),
+    }
+
+
+def _security_status_payload() -> dict[str, Any]:
+    cors_origins, cors_allow_credentials = _cors_settings()
+    admin_token_configured = bool(_current_admin_api_token())
+    share_link_secret_healthy = not _share_link_secret_is_weak()
+    return {
+        "allow_remote_clients": ALLOW_REMOTE_CLIENTS,
+        "local_only_mode": not ALLOW_REMOTE_CLIENTS,
+        "admin_token_configured": admin_token_configured,
+        "remote_admin_ready": (not ALLOW_REMOTE_CLIENTS) or admin_token_configured,
+        "share_link_secret_healthy": share_link_secret_healthy,
+        "remote_share_ready": (not ALLOW_REMOTE_CLIENTS) or share_link_secret_healthy,
+        "share_link_ttl_seconds": int(SHARE_LINK_TTL_SECONDS),
+        "share_link_ttl_hours": round(float(SHARE_LINK_TTL_SECONDS) / 3600.0, 2),
+        "cors_allow_credentials": cors_allow_credentials,
+        "cors_allowed_origins": cors_origins,
+        "request_id_header": "X-Request-ID",
+        "process_time_header": "X-Process-Time-Ms",
+        "chat_file_limits": {
+            "max_count": int(CHAT_FILE_MAX_COUNT),
+            "max_bytes": int(CHAT_FILE_MAX_BYTES),
+            "max_chars_per_file": int(CHAT_FILE_MAX_CHARS_PER_FILE),
+            "max_total_chars": int(CHAT_FILE_MAX_TOTAL_CHARS),
+            "preview_chars": int(CHAT_ATTACHMENT_PREVIEW_CHARS),
+        },
+        "document_upload_limits": {
+            "max_count": int(DOCUMENT_UPLOAD_MAX_COUNT),
+            "max_file_bytes": int(DOCUMENT_UPLOAD_MAX_FILE_BYTES),
+            "max_total_bytes": int(DOCUMENT_UPLOAD_MAX_TOTAL_BYTES),
+        },
+    }
+
+
 def _resolve_project_subdir(candidate: str) -> Path:
     raw_path = Path(candidate).expanduser()
     if not raw_path.is_absolute():
@@ -549,6 +650,31 @@ def _effective_vector_store_path(candidate: Optional[str] = None) -> str:
     return _faiss_safe_store_path(_resolve_project_subdir(raw))
 
 
+def _require_workspace_session(
+    session_id: str,
+    workspace_id: Optional[str] = None,
+) -> dict[str, Any]:
+    from chat_store import DEFAULT_WORKSPACE_ID, get_session, get_workspace
+
+    normalized_session_id = str(session_id or "").strip()
+    session = get_session(normalized_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    normalized_workspace_id = str(workspace_id or "").strip()
+    if not normalized_workspace_id:
+        return session
+
+    if get_workspace(normalized_workspace_id) is None:
+        raise HTTPException(status_code=400, detail="工作区不存在")
+
+    session_workspace_id = str(session.get("workspace_id") or DEFAULT_WORKSPACE_ID)
+    if session_workspace_id != normalized_workspace_id:
+        raise HTTPException(status_code=404, detail="当前工作区中不存在该会话")
+
+    return session
+
+
 def _build_download_content_disposition(filename: str) -> str:
     raw_filename = str(filename or "").strip() or "download"
     ascii_only = all(ord(char) < 128 for char in raw_filename)
@@ -566,8 +692,9 @@ def _build_download_content_disposition(filename: str) -> str:
 ALLOW_REMOTE_CLIENTS = _env_flag("ALLOW_REMOTE_CLIENTS", False)
 _cors_origins, _cors_allow_credentials = _cors_settings()
 
-app = FastAPI(title="AI 知识库 API", version="2.0.0")
+app = FastAPI(title="InsightDesk API", version="2.0.0")
 _deck_store = SQLiteDeckStore()
+_artifact_store = SQLiteArtifactStore()
 _share_link_store = SQLiteShareLinkStore()
 
 app.add_middleware(
@@ -577,6 +704,49 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _artifact_payload(artifact: Any) -> dict[str, Any]:
+    payload = artifact.model_dump(mode="json")
+    payload["available_formats"] = artifact_export_formats(artifact)
+    return payload
+
+
+def _create_report_artifact(
+    *,
+    session_id: str,
+    messages: list[Any],
+    answer_group_id: str = "",
+    panel_id: str = "",
+) -> tuple[Any, str, str]:
+    qa_pairs = ensure_deckable_chat(messages)
+    title = build_chat_report_title(messages)
+    markdown = build_report_markdown(messages, title)
+    artifact = build_report_artifact(
+        session_id=session_id,
+        title=title,
+        markdown=markdown,
+        qa_pairs=qa_pairs,
+        answer_group_id=answer_group_id,
+        panel_id=panel_id,
+    )
+    _artifact_store.save(artifact)
+    return artifact, title, markdown
+
+
+def _create_deck_artifact(deck: Any) -> Any:
+    artifact = build_deck_artifact(deck)
+    _artifact_store.save(artifact)
+    return artifact
+
+
+def _sync_deck_artifacts(deck: Any) -> None:
+    deck_id = str(getattr(deck, "deck_id", "") or "").strip()
+    if not deck_id:
+        return
+    for artifact in _artifact_store.list_by_linked_resource("deck", deck_id):
+        sync_deck_artifact(artifact, deck)
+        _artifact_store.save(artifact)
 
 
 @app.middleware("http")
@@ -597,7 +767,7 @@ async def restrict_remote_clients(request: Request, call_next):
                 "Blocked non-local request request_id=%s host=%s path=%s",
                 request_id,
                 client_host,
-                request.url.path,
+                _sanitize_request_path(request.url.path),
             )
             response = JSONResponse(
                 status_code=403,
@@ -622,7 +792,7 @@ async def restrict_remote_clients(request: Request, call_next):
         "request_id=%s method=%s path=%s status=%s latency_ms=%.2f",
         request_id,
         request.method,
-        request.url.path,
+        _sanitize_request_path(request.url.path),
         response.status_code,
         process_time_ms,
     )
@@ -835,6 +1005,7 @@ class ChatRequest(BaseModel):
     models: list[ModelConfig]
     web_search_enabled: bool = False
     knowledge_base_enabled: bool = True
+    enabled_mcp_servers: list[str] = Field(default_factory=list)
     answer_group_id: Optional[str] = None
 
 
@@ -846,6 +1017,7 @@ class SingleChatRequest(BaseModel):
     panel_config: ModelConfig
     web_search_enabled: bool = False
     knowledge_base_enabled: bool = True
+    enabled_mcp_servers: list[str] = Field(default_factory=list)
     answer_group_id: Optional[str] = None
     persist_user_history: bool = True
     persist_ai_history: bool = True
@@ -895,17 +1067,80 @@ class RevokeShareLinkResponse(BaseModel):
     ok: bool
 
 
+class ShareLinkAuditRecord(BaseModel):
+    resource_type: str
+    resource_id: str
+    created_at: float
+    expires_at: float
+    revoked_at: Optional[float] = None
+    is_active: bool
+    created_by_ip: str = ""
+    created_user_agent: str = ""
+    access_count: int = 0
+    last_accessed_at: Optional[float] = None
+    last_accessed_ip: str = ""
+    last_accessed_user_agent: str = ""
+    share_token_preview: str
+    share_token_fingerprint: str
+
+
+class ShareLinkAuditListResponse(BaseModel):
+    share_links: list[ShareLinkAuditRecord]
+    total: int
+    active_count: int
+
+
+class SecurityStatusResponse(BaseModel):
+    allow_remote_clients: bool
+    local_only_mode: bool
+    admin_token_configured: bool
+    remote_admin_ready: bool
+    share_link_secret_healthy: bool
+    remote_share_ready: bool
+    share_link_ttl_seconds: int
+    share_link_ttl_hours: float
+    cors_allow_credentials: bool
+    cors_allowed_origins: list[str]
+    request_id_header: str
+    process_time_header: str
+    chat_file_limits: dict[str, int]
+    document_upload_limits: dict[str, int]
+
+
+class WorkspaceToolConfigRequest(BaseModel):
+    web_search_enabled: bool = False
+    knowledge_base_enabled: bool = True
+    mcp_servers_enabled: list[str] = Field(default_factory=default_mcp_server_names)
+
+
+class WorkspaceOutputPresetRequest(BaseModel):
+    deck_theme: Literal["default", "midnight", "sunrise"] = "default"
+    target_slide_count: int = Field(default=8, ge=4, le=10)
+
+
+class WorkspacePresetRequest(BaseModel):
+    default_panels: list[ModelConfig] = Field(default_factory=list)
+    tool_config: WorkspaceToolConfigRequest = Field(
+        default_factory=WorkspaceToolConfigRequest
+    )
+    output_preset: WorkspaceOutputPresetRequest = Field(
+        default_factory=WorkspaceOutputPresetRequest
+    )
+
+
 class CreateWorkspaceRequest(BaseModel):
     name: str
     description: str = ""
     color: str = "blue"
     activate: bool = True
+    preset: Optional[WorkspacePresetRequest] = None
 
 
 class UpdateWorkspaceRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     color: Optional[str] = None
+    preset: Optional[WorkspacePresetRequest] = None
 
 
 class SetMessageFeedbackRequest(BaseModel):
@@ -920,6 +1155,33 @@ class TruncateSessionMessagesRequest(BaseModel):
     content: str = ""
     images: list[ImageInput] = Field(default_factory=list)
     files: list[FileInput] = Field(default_factory=list)
+
+
+class ImportedFileInput(BaseModel):
+    name: str
+    media_type: str
+    data_url: str = ""
+    size_bytes: int = 0
+    extracted_text: str = ""
+
+
+class ImportSessionMessageRequest(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = ""
+    images: list[ImageInput] = Field(default_factory=list)
+    files: list[ImportedFileInput] = Field(default_factory=list)
+    sources: list[dict[str, Any]] = Field(default_factory=list)
+    model_id: str = ""
+    panel_id: str = ""
+    answer_group_id: str = ""
+    workflow_nodes: list[dict[str, Any]] = Field(default_factory=list)
+    task_id: str = ""
+    task_type: str = ""
+
+
+class ImportSessionMessagesRequest(BaseModel):
+    panels: list[ModelConfig] = Field(default_factory=list)
+    messages: list[ImportSessionMessageRequest] = Field(default_factory=list)
 
 
 class SetRetrievalFeedbackRequest(BaseModel):
@@ -960,6 +1222,25 @@ class UpdatePromptRequest(BaseModel):
 
 class GenerateReportRequest(BaseModel):
     session_id: str
+    answer_group_id: Optional[str] = None
+    panel_id: Optional[str] = None
+
+
+def _resolve_report_messages(
+    history: Any,
+    *,
+    answer_group_id: Optional[str] = None,
+    panel_id: Optional[str] = None,
+) -> list[Any]:
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    return resolve_report_messages(
+        history,
+        answer_group_id=str(answer_group_id or "").strip(),
+        panel_id=str(panel_id or "").strip(),
+        human_message_factory=lambda content: HumanMessage(content=content),
+        ai_message_factory=lambda content: AIMessage(content=content),
+    )
 
 
 class CreateDeckRequest(BaseModel):
@@ -968,6 +1249,24 @@ class CreateDeckRequest(BaseModel):
     knowledge_base_enabled: bool = True
     target_slide_count: int = Field(default=8, ge=4, le=10)
     theme: str = "default"
+    answer_group_id: Optional[str] = None
+    panel_id: Optional[str] = None
+
+
+class GenerateArtifactRequest(BaseModel):
+    artifact_type: Literal["report", "deck"]
+    session_id: str
+    answer_group_id: Optional[str] = None
+    panel_id: Optional[str] = None
+    panel_config: Optional[ModelConfig] = None
+    knowledge_base_enabled: bool = True
+    target_slide_count: int = Field(default=8, ge=4, le=10)
+    theme: str = "default"
+
+
+class UpdateArtifactRequest(BaseModel):
+    title: Optional[str] = None
+    markdown: Optional[str] = None
 
 
 class UpdateDeckRequest(BaseModel):
@@ -987,6 +1286,7 @@ class TestRetrievalRequest(BaseModel):
     search_k: Optional[int] = None
     fetch_k: Optional[int] = None
     use_rerank: Optional[bool] = None
+    retrieval_mode: Optional[str] = None
 
 
 class UpdateKBChunkRequest(BaseModel):
@@ -1160,6 +1460,25 @@ async def _run_task(record: TaskRecord) -> None:
             await run_generate_report_task(
                 record,
                 set_progress=_set_progress,
+                resolve_report_messages=_resolve_report_messages,
+                ensure_deckable_chat=ensure_deckable_chat,
+                build_chat_report_title=build_chat_report_title,
+                build_report_markdown=build_report_markdown,
+                build_report_artifact=build_report_artifact,
+                save_artifact=_artifact_store.save,
+            )
+
+        elif task_type == "generate_deck":
+            await run_generate_deck_task(
+                record,
+                set_progress=_set_progress,
+                resolve_report_messages=_resolve_report_messages,
+                normalize_model_config=_normalize_model_config,
+                resolve_active_prompt_runtime=_resolve_active_prompt_runtime,
+                build_deck=build_deck,
+                save_deck=_deck_store.save,
+                build_deck_artifact=build_deck_artifact,
+                save_artifact=_artifact_store.save,
             )
 
         elif task_type == "upload_documents":
@@ -1182,6 +1501,16 @@ async def _run_task(record: TaskRecord) -> None:
                 decode_data_url=_decode_data_url,
                 clear_agent_cache=_clear_agent_cache,
                 logger=logger,
+            )
+
+        elif task_type == "web_research":
+            from agent_core import get_llm
+
+            await run_web_research_task(
+                record,
+                set_progress=_set_progress,
+                normalize_model_config=_normalize_model_config,
+                create_llm=get_llm,
             )
 
         else:
@@ -1218,6 +1547,12 @@ async def _run_task(record: TaskRecord) -> None:
             record.updated_at = time.time()
             _prune_task_records_locked(record.updated_at)
         _persist_task_record(record)
+        if record.task_type == "web_research":
+            persist_web_research_task_result(
+                record,
+                content=f"联网研究任务失败：{record.error}",
+                sources=[],
+            )
         _prune_persisted_tasks()
 
 
@@ -1555,6 +1890,7 @@ async def _get_or_build_agent(
     knowledge_base_enabled: bool = True,
     vector_store_path: Optional[str] = None,
     dashboard_template: Optional[dict[str, Any]] = None,
+    enabled_mcp_servers: Optional[list[str]] = None,
 ):
     """获取或构建 Agent（带缓存）"""
     from agent_core import build_agent
@@ -1577,6 +1913,7 @@ async def _get_or_build_agent(
             else "",
             "system_prompt": system_prompt or "",
             "dashboard_template": dashboard_template or {},
+            "enabled_mcp_servers": normalize_mcp_server_names(enabled_mcp_servers),
         }
     )
     async with _agent_cache_lock:
@@ -1594,6 +1931,7 @@ async def _get_or_build_agent(
                 knowledge_base_enabled=knowledge_base_enabled,
                 vector_store_path=vector_store_path,
                 dashboard_template=dashboard_template,
+                enabled_mcp_servers=normalize_mcp_server_names(enabled_mcp_servers),
             )
         return _agent_cache[cache_key]
 
@@ -1608,6 +1946,7 @@ async def _invoke_agent_stream(
     system_prompt: Optional[str] = None,
     vector_store_path: Optional[str] = None,
     dashboard_template: Optional[dict[str, Any]] = None,
+    enabled_mcp_servers: Optional[list[str]] = None,
     persist_history: bool = True,
     persist_user_history: bool = True,
     persist_ai_history: bool = True,
@@ -1629,6 +1968,7 @@ async def _invoke_agent_stream(
             knowledge_base_enabled=knowledge_base_enabled,
             vector_store_path=vector_store_path,
             dashboard_template=dashboard_template,
+            enabled_mcp_servers=normalize_mcp_server_names(enabled_mcp_servers),
         )
         answer_parts: list[str] = []
         dashboard_task_record: TaskRecord | None = None
@@ -1859,6 +2199,14 @@ async def chat_single(request: SingleChatRequest, http_request: Request):
 # ── 会话管理 ──────────────────────────────────
 
 
+@app.get("/api/connectors/mcp")
+async def list_mcp_connectors():
+    return {
+        "connectors": list_mcp_server_catalog(),
+        "default_enabled": default_mcp_server_names(),
+    }
+
+
 @app.get("/api/workspaces")
 async def get_workspaces():
     from chat_store import list_workspaces
@@ -1872,10 +2220,25 @@ async def create_workspace_endpoint(request: CreateWorkspaceRequest):
     from chat_store import create_workspace
 
     try:
+        preset = request.preset
         workspace = create_workspace(
             request.name,
             description=request.description,
             color=request.color,
+            default_panels=[
+                _base_model_payload(_normalize_model_config(panel))
+                for panel in (preset.default_panels if preset else [])
+            ],
+            tool_config=(
+                _base_model_payload(preset.tool_config)
+                if preset is not None
+                else None
+            ),
+            output_preset=(
+                _base_model_payload(preset.output_preset)
+                if preset is not None
+                else None
+            ),
             activate=request.activate,
         )
     except ValueError as exc:
@@ -1893,11 +2256,30 @@ async def update_workspace_endpoint(workspace_id: str, request: UpdateWorkspaceR
         raise HTTPException(status_code=400, detail="至少需要提供一个工作区字段")
 
     try:
+        preset = request.preset
         workspace = update_workspace(
             workspace_id,
             name=request.name if "name" in field_set else None,
             description=request.description if "description" in field_set else None,
             color=request.color if "color" in field_set else None,
+            default_panels=(
+                [
+                    _base_model_payload(_normalize_model_config(panel))
+                    for panel in preset.default_panels
+                ]
+                if "preset" in field_set and preset is not None
+                else None
+            ),
+            tool_config=(
+                _base_model_payload(preset.tool_config)
+                if "preset" in field_set and preset is not None
+                else None
+            ),
+            output_preset=(
+                _base_model_payload(preset.output_preset)
+                if "preset" in field_set and preset is not None
+                else None
+            ),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2045,6 +2427,7 @@ async def delete_session_endpoint(session_id: str):
     for deck_id in deck_ids:
         _share_link_store.delete_for_resource("deck", deck_id)
     _get_task_store().delete_for_session(session_id)
+    _artifact_store.delete_by_session(session_id)
     _deck_store.delete_by_session(session_id)
     delete_session(session_id)
     return {"ok": True}
@@ -2097,6 +2480,7 @@ async def create_session_share_link(session_id: str, request: Request):
     from chat_store import get_session
 
     _require_remote_share_secret(request)
+    share_secret = _current_share_link_secret()
     session = get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="未找到会话")
@@ -2105,7 +2489,7 @@ async def create_session_share_link(session_id: str, request: Request):
         "session",
         session_id,
         request,
-        secret=SHARE_LINK_SECRET,
+        secret=share_secret,
         encode_share_token=_encode_share_token,
         build_share_url=_build_share_url,
     )
@@ -2127,6 +2511,90 @@ async def create_session_share_link(session_id: str, request: Request):
 
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str):
+    payload = _build_session_messages_payload(session_id)
+    return {
+        "messages": payload["messages"],
+        "context_limit": payload["context_limit"],
+        "total_messages": payload["total_messages"],
+        "panels": payload["panels"],
+        "panel_messages": payload["panel_messages"],
+    }
+
+
+@app.post("/api/sessions/{session_id}/messages/import")
+async def import_session_messages_endpoint(
+    session_id: str,
+    request: ImportSessionMessagesRequest,
+):
+    from chat_store import SQLiteChatMessageHistory, replace_session_panels
+
+    history = SQLiteChatMessageHistory(session_id=session_id)
+    if history.get_all_message_records():
+        raise HTTPException(
+            status_code=400,
+            detail="Session already has messages; import only supports empty sessions.",
+        )
+
+    normalized_panels: list[dict[str, Any]] = []
+    panel_ids: set[str] = set()
+    for panel in request.panels:
+        normalized_panel = _base_model_payload(_normalize_model_config(panel))
+        panel_id = str(normalized_panel.get("panel_id") or "").strip()
+        if not panel_id:
+            raise HTTPException(status_code=400, detail="Imported panels require panel_id.")
+        if panel_id in panel_ids:
+            raise HTTPException(status_code=400, detail="Imported panels contain duplicate panel_id.")
+        panel_ids.add(panel_id)
+        normalized_panels.append(normalized_panel)
+
+    if normalized_panels:
+        replace_session_panels(
+            session_id,
+            normalized_panels,
+            db_path=history.db_path,
+        )
+
+    for message in request.messages:
+        images = [_base_model_payload(image) for image in message.images]
+        files = [_base_model_payload(file) for file in message.files]
+        answer_group_id = str(message.answer_group_id or "").strip()
+
+        if message.role == "user":
+            history.add_user_message(
+                message.content,
+                answer_group_id=answer_group_id,
+                images=images,
+                files=files,
+            )
+            continue
+
+        panel_id = str(message.panel_id or "").strip()
+        if not panel_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Imported assistant messages require panel_id.",
+            )
+        if panel_ids and panel_id not in panel_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="Imported assistant message references an unknown panel_id.",
+            )
+
+        history.add_ai_message(
+            message.content,
+            model_id=str(message.model_id or "").strip(),
+            panel_id=panel_id,
+            answer_group_id=answer_group_id,
+            images=images,
+            files=files,
+            sources=[dict(item) for item in message.sources if isinstance(item, dict)],
+            workflow_nodes=[
+                dict(item) for item in message.workflow_nodes if isinstance(item, dict)
+            ],
+            task_id=str(message.task_id or "").strip(),
+            task_type=str(message.task_type or "").strip(),
+        )
+
     payload = _build_session_messages_payload(session_id)
     return {
         "messages": payload["messages"],
@@ -2347,9 +2815,11 @@ async def delete_session_memory_endpoint(session_id: str, memory_id: str):
 async def get_session_attachments(
     session_id: str,
     vector_store_path: Optional[str] = None,
+    workspace_id: Optional[str] = None,
 ):
     from chat_store import SQLiteChatMessageHistory
 
+    _require_workspace_session(session_id, workspace_id)
     history = SQLiteChatMessageHistory(session_id=session_id)
     return session_attachments_payload(
         session_id=session_id,
@@ -2367,7 +2837,9 @@ async def promote_session_attachment_to_kb(
     session_id: str,
     attachment_id: str,
     vector_store_path: Optional[str] = None,
+    workspace_id: Optional[str] = None,
 ):
+    _require_workspace_session(session_id, workspace_id)
     attachment = _find_session_attachment(
         session_id,
         attachment_id,
@@ -2380,6 +2852,7 @@ async def promote_session_attachment_to_kb(
             attachment_id=attachment_id,
             attachment=attachment,
             target_vector_store_path=target_vector_store_path,
+            workspace_id=workspace_id,
             existing_task=_get_attachment_promotion_task(
                 attachment_id,
                 target_vector_store_path,
@@ -2557,6 +3030,22 @@ async def get_ollama_models(base_url: str = "http://localhost:11434"):
 # ── 配置管理 ──────────────────────────────────
 
 
+@app.get("/api/security/status", response_model=SecurityStatusResponse)
+async def get_security_status(request: Request):
+    _require_remote_admin(request)
+    payload = _security_status_payload()
+    _audit_security_event(
+        "get_security_status",
+        request,
+        details=(
+            f"remote_clients={payload['allow_remote_clients']} "
+            f"admin_ready={payload['remote_admin_ready']} "
+            f"share_ready={payload['remote_share_ready']}"
+        ),
+    )
+    return payload
+
+
 @app.get("/api/config")
 async def get_config(request: Request):
     _require_remote_admin(request)
@@ -2694,7 +3183,7 @@ async def activate_prompt(prompt_id: str, request: Request):
 @app.post("/api/tasks")
 async def create_task(request: CreateTaskRequest):
     """创建异步任务，立即返回 task_id，任务在后台执行"""
-    return await enqueue_task(
+    payload = await enqueue_task(
         _tasks,
         _tasks_lock,
         task_type=request.task_type,
@@ -2706,7 +3195,13 @@ async def create_task(request: CreateTaskRequest):
         run_task=_run_task,
         spawn_background_task=asyncio.create_task,
         logger=logger,
+        on_record_created=(
+            persist_web_research_task_placeholder
+            if request.task_type == "web_research"
+            else None
+        ),
     )
+    return payload
 
 
 @app.get("/api/tasks/{task_id}")
@@ -2761,7 +3256,16 @@ async def create_deck(request: CreateDeckRequest):
     from chat_store import SQLiteChatMessageHistory
 
     history = SQLiteChatMessageHistory(session_id=request.session_id)
-    messages = history.get_all_messages()
+    try:
+        messages = _resolve_report_messages(
+            history,
+            answer_group_id=request.answer_group_id,
+            panel_id=request.panel_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail="Requested deck scope was not found."
+        ) from exc
     if not messages:
         raise HTTPException(status_code=400, detail="该会话没有对话记录")
 
@@ -2778,7 +3282,10 @@ async def create_deck(request: CreateDeckRequest):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     _deck_store.save(deck)
-    return deck.model_dump(mode="json")
+    artifact = _create_deck_artifact(deck)
+    payload = deck.model_dump(mode="json")
+    payload["artifact_id"] = artifact.artifact_id
+    return payload
 
 
 @app.get("/api/decks/{deck_id}")
@@ -2809,6 +3316,7 @@ async def update_deck(deck_id: str, request: UpdateDeckRequest):
     )
 
     _deck_store.save(deck)
+    _sync_deck_artifacts(deck)
     return deck.model_dump(mode="json")
 
 
@@ -2827,7 +3335,16 @@ async def regenerate_saved_deck_slide(
         raise HTTPException(status_code=404, detail="未找到该演示稿草稿") from exc
 
     history = SQLiteChatMessageHistory(session_id=deck.meta.session_id)
-    messages = history.get_all_messages()
+    try:
+        messages = _resolve_report_messages(
+            history,
+            answer_group_id=getattr(deck.meta, "source_answer_group_id", None),
+            panel_id=getattr(deck.meta, "source_panel_id", None),
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail="Requested deck scope was not found."
+        ) from exc
     if not messages:
         raise HTTPException(status_code=400, detail="该会话没有对话记录")
 
@@ -2852,6 +3369,7 @@ async def regenerate_saved_deck_slide(
 
     replace_deck_slide(deck, regenerated_slide)
     _deck_store.save(deck)
+    _sync_deck_artifacts(deck)
     return deck.model_dump(mode="json")
 
 
@@ -2889,6 +3407,7 @@ async def export_deck(deck_id: str, format: str = "pptx"):
 @app.post("/api/decks/{deck_id}/share", response_model=ShareLinkResponse)
 async def create_deck_share_link(deck_id: str, request: Request):
     _require_remote_share_secret(request)
+    share_secret = _current_share_link_secret()
     try:
         _deck_store.get(deck_id)
     except KeyError as exc:
@@ -2898,7 +3417,7 @@ async def create_deck_share_link(deck_id: str, request: Request):
         "deck",
         deck_id,
         request,
-        secret=SHARE_LINK_SECRET,
+        secret=share_secret,
         encode_share_token=_encode_share_token,
         build_share_url=_build_share_url,
     )
@@ -2924,7 +3443,14 @@ async def generate_report(request: GenerateReportRequest):
     from chat_store import SQLiteChatMessageHistory
 
     history = SQLiteChatMessageHistory(session_id=request.session_id)
-    msgs = history.get_all_messages()
+    try:
+        msgs = _resolve_report_messages(
+            history,
+            answer_group_id=request.answer_group_id,
+            panel_id=request.panel_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="未找到对应的报告消息范围。") from exc
     if not msgs:
         raise HTTPException(status_code=400, detail="该会话没有对话记录")
 
@@ -2933,18 +3459,27 @@ async def generate_report(request: GenerateReportRequest):
     title = build_chat_report_title(msgs)
 
     try:
-        return report_markdown_payload(
-            msgs,
-            ensure_deckable_chat=ensure_deckable_chat,
-            build_chat_report_title=build_chat_report_title,
-            build_report_markdown=build_report_markdown,
+        artifact, title, markdown = _create_report_artifact(
+            session_id=request.session_id,
+            messages=msgs,
+            answer_group_id=str(request.answer_group_id or "").strip(),
+            panel_id=str(request.panel_id or "").strip(),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "markdown": markdown,
+        "title": title,
+        "artifact_id": artifact.artifact_id,
+    }
 
 
 @app.get("/api/reports/download/{session_id}")
-async def download_report_pptx(session_id: str):
+async def download_report_pptx(
+    session_id: str,
+    answer_group_id: Optional[str] = None,
+    panel_id: Optional[str] = None,
+):
     """将会话历史转换为 PPTX 文件并下载"""
     from chat_store import SQLiteChatMessageHistory
     import io
@@ -2959,7 +3494,14 @@ async def download_report_pptx(session_id: str):
         )
 
     history = SQLiteChatMessageHistory(session_id=session_id)
-    msgs = history.get_all_messages()
+    try:
+        msgs = _resolve_report_messages(
+            history,
+            answer_group_id=answer_group_id,
+            panel_id=panel_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="未找到对应的报告消息范围。") from exc
     try:
         qa_pairs = ensure_deckable_chat(msgs)
     except ValueError as exc:
@@ -2994,6 +3536,220 @@ async def download_report_pptx(session_id: str):
 
 
 # ── 知识库管理 ─────────────────────────────────
+
+
+@app.get("/api/sessions/{session_id}/artifacts")
+async def list_session_artifacts(
+    session_id: str,
+    artifact_type: Optional[str] = None,
+):
+    artifacts = _artifact_store.list_by_session(
+        session_id,
+        artifact_type=str(artifact_type or "").strip(),
+    )
+    return {"artifacts": [_artifact_payload(artifact) for artifact in artifacts]}
+
+
+@app.get("/api/artifacts/{artifact_id}")
+async def get_artifact(artifact_id: str):
+    try:
+        artifact = _artifact_store.get(artifact_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Artifact was not found.") from exc
+    return _artifact_payload(artifact)
+
+
+@app.patch("/api/artifacts/{artifact_id}")
+async def update_artifact(artifact_id: str, request: UpdateArtifactRequest):
+    try:
+        artifact = _artifact_store.get(artifact_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Artifact was not found.") from exc
+
+    next_title = str(request.title or "").strip()
+
+    if artifact.artifact_type == "report":
+        if next_title:
+            artifact.title = next_title
+        if request.markdown is not None:
+            artifact.content["markdown"] = str(request.markdown or "").strip()
+        _artifact_store.save(artifact)
+        return _artifact_payload(artifact)
+
+    if artifact.artifact_type == "deck":
+        if request.markdown is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Deck artifact does not support markdown patching.",
+            )
+        deck_id = str(
+            artifact.linked_resource_id or artifact.content.get("deck_id") or ""
+        ).strip()
+        if not deck_id:
+            raise HTTPException(status_code=400, detail="Deck artifact is missing deck_id.")
+        try:
+            deck = _deck_store.get(deck_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Deck was not found.") from exc
+        if next_title:
+            deck.meta.title = next_title
+            if deck.slides and deck.slides[0].type == "cover":
+                deck.slides[0].title = next_title
+            _deck_store.save(deck)
+        _sync_deck_artifacts(deck)
+        return _artifact_payload(_artifact_store.get(artifact_id))
+
+    raise HTTPException(status_code=400, detail="Unsupported artifact type.")
+
+
+@app.get("/api/artifacts/{artifact_id}/export")
+async def export_artifact(artifact_id: str, format: str = ""):
+    import io
+
+    try:
+        artifact = _artifact_store.get(artifact_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Artifact was not found.") from exc
+
+    if artifact.artifact_type == "report":
+        export_format = str(format or "md").strip().lower() or "md"
+        if export_format == "md":
+            filename = f"{safe_report_filename(artifact.title)}.md"
+            return Response(
+                content=str(artifact.content.get("markdown") or ""),
+                media_type="text/markdown; charset=utf-8",
+                headers={
+                    "Content-Disposition": _build_download_content_disposition(filename)
+                },
+            )
+        if export_format != "pptx":
+            raise HTTPException(status_code=400, detail="Report artifact only supports md / pptx.")
+
+        try:
+            from pptx import Presentation
+            from pptx.util import Pt
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="python-pptx is not installed.",
+            ) from exc
+
+        raw_pairs = (
+            artifact.content.get("qa_pairs")
+            if isinstance(artifact.content.get("qa_pairs"), list)
+            else []
+        )
+        qa_pairs = [
+            (
+                str(item.get("question") or "").strip(),
+                str(item.get("answer") or "").strip(),
+            )
+            for item in raw_pairs
+            if isinstance(item, dict)
+            and (
+                str(item.get("question") or "").strip()
+                or str(item.get("answer") or "").strip()
+            )
+        ]
+        if not qa_pairs:
+            raise HTTPException(status_code=400, detail="Report artifact has no exportable content.")
+
+        presentation = Presentation()
+        populate_chat_report_presentation(
+            presentation,
+            title=artifact.title,
+            qa_pairs=qa_pairs,
+            body_font_size=Pt(12),
+        )
+        buffer = io.BytesIO()
+        presentation.save(buffer)
+        buffer.seek(0)
+        filename = f"{safe_report_filename(artifact.title)}.pptx"
+        return Response(
+            content=buffer.read(),
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            headers={
+                "Content-Disposition": _build_download_content_disposition(filename)
+            },
+        )
+
+    if artifact.artifact_type == "deck":
+        if str(format or "pptx").strip().lower() != "pptx":
+            raise HTTPException(status_code=400, detail="Deck artifact only supports pptx.")
+        deck_id = str(
+            artifact.linked_resource_id or artifact.content.get("deck_id") or ""
+        ).strip()
+        if not deck_id:
+            raise HTTPException(status_code=400, detail="Deck artifact is missing deck_id.")
+        try:
+            deck = _deck_store.get(deck_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Deck was not found.") from exc
+        export_payload = export_deck_payload(
+            deck,
+            export_deck_to_pptx=export_deck_to_pptx,
+            build_export_filename=build_export_filename,
+        )
+        return Response(
+            content=export_payload["content"],
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            headers={
+                "Content-Disposition": _build_download_content_disposition(
+                    export_payload["filename"]
+                )
+            },
+        )
+
+    raise HTTPException(status_code=400, detail="Unsupported artifact type.")
+
+
+@app.post("/api/artifacts/generate")
+async def generate_artifact(request: GenerateArtifactRequest):
+    from chat_store import SQLiteChatMessageHistory
+
+    history = SQLiteChatMessageHistory(session_id=request.session_id)
+    try:
+        messages = _resolve_report_messages(
+            history,
+            answer_group_id=request.answer_group_id,
+            panel_id=request.panel_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="Requested artifact scope was not found.") from exc
+    if not messages:
+        raise HTTPException(status_code=400, detail="No usable messages were found for artifact generation.")
+
+    if request.artifact_type == "report":
+        try:
+            artifact, _, _ = _create_report_artifact(
+                session_id=request.session_id,
+                messages=messages,
+                answer_group_id=str(request.answer_group_id or "").strip(),
+                panel_id=str(request.panel_id or "").strip(),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _artifact_payload(artifact)
+
+    if request.artifact_type == "deck":
+        if request.panel_config is None:
+            raise HTTPException(status_code=400, detail="Deck artifact requires panel_config.")
+        try:
+            deck = await build_deck(
+                messages=messages,
+                **build_create_deck_kwargs(
+                    request,
+                    resolve_active_prompt_runtime=_resolve_active_prompt_runtime,
+                    normalize_deck_theme=normalize_deck_theme,
+                ),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _deck_store.save(deck)
+        artifact = _create_deck_artifact(deck)
+        return _artifact_payload(artifact)
+
+    raise HTTPException(status_code=400, detail="Unsupported artifact type.")
 
 
 @app.get("/api/knowledge-base/chunks")
@@ -3165,6 +3921,7 @@ async def test_retrieval(request: Request, payload: TestRetrievalRequest):
             search_k=payload.search_k or 5,
             fetch_k=payload.fetch_k or 10,
             use_rerank=payload.use_rerank or False,
+            retrieval_mode=payload.retrieval_mode or "semantic",
         )
         _audit_security_event(
             "test_knowledge_base_retrieval",
@@ -3230,6 +3987,38 @@ async def delete_knowledge_base_by_path(request: Request, path: str):
 
 # ── 静态文件（生产模式）─────────────────────────
 
+@app.get("/api/share-links", response_model=ShareLinkAuditListResponse)
+async def list_share_links(
+    request: Request,
+    resource_type: str = "",
+    active_only: bool = False,
+    limit: int = 100,
+    offset: int = 0,
+):
+    _require_remote_admin(request)
+    records = _share_link_store.list_links(
+        resource_type=resource_type,
+        active_only=active_only,
+        limit=limit,
+        offset=offset,
+    )
+    payload_records = [_share_link_audit_payload(record) for record in records]
+    payload = {
+        "share_links": payload_records,
+        "total": len(payload_records),
+        "active_count": sum(1 for item in payload_records if item["is_active"]),
+    }
+    _audit_security_event(
+        "list_share_links",
+        request,
+        details=(
+            f"resource_type={resource_type or '<all>'} "
+            f"active_only={active_only} total={payload['total']}"
+        ),
+    )
+    return payload
+
+
 @app.delete("/api/share-links/{share_token}", response_model=RevokeShareLinkResponse)
 async def revoke_share_link(share_token: str, request: Request):
     _require_remote_admin(request)
@@ -3238,7 +4027,7 @@ async def revoke_share_link(share_token: str, request: Request):
     _audit_security_event(
         "revoke_share_link",
         request,
-        details=f"share_token={share_token}",
+        details=f"share_token_fp={_token_fingerprint(share_token)}",
     )
     return RevokeShareLinkResponse(ok=True)
 
@@ -3246,17 +4035,18 @@ async def revoke_share_link(share_token: str, request: Request):
 @app.get("/shared/{share_token}")
 async def open_shared_resource(share_token: str, request: Request):
     _require_remote_share_secret(request)
+    share_secret = _current_share_link_secret()
     try:
         link_record = _share_link_store.get_active(share_token)
         if link_record is None:
             raise ValueError("分享链接不存在、已过期或已撤销")
-        decoded_type, decoded_id = _decode_share_token(share_token, SHARE_LINK_SECRET)
+        decoded_type, decoded_id = _decode_share_token(share_token, share_secret)
         if link_record.resource_type != decoded_type or link_record.resource_id != decoded_id:
             raise ValueError("分享链接无效")
         shared_payload = open_shared_resource_payload(
             share_token,
             request,
-            secret=SHARE_LINK_SECRET,
+            secret=share_secret,
             decode_share_token=_decode_share_token,
             build_share_url=_build_share_url,
             build_session_messages_payload=_build_session_messages_payload,
@@ -3268,6 +4058,14 @@ async def open_shared_resource(share_token: str, request: Request):
             share_token,
             accessed_ip=_request_client_ip(request),
             accessed_user_agent=_request_user_agent(request),
+        )
+        _audit_security_event(
+            "open_shared_resource",
+            request,
+            details=(
+                f"resource_type={decoded_type} "
+                f"share_token_fp={_token_fingerprint(share_token)}"
+            ),
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

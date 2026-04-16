@@ -179,7 +179,7 @@ def populate_chat_report_presentation(
     title_slide = presentation.slides.add_slide(presentation.slide_layouts[0])
     title_slide.shapes.title.text = title
     if len(title_slide.placeholders) > 1:
-        title_slide.placeholders[1].text = "AI 知识库对话报告"
+        title_slide.placeholders[1].text = "InsightDesk Conversation Report"
 
     for index, (question, answer) in enumerate(qa_pairs, start=1):
         slide = presentation.slides.add_slide(presentation.slide_layouts[1])
@@ -204,6 +204,7 @@ def retrieval_test_payload(
     search_k: int = 5,
     fetch_k: int = 10,
     use_rerank: bool = False,
+    retrieval_mode: str = "semantic",
 ) -> dict[str, Any]:
     if not query.strip():
         raise ValueError("查询内容不能为空")
@@ -219,30 +220,75 @@ def retrieval_test_payload(
                 "error": "知识库未初始化",
             }
 
-        if use_rerank:
-            effective_fetch_k = max(fetch_k, search_k * 2)
-            docs = pipeline.search_with_rerank(query, k=search_k, fetch_k=effective_fetch_k)
-            search_mode = "vector_rerank"
+        normalized_mode = str(retrieval_mode or "semantic").strip().lower() or "semantic"
+        if hasattr(pipeline, "debug_retrieval"):
+            effective_fetch_k = max(fetch_k, search_k * 2) if use_rerank else max(fetch_k, search_k)
+            payload = pipeline.debug_retrieval(
+                query,
+                search_k=search_k,
+                fetch_k=effective_fetch_k,
+                retrieval_mode=normalized_mode,
+                use_rerank=use_rerank,
+            )
         else:
-            docs = pipeline.search(query, k=search_k)
-            effective_fetch_k = search_k
-            search_mode = "vector"
+            if normalized_mode == "keyword" and hasattr(pipeline, "keyword_search"):
+                docs = pipeline.keyword_search(query, k=search_k)
+                search_mode = "keyword"
+                effective_fetch_k = search_k
+            elif normalized_mode == "hybrid" and hasattr(pipeline, "hybrid_search"):
+                effective_fetch_k = max(fetch_k, search_k * 2) if use_rerank else max(fetch_k, search_k)
+                docs = pipeline.hybrid_search(
+                    query,
+                    k=search_k,
+                    fetch_k=effective_fetch_k,
+                    use_rerank=use_rerank,
+                )
+                search_mode = "hybrid_rerank" if use_rerank else "hybrid"
+            elif use_rerank:
+                effective_fetch_k = max(fetch_k, search_k * 2)
+                docs = pipeline.search_with_rerank(query, k=search_k, fetch_k=effective_fetch_k)
+                search_mode = "semantic_rerank"
+            else:
+                docs = pipeline.search(query, k=search_k)
+                effective_fetch_k = search_k
+                search_mode = "semantic"
+
+            payload = {
+                "results_count": len(docs),
+                "search_mode": search_mode,
+                "retrieval_mode": normalized_mode,
+                "search_k": search_k,
+                "top_k": search_k,
+                "fetch_k": effective_fetch_k,
+                "rewrite_query": query.strip(),
+                "rewrite_applied": False,
+                "query_terms": [],
+                "top_results": [
+                    {
+                        "source": doc.metadata.get("source", "未知"),
+                        "snippet": doc.page_content[:120],
+                    }
+                    for doc in docs
+                ],
+                "coverage": {
+                    "unique_sources": len(
+                        {
+                            str(doc.metadata.get("source", "") or "").strip()
+                            for doc in docs
+                            if str(doc.metadata.get("source", "") or "").strip()
+                        }
+                    ),
+                    "source_ratio": 0 if not docs else 1.0,
+                    "matched_terms": [],
+                    "matched_term_count": 0,
+                },
+                "semantic_candidates": [],
+                "keyword_candidates": [],
+                "fused_candidates": [],
+            }
 
         latency = round((current_time() - started_at) * 1000, 1)
-        return {
-            "results_count": len(docs),
-            "latency_ms": latency,
-            "search_mode": search_mode,
-            "search_k": search_k,
-            "fetch_k": effective_fetch_k,
-            "top_results": [
-                {
-                    "source": doc.metadata.get("source", "未知"),
-                    "snippet": doc.page_content[:120],
-                }
-                for doc in docs
-            ],
-        }
+        return {**payload, "latency_ms": latency}
     except Exception as exc:
         return {
             "results_count": 0,

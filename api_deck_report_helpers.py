@@ -1,6 +1,143 @@
 from typing import Any, Callable
 
 
+def _normalize_scope_value(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _compact_source_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def _format_report_source_lines(
+    sources: list[dict[str, Any]] | None,
+    *,
+    limit: int = 4,
+) -> list[str]:
+    if not sources:
+        return []
+
+    lines: list[str] = []
+    for index, source in enumerate(sources[: max(1, limit)], start=1):
+        title = _compact_source_text(source.get("title"))
+        url = _compact_source_text(source.get("url"))
+        snippet = _compact_source_text(source.get("snippet"))[:160]
+
+        label = title or url or f"来源 {index}"
+        line = f"- {label}"
+        if url and url != label:
+            line += f" ({url})"
+        if snippet:
+            line += f": {snippet}"
+        lines.append(line)
+    return lines
+
+
+def _append_report_sources(
+    answer_content: str,
+    sources: list[dict[str, Any]] | None,
+) -> str:
+    source_lines = _format_report_source_lines(sources)
+    if not source_lines:
+        return answer_content
+
+    base = str(answer_content or "").strip()
+    lines = [base] if base else []
+    if lines:
+        lines.append("")
+    lines.append("参考来源")
+    lines.extend(source_lines)
+    return "\n".join(lines).strip()
+
+
+def build_scoped_report_messages(
+    message_records: list[dict[str, Any]],
+    *,
+    answer_group_id: str,
+    panel_id: str = "",
+    human_message_factory: Callable[[str], Any],
+    ai_message_factory: Callable[[str], Any],
+) -> list[Any]:
+    normalized_answer_group_id = _normalize_scope_value(answer_group_id)
+    normalized_panel_id = _normalize_scope_value(panel_id)
+    if not normalized_answer_group_id:
+        raise ValueError("必须提供 answer_group_id。")
+
+    user_record = next(
+        (
+            record
+            for record in message_records
+            if _normalize_scope_value(record.get("type")) == "human"
+            and _normalize_scope_value(record.get("answer_group_id"))
+            == normalized_answer_group_id
+            and str(record.get("content") or "").strip()
+        ),
+        None,
+    )
+    if user_record is None:
+        raise KeyError(normalized_answer_group_id)
+
+    ai_candidates = [
+        record
+        for record in message_records
+        if _normalize_scope_value(record.get("type")) == "ai"
+        and _normalize_scope_value(record.get("answer_group_id"))
+        == normalized_answer_group_id
+        and str(record.get("content") or "").strip()
+    ]
+    if normalized_panel_id:
+        ai_candidates = [
+            record
+            for record in ai_candidates
+            if _normalize_scope_value(record.get("panel_id")) == normalized_panel_id
+        ]
+    if not ai_candidates:
+        raise KeyError(normalized_answer_group_id)
+
+    def _candidate_rank(record: dict[str, Any]) -> tuple[int, int, int, float]:
+        return (
+            int(_normalize_scope_value(record.get("task_type")) == "web_research"),
+            int(_normalize_scope_value(record.get("model_id")) == "web_research"),
+            int(bool(record.get("sources"))),
+            float(record.get("timestamp") or 0),
+        )
+
+    ai_record = max(ai_candidates, key=_candidate_rank)
+    question = str(user_record.get("content") or "").strip()
+    answer = _append_report_sources(
+        str(ai_record.get("content") or "").strip(),
+        ai_record.get("sources")
+        if isinstance(ai_record.get("sources"), list)
+        else None,
+    )
+    return [
+        human_message_factory(question),
+        ai_message_factory(answer),
+    ]
+
+
+def resolve_report_messages(
+    history: Any,
+    *,
+    answer_group_id: str = "",
+    panel_id: str = "",
+    human_message_factory: Callable[[str], Any],
+    ai_message_factory: Callable[[str], Any],
+) -> list[Any]:
+    normalized_answer_group_id = _normalize_scope_value(answer_group_id)
+    normalized_panel_id = _normalize_scope_value(panel_id)
+    if not normalized_answer_group_id:
+        return history.get_all_messages()
+
+    return build_scoped_report_messages(
+        history.get_all_message_records(),
+        answer_group_id=normalized_answer_group_id,
+        panel_id=normalized_panel_id,
+        human_message_factory=human_message_factory,
+        ai_message_factory=ai_message_factory,
+    )
+
+
 def create_share_link_payload(
     resource_type: str,
     resource_id: str,
@@ -36,6 +173,10 @@ def build_create_deck_kwargs(
         "vector_store_path": vector_store_path,
         "system_prompt": system_prompt_content,
         "theme": normalize_deck_theme(request.theme),
+        "source_answer_group_id": _normalize_scope_value(
+            getattr(request, "answer_group_id", "")
+        ),
+        "source_panel_id": _normalize_scope_value(getattr(request, "panel_id", "")),
     }
 
 

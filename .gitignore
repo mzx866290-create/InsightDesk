@@ -74,3 +74,17 @@ frontend/dist/
 # Model cache
 .cache/
 models/
+
+# Local planning / archive docs
+2026040.3-plan.md
+20260413plan.md
+plan.md
+IMPLEMENTATION_SUMMARY.md
+LANGGRAPH_WORKFLOW_VISUALIZATION_GUIDE.md
+PPT_REDESIGN_PLAN.md
+PRODUCT_MIGRATION_TASKS.md
+test_doc.md
+docs/archive/
+docs/SEARCH_MAX_UPGRADE_PLAN.md
+项目介绍.md
+项目模块技术栈总结.md

@@ -281,10 +281,15 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
 
   useEffect(() => {
     if (!open) return
-    setWorkingDeck(cloneDeck(deck))
     setCurrentSlide(0)
     setError(null)
     setSaveMessage('')
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    setWorkingDeck(cloneDeck(deck))
+    setError(null)
   }, [deck, open])
 
   const dirty = useMemo(
@@ -518,10 +523,18 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-bg-primary/95 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-bg-primary/95 backdrop-blur-sm"
+      data-testid="deck-editor-modal"
+    >
       <div className="flex items-start justify-between gap-3 border-b border-bg-border bg-bg-secondary px-4 py-3 sm:px-5">
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold text-text-primary">{workingDeck.meta.title}</p>
+          <p
+            className="truncate text-sm font-semibold text-text-primary"
+            data-testid="deck-editor-title"
+          >
+            {workingDeck.meta.title}
+          </p>
           <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-text-secondary">
             <span>{workingDeck.generation.actual_slide_count} 页</span>
             <span className="rounded-full bg-bg-tertiary px-2 py-0.5">
@@ -540,6 +553,7 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
         <div className="flex items-center gap-2">
           <button
             onClick={() => void handleRegenerateSlide()}
+            data-testid="deck-editor-regenerate"
             disabled={regenerating || !regenerationPanel}
             className="flex items-center gap-1.5 rounded-lg border border-bg-border px-3 py-1.5 text-xs text-text-secondary transition-colors hover:border-accent-blue/40 hover:text-text-primary disabled:opacity-50"
             title="重新生成当前页"
@@ -554,6 +568,7 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
 
           <button
             onClick={() => void persistDeck()}
+            data-testid="deck-editor-save"
             disabled={saving}
             className="flex items-center gap-1.5 rounded-lg border border-bg-border px-3 py-1.5 text-xs text-text-secondary transition-colors hover:border-accent-blue/40 hover:text-text-primary disabled:opacity-50"
             title="保存演示稿草稿"
@@ -568,6 +583,7 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
 
           <button
             onClick={() => void handleShareDeck()}
+            data-testid="deck-editor-share"
             disabled={sharing}
             className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition-colors disabled:opacity-50 ${
               shareCopied
@@ -597,6 +613,7 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
 
           <button
             onClick={() => void handleExportPdf()}
+            data-testid="deck-editor-export-pdf"
             disabled={exportingPdf}
             className="flex items-center gap-1.5 rounded-lg border border-bg-border px-3 py-1.5 text-xs text-text-secondary transition-colors hover:border-accent-blue/40 hover:text-text-primary disabled:opacity-50"
             title="导出 PDF"
@@ -611,6 +628,7 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
 
           <button
             onClick={() => void handleExport()}
+            data-testid="deck-editor-export-pptx"
             disabled={exporting}
             className="flex items-center gap-1.5 rounded-lg border border-accent-blue/40 bg-accent-blue/15 px-3 py-1.5 text-xs text-accent-blue transition-colors hover:bg-accent-blue/25 disabled:opacity-50"
             title="导出 PPTX"
@@ -751,7 +769,10 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
               )}
 
               {saveMessage && !error && (
-                <div className="rounded-xl border border-accent-green/30 bg-accent-green/10 px-3 py-2 text-sm text-accent-green">
+                <div
+                  className="rounded-xl border border-accent-green/30 bg-accent-green/10 px-3 py-2 text-sm text-accent-green"
+                  data-testid="deck-editor-save-message"
+                >
                   {saveMessage}
                 </div>
               )}
@@ -759,6 +780,7 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
               <div className="space-y-2">
                 <label className="text-xs font-medium text-text-secondary">演示稿标题</label>
                 <input
+                  data-testid="deck-editor-title-input"
                   value={workingDeck.meta.title}
                   onChange={(event) => {
                     const nextTitle = event.target.value

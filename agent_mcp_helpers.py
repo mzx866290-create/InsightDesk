@@ -8,6 +8,21 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_MCP_SERVER_NAMES = ["knowledge-base", "web-search"]
+MCP_SERVER_METADATA: dict[str, dict[str, Any]] = {
+    "knowledge-base": {
+        "label": "Knowledge Base",
+        "description": "Query internal knowledge chunks and knowledge-base diagnostics.",
+        "category": "knowledge",
+        "builtin": True,
+    },
+    "web-search": {
+        "label": "Web Search",
+        "description": "Search the web and fetch external webpages in real time.",
+        "category": "search",
+        "builtin": True,
+    },
+}
 
 
 def _normalize_mcp_tool_result(result: Any) -> str:
@@ -95,6 +110,37 @@ def parse_name_list(raw_value: Any) -> list[str]:
     return names
 
 
+def default_mcp_server_names() -> list[str]:
+    return list(DEFAULT_MCP_SERVER_NAMES)
+
+
+def normalize_mcp_server_names(
+    raw_value: Any,
+    *,
+    available_names: set[str] | None = None,
+) -> list[str]:
+    names = parse_name_list(raw_value)
+    if available_names is None:
+        return names
+    return [name for name in names if name in available_names]
+
+
+def describe_mcp_server(
+    server_name: str,
+    connection: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_name = str(server_name or "").strip()
+    metadata = dict(MCP_SERVER_METADATA.get(normalized_name, {}))
+    return {
+        "name": normalized_name,
+        "label": str(metadata.get("label") or normalized_name or "MCP Server"),
+        "description": str(metadata.get("description") or "").strip(),
+        "category": str(metadata.get("category") or "custom").strip() or "custom",
+        "builtin": bool(metadata.get("builtin", False)),
+        "transport": str((connection or {}).get("transport") or "stdio"),
+    }
+
+
 def default_mcp_connections(
     *,
     project_root: Path = PROJECT_ROOT,
@@ -178,38 +224,99 @@ def load_mcp_connection_config(
     return resolved
 
 
+def _resolve_mcp_connections(
+    *,
+    project_root: Path = PROJECT_ROOT,
+    python_command: str | None = None,
+    config_path: str | None = None,
+) -> tuple[dict[str, dict[str, Any]], str]:
+    resolved_config_path = str(config_path or os.getenv("MCP_SERVER_CONFIG_PATH") or "").strip()
+    if resolved_config_path:
+        return (
+            load_mcp_connection_config(
+                resolved_config_path,
+                project_root=project_root,
+            ),
+            "config",
+        )
+    return (
+        default_mcp_connections(
+            project_root=project_root,
+            python_command=python_command,
+        ),
+        "default",
+    )
+
+
+def list_mcp_server_catalog(
+    *,
+    project_root: Path = PROJECT_ROOT,
+    python_command: str | None = None,
+    config_path: str | None = None,
+) -> list[dict[str, Any]]:
+    connections, source = _resolve_mcp_connections(
+        project_root=project_root,
+        python_command=python_command,
+        config_path=config_path,
+    )
+    catalog: list[dict[str, Any]] = []
+    for server_name in sorted(connections):
+        connection = connections[server_name]
+        catalog.append(
+            {
+                **describe_mcp_server(server_name, connection),
+                "source": source,
+            }
+        )
+    return catalog
+
+
 def select_mcp_connections(
     *,
     knowledge_base_enabled: bool = True,
     web_search_enabled: bool = True,
     project_root: Path = PROJECT_ROOT,
     python_command: str | None = None,
+    enabled_server_names: list[str] | None = None,
+    config_path: str | None = None,
+    enable_mcp_tools: bool | None = None,
 ) -> dict[str, dict[str, Any]]:
-    if not _env_flag("ENABLE_MCP_TOOLS", False):
+    mcp_enabled = (
+        enable_mcp_tools
+        if enable_mcp_tools is not None
+        else _env_flag("ENABLE_MCP_TOOLS", default=enabled_server_names is not None)
+    )
+    if not mcp_enabled:
         return {}
 
-    config_path = str(os.getenv("MCP_SERVER_CONFIG_PATH") or "").strip()
-    if config_path:
-        connections = load_mcp_connection_config(
-            config_path,
-            project_root=project_root,
-        )
-    else:
-        connections = default_mcp_connections(
-            project_root=project_root,
-            python_command=python_command,
-        )
+    connections, _ = _resolve_mcp_connections(
+        project_root=project_root,
+        python_command=python_command,
+        config_path=config_path,
+    )
 
     if not connections:
         return {}
 
-    enabled_server_names = parse_name_list(os.getenv("ENABLED_MCP_SERVERS"))
-    if enabled_server_names:
+    requested_server_names = (
+        normalize_mcp_server_names(
+            enabled_server_names,
+            available_names=set(connections),
+        )
+        if enabled_server_names is not None
+        else normalize_mcp_server_names(
+            os.getenv("ENABLED_MCP_SERVERS"),
+            available_names=set(connections),
+        )
+    )
+    if requested_server_names:
         connections = {
             name: connections[name]
-            for name in enabled_server_names
+            for name in requested_server_names
             if name in connections
         }
+    elif enabled_server_names is not None:
+        return {}
 
     if not knowledge_base_enabled:
         connections.pop("knowledge-base", None)
@@ -226,12 +333,14 @@ async def load_mcp_tool_overrides(
     expected_tool_names: set[str] | None = None,
     connections: dict[str, dict[str, Any]] | None = None,
     client_factory: Callable[..., Any] | None = None,
+    enabled_server_names: list[str] | None = None,
 ) -> dict[str, Any]:
     active_connections = connections
     if active_connections is None:
         active_connections = select_mcp_connections(
             knowledge_base_enabled=knowledge_base_enabled,
             web_search_enabled=web_search_enabled,
+            enabled_server_names=enabled_server_names,
         )
 
     if not active_connections:

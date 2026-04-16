@@ -131,6 +131,7 @@ export const AttachmentWorkspace: React.FC<AttachmentWorkspaceProps> = ({
   interactionLocked = false,
 }) => {
   const currentSessionId = useChatStore((state) => state.currentSessionId)
+  const currentWorkspaceId = useChatStore((state) => state.currentWorkspaceId)
   const primaryMessages = useChatStore((state) => state.panels[0]?.messages ?? [])
   const pushComposerSeed = useChatStore((state) => state.pushComposerSeed)
   const taskMap = useTaskStore((state) => state.tasks)
@@ -260,7 +261,11 @@ export const AttachmentWorkspace: React.FC<AttachmentWorkspaceProps> = ({
       setError('')
       setNotice('')
       try {
-        const data = await getSessionAttachments(currentSessionId, requestedVectorStorePath || undefined)
+        const data = await getSessionAttachments(
+          currentSessionId,
+          requestedVectorStorePath || undefined,
+          currentWorkspaceId ?? undefined,
+        )
         if (cancelled) return
         setAttachments(data.attachments)
         setSummary(data.summary)
@@ -280,7 +285,7 @@ export const AttachmentWorkspace: React.FC<AttachmentWorkspaceProps> = ({
     return () => {
       cancelled = true
     }
-  }, [open, currentSessionId, attachmentSyncKey, requestedVectorStorePath])
+  }, [open, currentSessionId, currentWorkspaceId, attachmentSyncKey, requestedVectorStorePath])
 
   useEffect(() => {
     if (!currentVectorStorePath) return
@@ -386,7 +391,11 @@ export const AttachmentWorkspace: React.FC<AttachmentWorkspaceProps> = ({
     setError('')
     setNotice('')
     try {
-      const data = await getSessionAttachments(currentSessionId, requestedVectorStorePath || undefined)
+      const data = await getSessionAttachments(
+        currentSessionId,
+        requestedVectorStorePath || undefined,
+        currentWorkspaceId ?? undefined,
+      )
       setAttachments(data.attachments)
       setSummary(data.summary)
       setCurrentVectorStorePath(data.current_vector_store_path ?? '')
@@ -453,6 +462,7 @@ export const AttachmentWorkspace: React.FC<AttachmentWorkspaceProps> = ({
         currentSessionId,
         attachment.attachment_id,
         requestedVectorStorePath || undefined,
+        currentWorkspaceId ?? undefined,
       )
       addTask(task)
       if (task.status === 'pending' || task.status === 'running') {
@@ -506,6 +516,7 @@ export const AttachmentWorkspace: React.FC<AttachmentWorkspaceProps> = ({
           currentSessionId,
           attachment.attachment_id,
           requestedVectorStorePath || undefined,
+          currentWorkspaceId ?? undefined,
         )
         addTask(task)
         if (task.status === 'pending' || task.status === 'running') {

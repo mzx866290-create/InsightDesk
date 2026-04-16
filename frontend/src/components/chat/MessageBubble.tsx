@@ -25,6 +25,7 @@ import { ErrorBanner } from './ErrorBanner'
 import { IntentCardRenderer, stripIntentBlocks } from '../cards/IntentCardRenderer'
 import { TaskProgressCard } from '../cards/TaskProgressCard'
 import { useChatStore } from '../../stores/chatStore'
+import { createAndTrackTask, useTaskStore } from '../../stores/taskStore'
 import {
   clearSessionMessages,
   createBookmark,
@@ -34,18 +35,40 @@ import {
 } from '../../api/client'
 import type { ChatFile } from '../../api/client'
 import { AttachmentPreviewModal } from './AttachmentPreviewModal'
+import { ReportPreviewModal } from '../reports/ReportPreviewModal'
+
+/*
+interface MessageBubbleProps {
+  message: PanelMessage
+  panelId?: string
+  isPrimaryPanel?: boolean
+  interactionLocked?: boolean
+  onReview?: (message: PanelMessage) => Promise<void> | void
+  onPromote?: (message: PanelMessage) => Promise<void>
+  onRerun?: (message: PanelMessage) => Promise<void>
+  canRerun?: boolean
+  onContinue?: (message: PanelMessage) => Promise<void>
+  canContinue?: boolean
+  onRetryError?: (message: PanelMessage) => Promise<void> | void
+  onFork?: (message: PanelMessage) => void
+  // 对话分叉：从该消息之前的历史创建新会话
+  onFork?: (message: PanelMessage) => void
+}
+
+*/
 
 interface MessageBubbleProps {
   message: PanelMessage
   panelId?: string
   isPrimaryPanel?: boolean
   interactionLocked?: boolean
+  onReview?: (message: PanelMessage) => Promise<void> | void
   onPromote?: (message: PanelMessage) => Promise<void>
   onRerun?: (message: PanelMessage) => Promise<void>
   canRerun?: boolean
   onContinue?: (message: PanelMessage) => Promise<void>
   canContinue?: boolean
-  // 对话分叉：从该消息之前的历史创建新会话
+  onRetryError?: (message: PanelMessage) => Promise<void> | void
   onFork?: (message: PanelMessage) => void
 }
 
@@ -77,16 +100,19 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   panelId,
   isPrimaryPanel = false,
   interactionLocked = false,
+  onReview,
   onPromote,
   onRerun,
   canRerun = false,
   onContinue,
   canContinue = false,
+  onRetryError,
   onFork,
 }) => {
   const isUser = message.role === 'user'
   const isError = message.role === 'error'
   const [promoting, setPromoting] = React.useState(false)
+  const [reviewing, setReviewing] = React.useState(false)
   const [promoted, setPromoted] = React.useState(false)
   const [rerunning, setRerunning] = React.useState(false)
   const [continuing, setContinuing] = React.useState(false)
@@ -98,6 +124,18 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   const [feedbackState, setFeedbackState] = React.useState<'idle' | 'saving' | 'error'>('idle')
   const [feedbackPendingValue, setFeedbackPendingValue] = React.useState<1 | -1 | 0 | null>(null)
   const [previewFile, setPreviewFile] = React.useState<ChatFile | null>(null)
+  const [reportState, setReportState] = React.useState<'idle' | 'loading' | 'error'>('idle')
+  const [reportError, setReportError] = React.useState<string | null>(null)
+  const [reportTaskId, setReportTaskId] = React.useState<string | null>(null)
+  const [handledReportTaskId, setHandledReportTaskId] = React.useState<string | null>(null)
+  const [reportPreview, setReportPreview] = React.useState<{
+    markdown: string
+    title: string
+    sessionId: string
+    artifactId?: string
+    answerGroupId?: string
+    panelId?: string
+  } | null>(null)
 
   const {
     currentSessionId,
@@ -111,6 +149,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     sessions,
     updateMessage,
   } = useChatStore()
+  const reportTask = useTaskStore((state) => (reportTaskId ? state.tasks[reportTaskId] : undefined))
   const effectivePanelId = panelId ?? message.panelId ?? ''
   const bookmarkEntry = bookmarks.find((bookmark) => {
     if ((bookmark.source ?? 'remote') === 'local' && bookmark.id === message.id) {
@@ -153,17 +192,31 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     clearMessages()
   }
 
+  const handleRetryError = async () => {
+    if (!onRetryError || interactionLocked || !message.answerGroupId) return
+    await onRetryError(message)
+  }
+
   if (isError) {
     return (
       <ErrorBanner
         content={message.content}
         errorCode={message.errorCode}
         suggestion={message.suggestion}
+        onRetry={
+          onRetryError && message.answerGroupId && !interactionLocked
+            ? () => {
+                void handleRetryError()
+              }
+            : undefined
+        }
         onClearContext={handleClearContext}
         onOpenSettings={() => setSettingsOpen(true)}
       />
     )
   }
+
+  const messageBody = stripIntentBlocks(message.content)
 
   const handleEditMessage = () => {
     pushComposerSeed({
@@ -290,6 +343,13 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     !message.streaming &&
     !isPrimaryPanel
 
+  const canReview =
+    Boolean(onReview) &&
+    Boolean(currentSessionId) &&
+    Boolean(message.answerGroupId) &&
+    !interactionLocked &&
+    !message.streaming
+
   const canRunAgain =
     Boolean(onRerun) &&
     canRerun &&
@@ -308,7 +368,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     Boolean(currentSessionId) &&
     !interactionLocked &&
     !message.streaming &&
-    Boolean(stripIntentBlocks(message.content).trim())
+    Boolean(messageBody.trim())
 
   const canGiveFeedback =
     Boolean(currentSessionId) &&
@@ -320,8 +380,23 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     Boolean(currentSessionId) &&
     !interactionLocked &&
     !message.streaming &&
-    Boolean(stripIntentBlocks(message.content).trim()) &&
+    Boolean(messageBody.trim()) &&
     Boolean(message.serverMessageId || message.answerGroupId || bookmarkEntry)
+
+  const isCompletedResearchMessage =
+    message.role === 'assistant' &&
+    !message.streaming &&
+    (message.taskType === 'web_research' || message.modelId === 'web_research') &&
+    Array.isArray(message.sources) &&
+    message.sources.length > 0
+
+  const canGenerateReport =
+    Boolean(currentSessionId) &&
+    !interactionLocked &&
+    isCompletedResearchMessage
+
+  const isReportTaskActive =
+    reportTask?.status === 'pending' || reportTask?.status === 'running'
 
   const handlePromote = async () => {
     if (!onPromote || !canPromote) return
@@ -332,6 +407,16 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
       window.setTimeout(() => setPromoted(false), 2000)
     } finally {
       setPromoting(false)
+    }
+  }
+
+  const handleReview = async () => {
+    if (!onReview || !canReview) return
+    setReviewing(true)
+    try {
+      await onReview(message)
+    } finally {
+      setReviewing(false)
     }
   }
 
@@ -382,7 +467,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
         message_id: message.serverMessageId,
         panel_id: effectivePanelId,
         answer_group_id: message.answerGroupId ?? '',
-        content: stripIntentBlocks(message.content),
+        content: messageBody,
         model_id: message.modelId,
         session_title: session?.title ?? '未命名对话',
       })
@@ -395,7 +480,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   }
 
   const handleCopy = () => {
-    const text = stripIntentBlocks(message.content)
+    const text = messageBody
     if (!text.trim()) return
     navigator.clipboard.writeText(text).then(() => {
       setCopied(true)
@@ -435,7 +520,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     setMemoryPinState('saving')
     try {
       const result = await pinSessionMemory(currentSessionId, {
-        content: stripIntentBlocks(message.content),
+        content: messageBody,
         kind: 'fact',
       })
       updateSession(currentSessionId, {
@@ -448,6 +533,78 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
       window.setTimeout(() => setMemoryPinState('idle'), 2200)
     }
   }
+
+  const handleGenerateReport = async () => {
+    if (!currentSessionId || !canGenerateReport) return
+    setReportState('loading')
+    setReportError(null)
+    try {
+      const task = await createAndTrackTask(
+        'generate_report',
+        {
+          answer_group_id: message.answerGroupId,
+          panel_id: effectivePanelId,
+        },
+        currentSessionId,
+      )
+      setReportTaskId(task.task_id)
+      setHandledReportTaskId(null)
+      setReportState('idle')
+    } catch (error) {
+      const detail = (error as Error).message || '报告生成失败，请稍后重试。'
+      setReportState('error')
+      setReportError(detail)
+      window.alert(detail)
+      setReportState('idle')
+    }
+  }
+
+  React.useEffect(() => {
+    if (!reportTaskId || !reportTask || handledReportTaskId === reportTaskId) return
+
+    if (reportTask.status === 'completed') {
+      const params = reportTask.params ?? {}
+      const markdown = typeof params.report_markdown === 'string' ? params.report_markdown : ''
+      const title = typeof params.report_title === 'string' ? params.report_title : '研究报告'
+      const artifactId =
+        typeof params.artifact_id === 'string' ? params.artifact_id : undefined
+      if (markdown) {
+        setReportPreview({
+          markdown,
+          title,
+          sessionId: currentSessionId ?? reportTask.session_id ?? '',
+          artifactId,
+          answerGroupId:
+            typeof params.answer_group_id === 'string'
+              ? params.answer_group_id
+              : message.answerGroupId,
+          panelId: typeof params.panel_id === 'string' ? params.panel_id : effectivePanelId,
+        })
+      }
+      setReportError(null)
+      setReportState('idle')
+      setHandledReportTaskId(reportTaskId)
+      return
+    }
+
+    if (reportTask.status === 'failed') {
+      setReportError(reportTask.error ?? '报告生成失败，请稍后重试。')
+      setReportState('error')
+      setHandledReportTaskId(reportTaskId)
+      return
+    }
+
+    if (reportTask.status === 'pending' || reportTask.status === 'running') {
+      setReportState('loading')
+    }
+  }, [
+    currentSessionId,
+    effectivePanelId,
+    handledReportTaskId,
+    message.answerGroupId,
+    reportTask,
+    reportTaskId,
+  ])
 
   const pinFeedbackVisible = memoryPinState !== 'idle'
   let pinButtonLabel = '固定到记忆'
@@ -465,8 +622,25 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
       data-server-message-id={message.serverMessageId}
     >
       <div className={`max-w-[95%] min-w-0 text-sm break-words ${message.streaming ? 'streaming-cursor' : ''}`}>
-        {(canPromote || promoted || canRunAgain || canContinueGeneration || canPinToMemory || pinFeedbackVisible) && (
+        {(canReview || canPromote || promoted || canRunAgain || canContinueGeneration || canPinToMemory || pinFeedbackVisible) && (
           <div className="mb-1 flex items-center gap-2 text-[10px] text-text-secondary">
+            {canReview && (
+              <button
+                type="button"
+                onClick={() => {
+                  void handleReview()
+                }}
+                disabled={reviewing}
+                className="inline-flex items-center gap-1 rounded-md border border-bg-border px-2 py-1 transition-colors hover:border-accent-blue/40 hover:text-text-primary disabled:opacity-50"
+              >
+                {reviewing ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : (
+                  <Eye size={11} />
+                )}
+                对比评审
+              </button>
+            )}
             {(canPromote || promoted) && (
               <button
                 type="button"
@@ -552,15 +726,22 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
           </div>
         )}
         {message.taskId && <TaskProgressCard taskId={message.taskId} taskType={message.taskType} />}
+        {reportTaskId && reportTaskId !== message.taskId && (
+          <TaskProgressCard
+            taskId={reportTaskId}
+            taskType="generate_report"
+            sessionId={currentSessionId ?? undefined}
+          />
+        )}
         <IntentCardRenderer content={message.content} streaming={message.streaming} />
         <Suspense
           fallback={
             <div className="whitespace-pre-wrap leading-relaxed text-text-primary">
-              {stripIntentBlocks(message.content)}
+              {messageBody}
             </div>
           }
         >
-          <MessageMarkdown content={stripIntentBlocks(message.content)} />
+          <MessageMarkdown content={messageBody} />
         </Suspense>
         {message.sources && message.sources.length > 0 && (
           <CitationPanel
@@ -570,7 +751,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
             streaming={message.streaming}
           />
         )}
-        {!message.streaming && stripIntentBlocks(message.content).trim() && (
+        {!message.streaming && messageBody.trim() && (
           <div className="mt-1.5 flex items-center gap-1">
             {canGiveFeedback && (
               <>
@@ -629,6 +810,25 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
               )}
               {copied ? '已复制' : '复制'}
             </button>
+            {canGenerateReport && (
+              <button
+                type="button"
+                onClick={() => {
+                  void handleGenerateReport()
+                }}
+                disabled={reportState === 'loading' || isReportTaskActive}
+                data-testid="message-generate-report"
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-secondary/50 transition-colors hover:bg-bg-hover hover:text-text-secondary disabled:opacity-40"
+                title={reportError ?? '基于当前会话生成报告预览'}
+              >
+                {reportState === 'loading' || isReportTaskActive ? (
+                  <Loader2 size={11} className="animate-spin" />
+                ) : (
+                  <Download size={11} />
+                )}
+                {reportState === 'loading' || isReportTaskActive ? '生成中' : '生成报告'}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -678,6 +878,22 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
           <div className="mt-1 text-[10px] text-text-secondary/45">{messageTimeLabel}</div>
         )}
       </div>
+      {reportPreview && (
+        <ReportPreviewModal
+          open={Boolean(reportPreview)}
+          onClose={() => {
+            setReportPreview(null)
+            setReportError(null)
+            setReportState('idle')
+          }}
+          markdown={reportPreview.markdown}
+          title={reportPreview.title}
+          sessionId={reportPreview.sessionId}
+          artifactId={reportPreview.artifactId}
+          answerGroupId={reportPreview.answerGroupId}
+          panelId={reportPreview.panelId}
+        />
+      )}
     </div>
   )
 }

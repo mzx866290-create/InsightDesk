@@ -192,6 +192,120 @@ def test_session_messages_returns_panel_specific_histories(monkeypatch, tmp_path
     ]
 
 
+def test_import_session_messages_persists_fork_branch(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    test_history_cls = _history_cls_for_db(db_path)
+
+    monkeypatch.setattr(chat_store, "SQLiteChatMessageHistory", test_history_cls)
+
+    test_history_cls("session-import-fork")
+    client = TestClient(api_server.app)
+    import_response = client.post(
+        "/api/sessions/session-import-fork/messages/import",
+        json={
+            "panels": [
+                {
+                    "panel_id": "panel-main",
+                    "provider": "ollama",
+                    "connection_type": "ollama",
+                    "model": "qwen-main",
+                    "base_url": "http://localhost:11434",
+                    "api_key": "",
+                    "temperature": 0.3,
+                    "agent_mode": "auto",
+                },
+                {
+                    "panel_id": "panel-compare",
+                    "provider": "ollama",
+                    "connection_type": "ollama",
+                    "model": "qwen-compare",
+                    "base_url": "http://localhost:11434",
+                    "api_key": "",
+                    "temperature": 0.5,
+                    "agent_mode": "langgraph",
+                },
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "请给出调研结论",
+                    "answer_group_id": "grp-import-1",
+                },
+                {
+                    "role": "assistant",
+                    "content": "主面板结论",
+                    "panel_id": "panel-main",
+                    "model_id": "qwen-main",
+                    "answer_group_id": "grp-import-1",
+                    "sources": [
+                        {
+                            "type": "doc",
+                            "title": "结论简报",
+                            "snippet": "主面板命中的证据",
+                        }
+                    ],
+                    "workflow_nodes": [
+                        {
+                            "id": "retrieve",
+                            "status": "completed",
+                            "toolName": "query_knowledge",
+                        }
+                    ],
+                    "task_id": "task-import-fork",
+                    "task_type": "analysis",
+                },
+                {
+                    "role": "user",
+                    "content": "再补充风险项",
+                    "answer_group_id": "grp-import-2",
+                },
+            ],
+        },
+    )
+
+    assert import_response.status_code == 200
+    import_payload = import_response.json()
+    assert [panel["panel_id"] for panel in import_payload["panels"]] == [
+        "panel-main",
+        "panel-compare",
+    ]
+    assert [item["content"] for item in import_payload["panel_messages"]["panel-main"]] == [
+        "请给出调研结论",
+        "主面板结论",
+        "再补充风险项",
+    ]
+    assert [item["content"] for item in import_payload["panel_messages"]["panel-compare"]] == [
+        "请给出调研结论",
+        "再补充风险项",
+    ]
+    assert import_payload["panel_messages"]["panel-main"][1]["sources"][0]["title"] == "结论简报"
+    assert (
+        import_payload["panel_messages"]["panel-main"][1]["workflow_nodes"][0]["toolName"]
+        == "query_knowledge"
+    )
+    assert import_payload["panel_messages"]["panel-main"][1]["task_id"] == "task-import-fork"
+
+    messages_response = client.get("/api/sessions/session-import-fork/messages")
+    assert messages_response.status_code == 200
+    payload = messages_response.json()
+    assert [item["content"] for item in payload["panel_messages"]["panel-main"]] == [
+        "请给出调研结论",
+        "主面板结论",
+        "再补充风险项",
+    ]
+    assert [item["content"] for item in payload["panel_messages"]["panel-compare"]] == [
+        "请给出调研结论",
+        "再补充风险项",
+    ]
+
+    duplicate_response = client.post(
+        "/api/sessions/session-import-fork/messages/import",
+        json={"panels": [], "messages": []},
+    )
+    assert duplicate_response.status_code == 400
+    assert "empty sessions" in duplicate_response.json()["detail"]
+
+
 def test_promote_answer_group_updates_primary_panel(monkeypatch, tmp_path):
     db_path = tmp_path / "chat_history.db"
     test_history_cls = _history_cls_for_db(db_path)
@@ -440,6 +554,8 @@ def test_answer_group_review_and_promote_recommended(monkeypatch, tmp_path):
     assert review_payload["recommended_panel_id"] == "panel-compare"
     assert review_payload["responses"][0]["panel_id"] == "panel-compare"
     assert review_payload["responses"][0]["source_count"] == 2
+    assert review_payload["comparisons"][0]["against_panel_id"] == "panel-main"
+    assert review_payload["decision_factors"]
 
     promote_response = client.post(
         "/api/sessions/session-review-promote/answer-groups/grp-review/promote/recommended"
@@ -450,6 +566,8 @@ def test_answer_group_review_and_promote_recommended(monkeypatch, tmp_path):
     assert promote_payload["review"]["recommended_panel_id"] == "panel-compare"
     assert promote_payload["target_panel_id"] == "panel-main"
     assert promote_payload["content"].startswith("Recommendation:")
+    assert promote_payload["sources"][0]["title"] == "Decision Brief"
+    assert promote_payload["workflow_nodes"][0]["id"] == "classify_intent"
 
     messages_response = client.get("/api/sessions/session-review-promote/messages")
     payload = messages_response.json()
@@ -528,6 +646,7 @@ def test_session_messages_restore_attachment_payloads(monkeypatch, tmp_path):
 
 
 def test_session_attachments_endpoint_builds_workspace_view(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     db_path = tmp_path / "chat_history.db"
     test_history_cls = _history_cls_for_db(db_path)
 
@@ -604,6 +723,7 @@ def test_session_attachments_endpoint_builds_workspace_view(monkeypatch, tmp_pat
 
 
 def test_session_attachments_endpoint_marks_current_kb_status(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     db_path = tmp_path / "chat_history.db"
     test_history_cls = _history_cls_for_db(db_path)
     task_store = api_server.SQLiteTaskStore(db_path=str(db_path))
@@ -664,6 +784,7 @@ def test_session_attachments_endpoint_marks_current_kb_status(monkeypatch, tmp_p
 
 
 def test_session_attachments_endpoint_accepts_target_kb_override(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     db_path = tmp_path / "chat_history.db"
     test_history_cls = _history_cls_for_db(db_path)
     task_store = api_server.SQLiteTaskStore(db_path=str(db_path))
@@ -700,6 +821,7 @@ def test_session_attachments_endpoint_accepts_target_kb_override(monkeypatch, tm
 
 
 def test_promote_attachment_endpoint_enqueues_kb_task(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     db_path = tmp_path / "chat_history.db"
     test_history_cls = _history_cls_for_db(db_path)
     scheduled: list[object] = []
@@ -744,6 +866,7 @@ def test_promote_attachment_endpoint_enqueues_kb_task(monkeypatch, tmp_path):
 
 
 def test_promote_attachment_endpoint_enqueues_selected_kb_task(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     db_path = tmp_path / "chat_history.db"
     test_history_cls = _history_cls_for_db(db_path)
     scheduled: list[object] = []
@@ -785,6 +908,7 @@ def test_promote_attachment_endpoint_enqueues_selected_kb_task(monkeypatch, tmp_
 
 
 def test_promote_attachment_endpoint_rejects_images(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     db_path = tmp_path / "chat_history.db"
     test_history_cls = _history_cls_for_db(db_path)
 
@@ -822,6 +946,7 @@ def test_promote_attachment_endpoint_reuses_existing_completed_promotion(
     monkeypatch,
     tmp_path,
 ):
+    monkeypatch.chdir(tmp_path)
     db_path = tmp_path / "chat_history.db"
     test_history_cls = _history_cls_for_db(db_path)
     task_store = api_server.SQLiteTaskStore(db_path=str(db_path))
@@ -1212,6 +1337,103 @@ def test_build_agent_auto_routes_local_to_langgraph(monkeypatch):
     assert len(langgraph_calls) == 1
 
 
+def test_plain_chat_wrapper_astream_uses_native_model_stream(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    test_history_cls = _history_cls_for_db(db_path)
+
+    class FakeLLM:
+        def __init__(self):
+            self.stream_payload = None
+
+        async def astream(self, payload):
+            self.stream_payload = payload
+            yield types.SimpleNamespace(content="从前")
+            yield types.SimpleNamespace(content="有座山")
+
+        async def ainvoke(self, payload):
+            raise AssertionError("plain chat streaming should not fall back to ainvoke")
+
+    async def fake_build_runtime_tools(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(agent_core, "SQLiteChatMessageHistory", test_history_cls)
+    monkeypatch.setattr(agent_core, "get_llm", lambda *args, **kwargs: FakeLLM())
+    monkeypatch.setattr(agent_core, "DocPipeline", lambda *args, **kwargs: object())
+    monkeypatch.setattr(agent_core, "build_runtime_tools", fake_build_runtime_tools)
+
+    agent = asyncio.run(
+        agent_core.build_agent(
+            provider="cloud",
+            agent_mode="auto",
+            knowledge_base_enabled=False,
+            web_search_enabled=False,
+        )
+    )
+
+    async def collect():
+        return [
+            item
+            async for item in agent.astream_answer(
+                "写一个短故事",
+                config={"configurable": {"session_id": "native-stream-plain", "persist_history": True}},
+            )
+        ]
+
+    items = asyncio.run(collect())
+
+    assert items == ["从前", "有座山"]
+    persisted_messages = test_history_cls("native-stream-plain").get_all_messages()
+    assert [message.content for message in persisted_messages] == ["写一个短故事", "从前有座山"]
+
+
+def test_function_calling_wrapper_astream_bypasses_tools_for_plain_text(monkeypatch):
+    class FakeLLM:
+        async def astream(self, payload):
+            yield types.SimpleNamespace(content="第一段")
+            yield types.SimpleNamespace(content="第二段")
+
+        async def ainvoke(self, payload):
+            raise AssertionError("plain-text bypass should stream directly from the model")
+
+    class FakeExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def ainvoke(self, payload):
+            raise AssertionError("tool executor should not run for plain-text bypass")
+
+    async def fake_build_runtime_tools(*args, **kwargs):
+        return [types.SimpleNamespace(name="query_knowledge")]
+
+    monkeypatch.setattr(agent_core, "get_llm", lambda *args, **kwargs: FakeLLM())
+    monkeypatch.setattr(agent_core, "DocPipeline", lambda *args, **kwargs: object())
+    monkeypatch.setattr(agent_core, "build_runtime_tools", fake_build_runtime_tools)
+    monkeypatch.setattr(agent_core, "create_tool_calling_agent", lambda *args, **kwargs: object())
+    monkeypatch.setattr(agent_core, "AgentExecutor", FakeExecutor)
+
+    agent = asyncio.run(
+        agent_core.build_agent(
+            provider="cloud",
+            agent_mode="function_calling",
+            knowledge_base_enabled=True,
+            web_search_enabled=True,
+        )
+    )
+
+    async def collect():
+        return [
+            item
+            async for item in agent.astream_answer(
+                "写一个三段式故事",
+                config={"configurable": {"session_id": "native-stream-fc", "persist_history": False}},
+            )
+        ]
+
+    items = asyncio.run(collect())
+
+    assert items == ["第一段", "第二段"]
+
+
 def test_query_knowledge_uses_current_default_topk_and_fetch_k(monkeypatch):
     class FakePipeline:
         def __init__(self):
@@ -1245,6 +1467,153 @@ def test_query_knowledge_uses_current_default_topk_and_fetch_k(monkeypatch):
     assert "【文档 1: doc-a.md】" in result
     assert "__SOURCES__:" in result
 
+
+def test_query_knowledge_prefers_hybrid_for_keyword_like_queries(monkeypatch):
+    class FakePipeline:
+        def __init__(self):
+            self.vectorstore = object()
+            self.vector_store_path = "./vector_store"
+            self.hybrid_calls: list[tuple[str, int, int, bool]] = []
+
+        def hybrid_search(self, question: str, k: int, fetch_k: int, use_rerank: bool):
+            self.hybrid_calls.append((question, k, fetch_k, use_rerank))
+            return [
+                Document(
+                    page_content="RERANKER_MODEL 当前配置为 BAAI/bge-reranker-base。",
+                    metadata={"source": "settings.md"},
+                )
+            ]
+
+        def search_with_rerank(self, question: str, k: int, fetch_k: int):
+            raise AssertionError("keyword-like query should not fall back to semantic rerank")
+
+    pipeline = FakePipeline()
+    query_tool = next(
+        tool for tool in agent_core.create_tools(pipeline) if tool.name == "query_knowledge"
+    )
+
+    result = asyncio.run(query_tool.ainvoke({"question": "RERANKER_MODEL 配置是什么"}))
+
+    assert pipeline.hybrid_calls == [
+        (
+            "RERANKER_MODEL 配置是什么",
+            agent_core.DEFAULT_KB_TOP_K,
+            agent_core.DEFAULT_KB_FETCH_K,
+            True,
+        )
+    ]
+    assert "settings.md" in result
+    assert "retrieval_mode" in result
+    assert "search_channel" in result
+
+
+def test_generate_dashboard_from_knowledge_prefers_hybrid_for_keyword_like_queries(monkeypatch):
+    class FakePipeline:
+        def __init__(self):
+            self.vectorstore = object()
+            self.vector_store_path = "./vector_store"
+            self.hybrid_calls: list[tuple[str, int, int, bool]] = []
+
+        def hybrid_search(self, query: str, k: int, fetch_k: int, use_rerank: bool):
+            self.hybrid_calls.append((query, k, fetch_k, use_rerank))
+            return [
+                Document(
+                    page_content="RERANKER_MODEL 使用 bge-reranker-base，版本 1.0，本周检索成功率 92%，平均耗时 210ms。",
+                    metadata={
+                        "source": "ops.md",
+                        "feedback_boost": 0.14,
+                        "feedback_net": 1,
+                        "feedback_positive_count": 2,
+                        "feedback_negative_count": 1,
+                    },
+                ),
+                Document(
+                    page_content="启用重排后，Top3 命中率从 71% 提升到 86%，用于搜索增强 v1 的重排阶段。",
+                    metadata={
+                        "source": "metrics.md",
+                        "feedback_boost": 0.0,
+                        "feedback_net": 0,
+                        "feedback_positive_count": 0,
+                        "feedback_negative_count": 0,
+                    },
+                ),
+            ]
+
+        def search_with_rerank(self, query: str, k: int, fetch_k: int):
+            raise AssertionError("dashboard keyword-like query should not fall back to semantic rerank")
+
+    monkeypatch.setattr(agent_core, "_should_generate_dashboard", lambda _: True)
+    monkeypatch.setattr(
+        agent_core,
+        "_ainvoke_llm_with_timeout",
+        lambda *args, **kwargs: asyncio.sleep(0, result=types.SimpleNamespace(content=json.dumps({
+            "title": "配置看板",
+            "summary": "ok",
+            "metrics": [],
+            "charts": [],
+            "table": {"title": "明细", "columns": [], "rows": [], "evidence_ids": []},
+            "evidence": [],
+            "warnings": [],
+        }, ensure_ascii=False))),
+    )
+
+    pipeline = FakePipeline()
+    result = asyncio.run(
+        agent_core._generate_dashboard_from_knowledge(
+            object(),
+            pipeline,
+            "请根据 RERANKER_MODEL 配置生成仪表盘",
+            knowledge_base_enabled=True,
+        )
+    )
+
+    assert result is not None
+    assert pipeline.hybrid_calls == [
+        (
+            "请根据 RERANKER_MODEL 配置生成仪表盘",
+            4,
+            12,
+            True,
+        )
+    ]
+    assert "证据主要是描述性文本" in result["output"]
+    assert [item["title"] for item in result["sources"]] == ["ops.md", "metrics.md"]
+    assert all(item["retrieval_mode"] == "hybrid_rerank" for item in result["sources"])
+    assert result["sources"][0]["feedback_positive_count"] == 2
+    assert result["sources"][0]["feedback_negative_count"] == 1
+    assert result["sources"][0]["feedback_net"] == 1
+    assert result["sources"][0]["feedback_boost"] == 0.14
+
+
+def test_build_retrieval_meta_from_sources_summarizes_modes_and_terms():
+    meta = agent_core._build_retrieval_meta_from_sources(
+        [
+            {
+                "title": "ops.md",
+                "retrieval_mode": "hybrid_rerank",
+                "search_channel": "hybrid_rerank",
+                "score": 0.91,
+                "matched_terms": ["reranker_model", "配置"],
+            },
+            {
+                "title": "metrics.md",
+                "retrieval_mode": "hybrid_rerank",
+                "search_channel": "hybrid_rerank",
+                "score": 0.84,
+                "matched_terms": ["配置", "命中率"],
+            },
+        ]
+    )
+
+    assert meta == {
+        "primary_mode": "hybrid_rerank",
+        "modes": ["hybrid_rerank"],
+        "channels": ["hybrid_rerank"],
+        "source_count": 2,
+        "source_titles": ["ops.md", "metrics.md"],
+        "matched_terms": ["reranker_model", "配置", "命中率"],
+        "top_score": 0.91,
+    }
 
 def test_chat_parallel_waits_for_all_producers(monkeypatch):
     async def fake_invoke_agent_stream(
@@ -2053,6 +2422,141 @@ def test_langgraph_stream_emits_workflow_state_events(monkeypatch):
 
     assert [item["status"] for item in workflow_items] == ["running", "completed"]
     assert "".join(chunk_items) == "hello world"
+
+
+def test_langgraph_wrapper_streams_native_tokens_without_duplicate_chunking(monkeypatch):
+    monkeypatch.setattr(agent_core, "get_llm", lambda *args, **kwargs: object())
+    monkeypatch.setattr(agent_core, "DocPipeline", lambda *args, **kwargs: object())
+
+    async def fake_build_langgraph_agent(*args, **kwargs):
+        class FakeApp:
+            async def ainvoke(self, state, config=None):
+                configurable = config.get("configurable", {}) if isinstance(config, dict) else {}
+                workflow_sink = configurable.get("workflow_event_sink")
+                stream_item_sink = configurable.get("stream_item_sink")
+                if callable(workflow_sink):
+                    workflow_sink(
+                        {
+                            "type": "workflow_state",
+                            "node_name": "generate_answer",
+                            "status": "running",
+                            "timestamp": 1,
+                        }
+                    )
+                if callable(stream_item_sink):
+                    stream_item_sink("原生")
+                    stream_item_sink("流式")
+                if callable(workflow_sink):
+                    workflow_sink(
+                        {
+                            "type": "workflow_state",
+                            "node_name": "generate_answer",
+                            "status": "completed",
+                            "timestamp": 2,
+                            "duration_ms": 5,
+                        }
+                    )
+                return {"output": "原生流式", "sources": []}
+
+        return FakeApp()
+
+    monkeypatch.setattr(agent_core, "build_langgraph_agent", fake_build_langgraph_agent)
+
+    agent = asyncio.run(
+        agent_core.build_agent(
+            provider="local",
+            agent_mode="langgraph",
+            knowledge_base_enabled=False,
+            web_search_enabled=False,
+        )
+    )
+
+    async def collect_items():
+        items = []
+        async for item in agent.astream_answer(
+            "hello",
+            config={
+                "configurable": {
+                    "session_id": "workflow-native-stream-test",
+                    "persist_history": False,
+                }
+            },
+        ):
+            items.append(item)
+        return items
+
+    items = asyncio.run(collect_items())
+    text_items = [item for item in items if isinstance(item, str)]
+
+    assert text_items == ["原生", "流式"]
+    assert any(
+        isinstance(item, dict)
+        and item.get("type") == "workflow_state"
+        and item.get("status") == "completed"
+        for item in items
+    )
+
+
+def test_real_langgraph_agent_streams_tokens_and_workflow_events(monkeypatch):
+    class FakeLLM:
+        async def ainvoke(self, payload):
+            payload_text = str(payload)
+            if "请只输出一个数字" not in payload_text:
+                raise AssertionError("generate_answer should use native streaming")
+
+            class Response:
+                content = "0"
+
+            return Response()
+
+        async def astream(self, payload):
+            yield "你好，"
+            await asyncio.sleep(0)
+            yield "世界"
+
+    async def fake_build_runtime_tools(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(agent_core, "get_llm", lambda *args, **kwargs: FakeLLM())
+    monkeypatch.setattr(agent_core, "DocPipeline", lambda *args, **kwargs: object())
+    monkeypatch.setattr(agent_core, "build_runtime_tools", fake_build_runtime_tools)
+
+    agent = asyncio.run(
+        agent_core.build_agent(
+            provider="local",
+            agent_mode="langgraph",
+            knowledge_base_enabled=False,
+            web_search_enabled=False,
+        )
+    )
+
+    async def collect_items():
+        items = []
+        async for item in agent.astream_answer(
+            "hello",
+            config={
+                "configurable": {
+                    "session_id": "real-langgraph-native-stream",
+                    "persist_history": False,
+                }
+            },
+        ):
+            items.append(item)
+        return items
+
+    items = asyncio.run(collect_items())
+    workflow_items = [
+        item for item in items
+        if isinstance(item, dict) and item.get("type") == "workflow_state"
+    ]
+    text_items = [item for item in items if isinstance(item, str)]
+
+    assert text_items == ["你好，", "世界"]
+    assert any(item["node_name"] == "classify_intent" for item in workflow_items)
+    assert any(
+        item["node_name"] == "generate_answer" and item["status"] == "completed"
+        for item in workflow_items
+    )
 
 
 def test_session_share_link_renders_read_only_transcript(monkeypatch, tmp_path):

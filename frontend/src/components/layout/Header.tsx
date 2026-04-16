@@ -25,18 +25,21 @@ import { useChatStore } from '../../stores/chatStore'
 import { useResolvedTheme } from '../../hooks/useResolvedTheme'
 import { Button } from '../ui/Button'
 import { InlineNotice } from '../ui/InlineNotice'
-import { createDeckDraft, createSession, createSessionShareLink, getSystemPrompts, resetSession } from '../../api/client'
+import { createSession, createSessionShareLink, getDeck, getSystemPrompts, resetSession } from '../../api/client'
 import { DeckEditorModal } from '../reports/DeckEditorModal'
 import { DeckGenerationModal } from '../reports/DeckGenerationModal'
+import { TaskProgressCard } from '../cards/TaskProgressCard'
 import { TaskCenterModal } from '../tasks/TaskCenterModal'
 import { KnowledgeBaseModal } from '../settings/KnowledgeBaseModal'
 import { Modal } from '../ui/Modal'
 import type { DeckSpec, SystemPrompt } from '../../api/client'
+import { createAndTrackTask, useTaskStore } from '../../stores/taskStore'
 
 export const Header: React.FC = () => {
   const {
     sidebarOpen,
     toggleSidebar,
+    workspaces,
     panels,
     addPanel,
     removePanel,
@@ -62,7 +65,12 @@ export const Header: React.FC = () => {
   } = useChatStore()
 
   const { theme, resolvedTheme } = useResolvedTheme()
+  const currentWorkspace =
+    workspaces.find((workspace) => workspace.workspace_id === currentWorkspaceId) ?? null
   const toggleTheme = useChatStore((s) => s.toggleTheme)
+  const [deckTaskId, setDeckTaskId] = useState<string | null>(null)
+  const [handledDeckTaskId, setHandledDeckTaskId] = useState<string | null>(null)
+  const deckTask = useTaskStore((s) => (deckTaskId ? s.tasks[deckTaskId] : undefined))
   const [activePrompt, setActivePrompt] = useState<SystemPrompt | null>(null)
   const [deckConfigOpen, setDeckConfigOpen] = useState(false)
   const [deckOpen, setDeckOpen] = useState(false)
@@ -84,6 +92,7 @@ export const Header: React.FC = () => {
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false)
   const hasAnyMessages = panels.some((panel) => panel.messages.length > 0)
   const showAdvancedDesktopActions = hasAnyMessages
+  const isDeckTaskActive = deckTask?.status === 'pending' || deckTask?.status === 'running'
 
   useEffect(() => {
     getSystemPrompts()
@@ -131,6 +140,47 @@ export const Header: React.FC = () => {
     return () => window.clearTimeout(timer)
   }, [actionFeedback])
 
+  useEffect(() => {
+    if (!deckTaskId || !deckTask || handledDeckTaskId === deckTaskId) return
+
+    if (deckTask.status === 'completed') {
+      const nextDeckId =
+        typeof deckTask.params?.deck_id === 'string' ? deckTask.params.deck_id : ''
+      if (!nextDeckId) {
+        setActionFeedback({
+          tone: 'error',
+          message: 'Deck 任务已完成，但没有返回可打开的 deck_id。',
+        })
+        setHandledDeckTaskId(deckTaskId)
+        return
+      }
+
+      void getDeck(nextDeckId)
+        .then((deck) => {
+          setDeckData(deck)
+          setDeckOpen(true)
+          setActionFeedback(null)
+          setHandledDeckTaskId(deckTaskId)
+        })
+        .catch((error) => {
+          setActionFeedback({
+            tone: 'error',
+            message: `打开生成后的 Deck 失败：${(error as Error).message}`,
+          })
+          setHandledDeckTaskId(deckTaskId)
+        })
+      return
+    }
+
+    if (deckTask.status === 'failed') {
+      setActionFeedback({
+        tone: 'error',
+        message: deckTask.error || '生成演示稿失败，请稍后重试。',
+      })
+      setHandledDeckTaskId(deckTaskId)
+    }
+  }, [deckTask, deckTaskId, handledDeckTaskId])
+
   const handleNewChat = async () => {
     try {
       const s = await createSession('新建对话', {
@@ -161,7 +211,7 @@ export const Header: React.FC = () => {
   }
 
   const handleGenerateReport = async () => {
-    if (!currentSessionId || generatingDeck) return
+    if (!currentSessionId || generatingDeck || isDeckTaskActive) return
     setDeckConfigOpen(true)
   }
 
@@ -183,16 +233,22 @@ export const Header: React.FC = () => {
     if (!currentSessionId) return
     setGeneratingDeck(true)
     try {
-      const data = await createDeckDraft({
-        session_id: currentSessionId,
-        panel_config: payload.panel_config,
-        knowledge_base_enabled: knowledgeBaseEnabled,
-        target_slide_count: payload.target_slide_count,
-        theme: payload.theme,
+      const task = await createAndTrackTask(
+        'generate_deck',
+        {
+          panel_config: payload.panel_config,
+          knowledge_base_enabled: knowledgeBaseEnabled,
+          target_slide_count: payload.target_slide_count,
+          theme: payload.theme,
+        },
+        currentSessionId,
+      )
+      setDeckTaskId(task.task_id)
+      setHandledDeckTaskId(null)
+      setActionFeedback({
+        tone: 'success',
+        message: '演示稿生成任务已加入任务中心，完成后会自动打开。',
       })
-      setDeckData(data)
-      setDeckOpen(true)
-      setActionFeedback(null)
     } catch (e) {
       setActionFeedback({
         tone: 'error',
@@ -299,7 +355,10 @@ export const Header: React.FC = () => {
 
   return (
     <>
-      <header className="sticky top-0 z-20 shrink-0 border-b border-bg-border bg-bg-primary/95 backdrop-blur-sm">
+      <header
+        className="sticky top-0 z-20 shrink-0 border-b border-bg-border bg-bg-primary/95 backdrop-blur-sm"
+        data-testid="app-header"
+      >
         {isMobile ? (
           <>
             <div className="flex items-center justify-between gap-2 px-3 py-2">
@@ -324,6 +383,7 @@ export const Header: React.FC = () => {
               <div className="flex items-center gap-1">
                 <button
                   onClick={handleNewChat}
+                  data-testid="header-new-chat"
                   className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
                   title="新建对话"
                 >
@@ -490,6 +550,7 @@ export const Header: React.FC = () => {
               <div className="relative" ref={moreMenuRef}>
                 <button
                   onClick={() => setMoreMenuOpen((v) => !v)}
+                  data-testid="header-more-menu"
                   className={`rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary ${
                     moreMenuOpen ? 'bg-bg-hover text-text-primary' : ''
                   }`}
@@ -509,7 +570,7 @@ export const Header: React.FC = () => {
                     </button>
                     <button
                       onClick={() => { void handleGenerateReport(); setMoreMenuOpen(false) }}
-                      disabled={generatingDeck || !currentSessionId}
+                      disabled={generatingDeck || isDeckTaskActive || !currentSessionId}
                       className="flex w-full items-center gap-2 px-3 py-2 text-xs text-text-primary transition-colors hover:bg-bg-hover disabled:opacity-40"
                     >
                       <FileText size={13} />
@@ -517,6 +578,7 @@ export const Header: React.FC = () => {
                     </button>
                     <button
                       onClick={() => { setTaskCenterOpen(true); setMoreMenuOpen(false) }}
+                      data-testid="header-open-task-center"
                       className="flex w-full items-center gap-2 px-3 py-2 text-xs text-text-primary transition-colors hover:bg-bg-hover"
                     >
                       <History size={13} />
@@ -541,6 +603,7 @@ export const Header: React.FC = () => {
 
               <button
                 onClick={handleNewChat}
+                data-testid="header-new-chat"
                 className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
                 title="新建对话"
               >
@@ -644,7 +707,7 @@ export const Header: React.FC = () => {
                   void handleGenerateReport()
                   setMobileActionsOpen(false)
                 }}
-                disabled={!currentSessionId || generatingDeck}
+                disabled={!currentSessionId || generatingDeck || isDeckTaskActive}
                 className="rounded-xl border border-bg-border bg-bg-primary px-3 py-2 text-sm text-text-primary transition-colors hover:bg-bg-hover disabled:opacity-40"
               >
                 生成演示稿
@@ -701,6 +764,8 @@ export const Header: React.FC = () => {
         onClose={() => setDeckConfigOpen(false)}
         panels={panels}
         knowledgeBaseEnabled={knowledgeBaseEnabled}
+        initialTheme={currentWorkspace?.preset?.output_preset.deck_theme}
+        initialSlideCount={currentWorkspace?.preset?.output_preset.target_slide_count}
         onSubmit={handleGenerateDeck}
       />
 
@@ -712,6 +777,12 @@ export const Header: React.FC = () => {
           panels={panels}
           onDeckChange={setDeckData}
         />
+      )}
+
+      {deckTaskId && (
+        <div className="px-3 pt-2 sm:px-4">
+          <TaskProgressCard taskId={deckTaskId} taskType="generate_deck" />
+        </div>
       )}
 
       <TaskCenterModal open={taskCenterOpen} onClose={() => setTaskCenterOpen(false)} />

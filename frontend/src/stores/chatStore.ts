@@ -14,6 +14,8 @@ import type {
 import { normalizeModelConfig } from '../api/client'
 import type { WorkflowNode } from './workflowStore'
 
+export type ErrorRetryMode = 'rerun' | 'continue'
+
 export interface PanelMessage {
   id: string
   serverMessageId?: number
@@ -33,6 +35,7 @@ export interface PanelMessage {
   workflowNodes?: WorkflowNode[]
   timestamp?: number
   feedbackValue?: MessageFeedbackValue
+  retryMode?: ErrorRetryMode
 }
 
 export type ThemeMode = 'dark' | 'light' | 'system'
@@ -94,6 +97,7 @@ interface ChatState {
   settingsOpen: boolean
   webSearchEnabled: boolean
   knowledgeBaseEnabled: boolean
+  enabledMcpServers: string[]
   attachmentWorkspaceOpen: boolean
   memoryWorkspaceOpen: boolean
   welcomeGuideDismissed: boolean
@@ -155,7 +159,13 @@ interface ChatState {
     sources: SourceItem[],
     meta?: Partial<Pick<PanelMessage, 'modelId' | 'answerGroupId'>>,
   ) => void
-  addErrorMessage: (panelId: string, content: string, errorCode?: string, suggestion?: string) => void
+  addErrorMessage: (
+    panelId: string,
+    content: string,
+    errorCode?: string,
+    suggestion?: string,
+    meta?: Partial<Pick<PanelMessage, 'answerGroupId' | 'retryMode'>>,
+  ) => void
   setTaskId: (panelId: string, msgId: string, taskId: string, taskType?: string) => void
   loadMessages: (panelId: string, messages: Message[]) => void
   updateMessage: (panelId: string, msgId: string, patch: Partial<PanelMessage>) => void
@@ -177,6 +187,7 @@ interface ChatState {
   setSettingsOpen: (open: boolean) => void
   setWebSearchEnabled: (enabled: boolean) => void
   setKnowledgeBaseEnabled: (enabled: boolean) => void
+  setEnabledMcpServers: (servers: string[]) => void
   toggleAttachmentWorkspace: () => void
   setAttachmentWorkspaceOpen: (open: boolean) => void
   toggleMemoryWorkspace: () => void
@@ -333,6 +344,7 @@ export const useChatStore = create<ChatState>()(
       settingsOpen: false,
       webSearchEnabled: false,
       knowledgeBaseEnabled: true,
+      enabledMcpServers: ['knowledge-base', 'web-search'],
       attachmentWorkspaceOpen: false,
       memoryWorkspaceOpen: false,
       welcomeGuideDismissed: false,
@@ -683,7 +695,7 @@ export const useChatStore = create<ChatState>()(
           }),
         })),
 
-      addErrorMessage: (panelId, content, errorCode, suggestion) =>
+      addErrorMessage: (panelId, content, errorCode, suggestion, meta) =>
         set((s) => ({
           panels: s.panels.map((p) => {
             if (p.id !== panelId) return p
@@ -692,7 +704,17 @@ export const useChatStore = create<ChatState>()(
               ...p,
               messages: [
                 ...p.messages,
-                { id: msgId, role: 'error' as const, content, errorCode, suggestion },
+                {
+                  id: msgId,
+                  role: 'error' as const,
+                  content,
+                  errorCode,
+                  suggestion,
+                  panelId,
+                  answerGroupId: meta?.answerGroupId,
+                  retryMode: meta?.retryMode,
+                  timestamp: Date.now() / 1000,
+                },
               ],
             }
           }),
@@ -810,6 +832,16 @@ export const useChatStore = create<ChatState>()(
       setSettingsOpen: (open) => set({ settingsOpen: open }),
       setWebSearchEnabled: (enabled) => set({ webSearchEnabled: enabled }),
       setKnowledgeBaseEnabled: (enabled) => set({ knowledgeBaseEnabled: enabled }),
+      setEnabledMcpServers: (servers) =>
+        set({
+          enabledMcpServers: Array.from(
+            new Set(
+              servers
+                .map((item) => String(item || '').trim())
+                .filter((item) => item.length > 0),
+            ),
+          ),
+        }),
       toggleAttachmentWorkspace: () =>
         set((s) => ({
           attachmentWorkspaceOpen: !s.attachmentWorkspaceOpen,
@@ -892,7 +924,7 @@ export const useChatStore = create<ChatState>()(
     }),
     {
       name: 'ai-kb-chat-store',
-      version: 9,
+      version: 10,
       migrate: (persistedState) => {
         const state = (persistedState ?? {}) as Partial<ChatState>
         return {
@@ -900,6 +932,12 @@ export const useChatStore = create<ChatState>()(
           sidebarOpen: state.sidebarOpen ?? true,
           webSearchEnabled: state.webSearchEnabled ?? false,
           knowledgeBaseEnabled: state.knowledgeBaseEnabled ?? true,
+          enabledMcpServers:
+            Array.isArray(state.enabledMcpServers) && state.enabledMcpServers.length > 0
+              ? state.enabledMcpServers
+                  .map((item) => String(item || '').trim())
+                  .filter((item) => item.length > 0)
+              : ['knowledge-base', 'web-search'],
           welcomeGuideDismissed: state.welcomeGuideDismissed ?? false,
           activePromptId: state.activePromptId ?? null,
           theme:
@@ -991,6 +1029,7 @@ export const useChatStore = create<ChatState>()(
         sidebarOpen: s.sidebarOpen,
         webSearchEnabled: s.webSearchEnabled,
         knowledgeBaseEnabled: s.knowledgeBaseEnabled,
+        enabledMcpServers: s.enabledMcpServers,
         welcomeGuideDismissed: s.welcomeGuideDismissed,
         activePromptId: s.activePromptId,
         theme: s.theme,

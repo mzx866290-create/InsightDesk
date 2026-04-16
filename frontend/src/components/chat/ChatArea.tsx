@@ -38,7 +38,7 @@ const WelcomeGuide: React.FC<WelcomeGuideProps> = ({
   onToggleWebSearch,
   onToggleKnowledgeBase,
 }) => (
-  <div className="flex flex-1 items-center justify-center p-3 pt-2">
+  <div className="flex flex-1 items-center justify-center p-3 pt-2" data-testid="welcome-guide">
     <section className="relative w-full max-w-5xl rounded-[28px] border border-bg-border bg-gradient-to-br from-bg-secondary via-bg-secondary to-bg-primary p-5 shadow-[0_18px_70px_rgba(15,23,42,0.18)]">
       <button
         type="button"
@@ -66,6 +66,7 @@ const WelcomeGuide: React.FC<WelcomeGuideProps> = ({
             <button
               type="button"
               onClick={onEnableFocusChat}
+              data-testid="welcome-focus-chat"
               className="rounded-2xl border border-bg-border bg-bg-primary/70 p-4 text-left transition-colors hover:border-accent-blue/35 hover:bg-bg-hover"
             >
               <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-accent-blue/12 text-accent-blue">
@@ -80,6 +81,7 @@ const WelcomeGuide: React.FC<WelcomeGuideProps> = ({
             <button
               type="button"
               onClick={onEnableDocAnalysis}
+              data-testid="welcome-doc-analysis"
               className="rounded-2xl border border-bg-border bg-bg-primary/70 p-4 text-left transition-colors hover:border-accent-green/35 hover:bg-bg-hover"
             >
               <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-accent-green/12 text-accent-green">
@@ -94,6 +96,7 @@ const WelcomeGuide: React.FC<WelcomeGuideProps> = ({
             <button
               type="button"
               onClick={onEnableDeliveryMode}
+              data-testid="welcome-delivery-mode"
               className="rounded-2xl border border-bg-border bg-bg-primary/70 p-4 text-left transition-colors hover:border-accent-orange/35 hover:bg-bg-hover"
             >
               <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-accent-orange/12 text-accent-orange">
@@ -179,6 +182,8 @@ export const ChatArea: React.FC = () => {
     pushComposerSeed,
   } = useChatStore()
   const [streamingPanels, setStreamingPanels] = useState<Set<string>>(new Set())
+  const [streamingStartedAtByPanelId, setStreamingStartedAtByPanelId] = useState<Record<string, number>>({})
+  const [streamingClock, setStreamingClock] = useState(() => Date.now())
   const [contextLimit, setContextLimit] = useState(16)
   const [activeStreamControl, setActiveStreamControl] = useState<ActiveStreamControl | null>(null)
   const [diffViewOpen, setDiffViewOpen] = useState(false)
@@ -269,6 +274,15 @@ export const ChatArea: React.FC = () => {
   }, [panels.length, diffViewOpen])
 
   useEffect(() => {
+    if (!isAnyStreaming) return
+    setStreamingClock(Date.now())
+    const timer = window.setInterval(() => {
+      setStreamingClock(Date.now())
+    }, 1000)
+    return () => window.clearInterval(timer)
+  }, [isAnyStreaming])
+
+  useEffect(() => {
     const media = window.matchMedia('(max-width: 767px)')
 
     const applyViewport = (matches: boolean) => {
@@ -310,10 +324,22 @@ export const ChatArea: React.FC = () => {
   }, [isMobile, jumpTarget, panels])
 
   const handleStreamingChange = (panelId: string, streaming: boolean) => {
+    const now = Date.now()
+    setStreamingClock(now)
     setStreamingPanels((prev) => {
       const next = new Set(prev)
       if (streaming) next.add(panelId)
       else next.delete(panelId)
+      return next
+    })
+    setStreamingStartedAtByPanelId((prev) => {
+      if (streaming) {
+        if (typeof prev[panelId] === 'number') return prev
+        return { ...prev, [panelId]: now }
+      }
+      if (!(panelId in prev)) return prev
+      const next = { ...prev }
+      delete next[panelId]
       return next
     })
   }
@@ -397,6 +423,14 @@ export const ChatArea: React.FC = () => {
                 key={panel.id}
                 panel={panel}
                 isStreaming={streamingPanels.has(panel.id)}
+                loadingElapsedMs={
+                  streamingPanels.has(panel.id)
+                    ? Math.max(
+                        0,
+                        streamingClock - (streamingStartedAtByPanelId[panel.id] ?? streamingClock),
+                      )
+                    : 0
+                }
                 isInteractionLocked={isAnyStreaming}
                 activeStreamControl={activeStreamControl}
                 setActiveStreamControl={setActiveStreamControl}

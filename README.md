@@ -1,4 +1,4 @@
-# AI 智能体项目介绍
+# InsightDesk
 
 ## 一句话说明
 
@@ -27,7 +27,10 @@
 ### 1. 智能问答工作台
 
 - 支持多会话、多工作区管理
+- 工作区支持保存默认面板快照、工具开关与 Deck 默认值，切换工作区时可恢复对应工作台预设
 - 支持多面板并行对话，可用于多模型对比、不同参数策略对比
+- 支持同一 answer group 的多面板答案评审、差异对比与推荐答案一键提升为主答案
+- 支持单面板 answer 的 continue / retry / fork 生命周期，fork 会将当前分支历史持久化为独立会话
 - 支持流式响应和前端实时展示
 - 支持系统 Prompt 管理与激活切换
 
@@ -35,7 +38,10 @@
 
 - 支持 `PDF / DOC / DOCX / TXT / Markdown / CSV / Excel` 等文档接入
 - 支持文档切块、向量化、向量库持久化
-- 检索链路采用 `FAISS` 粗排 + `CrossEncoder` 二段重排
+- 主回答链路默认采用语义召回 + `CrossEncoder` 二段重排，并会对关键词 / 编号 / 英文术语类问题自动提升为 hybrid 检索
+- 检索诊断支持 `semantic / keyword / hybrid` 三种模式切换，可调 `Top K / Fetch K` 与是否重排
+- 回答引用与 LangGraph workflow 节点可携带 `retrieval_mode / search_channel / score / matched_terms` 等检索观测信息
+- 引用来源的点赞/点踩会按来源聚合，作为后续知识库检索排序的轻量反馈信号
 - 支持知识库统计、健康检查、检索测试、Chunk 编辑与删除
 - 回答结果可附带来源引用，便于校验与追溯
 
@@ -43,6 +49,7 @@
 
 - 支持聊天过程中上传附件与图片
 - 支持围绕附件内容继续分析，而不是仅做一次性上传
+- 附件工作区接口已按 `workspace_id` 校验会话归属，避免跨工作区读取附件与触发入库
 - 支持附件提升为知识库任务
 - 支持收藏、引用查看、消息反馈等增强能力
 
@@ -63,6 +70,7 @@
 
 - 支持从会话内容生成结构化报告
 - 支持生成 Deck 并编辑主题、内容与页面
+- 支持会话级交付物矩阵，统一查看/打开/导出 `report` 与 `deck` artifact
 - 支持导出 `PPTX`
 - 支持会话与 Deck 分享链接
 
@@ -122,6 +130,9 @@ flowchart TD
 - `deck_service.py`
   演示稿生成与导出模块，负责 Deck 结构生成、主题管理、页面重生成、`PPTX` 导出与持久化。
 
+- `artifact_service.py`
+  交付物持久化模块，负责 `report / deck` artifact 的统一存储、列表、读取与导出元数据同步。
+
 - `mcp_servers/`
   MCP 扩展工具目录，适合后续接入专有知识源或外部业务系统。
 
@@ -164,6 +175,49 @@ flowchart TD
 
 - [docs/VALIDATION.md](/f:/项目/AI智能体/docs/VALIDATION.md)
   冒烟、回归与发布前校验。
+
+## 搜索增强 v1 实施清单
+
+- [x] 检索诊断接口支持 explainable payload，返回 `retrieval_mode / search_mode / top_k / fetch_k / coverage`
+- [x] 检索诊断接口支持 `semantic / keyword / hybrid` 三种调试模式
+- [x] 设置区与知识库面板支持检索模式切换、参数调节和候选结果查看
+- [x] 主回答链路支持自动选择 `semantic / hybrid`，改进关键词/术语类问题命中
+- [x] 回答引用与 workflow 节点支持展示检索观测信息，便于排查命中路径
+- [x] 引用点赞/点踩已接入知识库检索排序微调，形成反馈闭环 v1
+- [x] 引用来源支持相关/不相关反馈写回，便于后续检索优化
+- [x] 引用面板与检索调试结果支持展示反馈计数、净反馈与排序 boost，补齐反馈可解释性
+- [x] 已补充搜索增强 v1 的后端单测与 API 测试
+
+说明：当前 `keyword / hybrid` 已接入主回答链路自动选择；显式三模式切换仍主要体现在检索诊断与控制台调参。
+
+## Sprint 4 交付增强实施清单
+
+- [x] workspace presets v1：工作区可保存默认面板快照、工具开关与 Deck 默认值
+- [x] artifact abstraction v1：`report / deck` 已统一沉淀为可持久化 artifact，并提供统一读取/导出接口
+- [x] delivery matrix v1：报告预览内已接入会话级交付物矩阵，可统一查看、打开与导出历史交付物
+
+说明：当前交付物矩阵 v1 先覆盖 `report / deck` 两类；更丰富的 artifact 类型与模板化输出仍在后续迭代范围内。
+
+## Sprint 5 连接器产品化实施清单
+
+- [x] connector registry v1：后端提供 `GET /api/connectors/mcp`，统一暴露可用 MCP 连接器目录与默认启用集
+- [x] workspace presets v1.1：工作区预设已支持保存 `mcp_servers_enabled`，切换工作区时恢复对应连接器启用状态
+- [x] chat runtime wiring v1：并行/单面板聊天请求会携带当前工作区启用的 MCP 连接器列表
+- [x] runtime tool composition v1：MCP 工具既可覆盖同名内置工具，也可作为额外工具追加到运行时工具集
+- [x] connector management UI v1：侧边栏工作区创建/编辑表单已支持查看和勾选 MCP 连接器
+- [x] 已补充 MCP helper、runtime tool choice、workspace API 与 connector catalog 的目标测试，并完成前端构建校验
+
+说明：当前连接器产品化 v1 先以工作区级预设和 MCP catalog 为主，不包含更完整的组织级权限、凭据托管和第三方业务系统模板市场。
+
+## Sprint 5 体验加固实施清单
+
+- [x] security status v1：后端提供 `GET /api/security/status`，集中暴露远程访问保护、分享密钥健康度、CORS 与上传限制状态
+- [x] share link audit v1：后端提供 `GET /api/share-links`，可按管理员视角审计分享链接的资源类型、有效期、访问计数与访问痕迹
+- [x] share token hygiene v1：分享链接创建/打开统一使用运行时 `SHARE_LINK_SECRET`，避免常量与环境变量漂移
+- [x] request / audit log hardening v1：分享 token 不再以原文出现在安全审计日志和通用请求日志中
+- [x] 已补充 security hardening 与 share flow 的目标回归测试
+
+说明：当前体验加固 v1 先覆盖分享边界、管理员可见性和日志脱敏；完整鉴权、RBAC、组织级审计与监控告警仍在后续范围内。
 
 ## 适用场景
 

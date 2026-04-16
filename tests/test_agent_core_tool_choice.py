@@ -180,18 +180,19 @@ def test_build_runtime_tools_overlays_matching_mcp_tools():
             self.args = {"search_query": {"type": "string"}}
 
     async def fake_mcp_loader(**kwargs):
-        assert kwargs["expected_tool_names"] == {
-            "web_search",
-            "quick_answer",
-            "fetch_webpage",
+        assert kwargs["expected_tool_names"] is None
+        assert kwargs["enabled_server_names"] == ["web-search"]
+        return {
+            "web_search": MCPTool("web_search"),
+            "summarize_results": MCPTool("summarize_results"),
         }
-        return {"web_search": MCPTool("web_search")}
 
     tools = asyncio.run(
         build_runtime_tools(
             FakePipeline(),
             knowledge_base_enabled=False,
             web_search_enabled=True,
+            enabled_mcp_servers=["web-search"],
             mcp_tool_loader=fake_mcp_loader,
         )
     )
@@ -200,5 +201,7 @@ def test_build_runtime_tools_overlays_matching_mcp_tools():
         "web_search",
         "quick_answer",
         "fetch_webpage",
+        "summarize_results",
     ]
     assert isinstance(tools[0], MCPTool)
+    assert isinstance(tools[-1], MCPTool)

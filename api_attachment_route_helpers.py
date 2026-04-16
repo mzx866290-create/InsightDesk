@@ -34,6 +34,7 @@ def prepare_attachment_promotion(
     attachment_id: str,
     attachment: dict[str, Any] | None,
     target_vector_store_path: str,
+    workspace_id: str | None = None,
     existing_task: TaskRecord | None,
     task_record_payload: Callable[..., dict[str, Any]],
 ) -> dict[str, Any]:
@@ -62,6 +63,7 @@ def prepare_attachment_promotion(
         }
 
     return {
+        "workspace_id": str(workspace_id or "").strip() or None,
         "dedupe_payload": None,
         "enqueue_kwargs": {
             "task_type": "promote_attachment_to_kb",
@@ -71,6 +73,11 @@ def prepare_attachment_promotion(
                 "attachment_kind": "file",
                 "attachment_data_url": data_url,
                 "vector_store_path": target_vector_store_path,
+                **(
+                    {"workspace_id": str(workspace_id or "").strip()}
+                    if str(workspace_id or "").strip()
+                    else {}
+                ),
             },
             "session_id": session_id,
         },

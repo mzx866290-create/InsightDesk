@@ -41,6 +41,7 @@ def test_prepare_attachment_promotion_rejects_missing_attachment():
             attachment_id="att-1",
             attachment=None,
             target_vector_store_path="vector_store_test",
+            workspace_id=None,
             existing_task=None,
             task_record_payload=lambda record, **kwargs: {},
         )
@@ -53,6 +54,7 @@ def test_prepare_attachment_promotion_rejects_invalid_attachment_states():
             attachment_id="att-image",
             attachment={"kind": "image"},
             target_vector_store_path="vector_store_test",
+            workspace_id=None,
             existing_task=None,
             task_record_payload=lambda record, **kwargs: {},
         )
@@ -63,6 +65,7 @@ def test_prepare_attachment_promotion_rejects_invalid_attachment_states():
             attachment_id="att-empty",
             attachment={"kind": "file", "data_url": ""},
             target_vector_store_path="vector_store_test",
+            workspace_id=None,
             existing_task=None,
             task_record_payload=lambda record, **kwargs: {},
         )
@@ -88,6 +91,7 @@ def test_prepare_attachment_promotion_returns_dedupe_payload_for_existing_task()
             "data_url": "data:text/plain;base64,QnJpZWY=",
         },
         target_vector_store_path="vector_store_test",
+        workspace_id="workspace-alpha",
         existing_task=record,
         task_record_payload=lambda record, **kwargs: {
             "task_id": record.task_id,
@@ -116,11 +120,13 @@ def test_prepare_attachment_promotion_returns_enqueue_kwargs():
             "data_url": "data:text/plain;base64,QnJpZWY=",
         },
         target_vector_store_path="vector_store_test",
+        workspace_id="workspace-alpha",
         existing_task=SimpleNamespace(status=TaskStatus.FAILED),
         task_record_payload=lambda record, **kwargs: {},
     )
 
     assert payload == {
+        "workspace_id": "workspace-alpha",
         "dedupe_payload": None,
         "enqueue_kwargs": {
             "task_type": "promote_attachment_to_kb",
@@ -130,6 +136,7 @@ def test_prepare_attachment_promotion_returns_enqueue_kwargs():
                 "attachment_kind": "file",
                 "attachment_data_url": "data:text/plain;base64,QnJpZWY=",
                 "vector_store_path": "vector_store_test",
+                "workspace_id": "workspace-alpha",
             },
             "session_id": "session-1",
         },

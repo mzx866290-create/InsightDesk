@@ -111,6 +111,88 @@ def test_task_store_attachment_promotion_lookup_survives_task_row_cleanup(tmp_pa
     assert recovered.params["attachment_id"] == "att-brief"
 
 
+def test_task_store_prune_keeps_most_recent_orphaned_attachment_promotions(tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    store = SQLiteTaskStore(db_path=str(db_path), history_limit=1, ttl_seconds=999999)
+    now = time.time()
+
+    older = TaskRecord(
+        task_id="promotion-old",
+        task_type="promote_attachment_to_kb",
+        status=TaskStatus.COMPLETED,
+        params={
+            "attachment_id": "att-old",
+            "attachment_name": "old.txt",
+            "vector_store_path": "vector_store_test",
+        },
+        session_id="session-1",
+        created_at=now - 3,
+        updated_at=now - 3,
+        result="old-indexed",
+        progress=100,
+    )
+    newer = TaskRecord(
+        task_id="promotion-new",
+        task_type="promote_attachment_to_kb",
+        status=TaskStatus.COMPLETED,
+        params={
+            "attachment_id": "att-new",
+            "attachment_name": "new.txt",
+            "vector_store_path": "vector_store_test",
+        },
+        session_id="session-1",
+        created_at=now - 1,
+        updated_at=now - 1,
+        result="new-indexed",
+        progress=100,
+    )
+    store.save(older)
+    store.save(newer)
+
+    with connect_sqlite(str(db_path)) as conn:
+        conn.execute("DELETE FROM tasks WHERE task_id IN (?, ?)", ("promotion-old", "promotion-new"))
+        conn.commit()
+
+    store.prune(limit=1, ttl_seconds=999999)
+
+    assert store.get_attachment_promotion("att-old", "vector_store_test") is None
+    recovered = store.get_attachment_promotion_task("att-new", "vector_store_test")
+    assert recovered is not None
+    assert recovered.task_id == "promotion-new"
+    assert recovered.result == "new-indexed"
+
+
+def test_task_store_prune_removes_stale_orphaned_attachment_promotions(tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    store = SQLiteTaskStore(db_path=str(db_path), history_limit=10, ttl_seconds=1)
+    now = time.time()
+    record = TaskRecord(
+        task_id="promotion-stale",
+        task_type="promote_attachment_to_kb",
+        status=TaskStatus.COMPLETED,
+        params={
+            "attachment_id": "att-stale",
+            "attachment_name": "stale.txt",
+            "vector_store_path": "vector_store_test",
+        },
+        session_id="session-1",
+        created_at=now - 10,
+        updated_at=now - 10,
+        result="stale-indexed",
+        progress=100,
+    )
+    store.save(record)
+
+    with connect_sqlite(str(db_path)) as conn:
+        conn.execute("DELETE FROM tasks WHERE task_id = ?", ("promotion-stale",))
+        conn.commit()
+
+    store.prune(limit=10, ttl_seconds=1)
+
+    assert store.get_attachment_promotion("att-stale", "vector_store_test") is None
+    assert store.get_attachment_promotion_task("att-stale", "vector_store_test") is None
+
+
 def test_task_store_list_recent_orders_by_updated_at(tmp_path):
     db_path = tmp_path / "chat_history.db"
     store = SQLiteTaskStore(db_path=str(db_path))

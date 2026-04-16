@@ -75,6 +75,82 @@ def test_search_with_rerank_retries_prediction_on_cpu_and_clamps_fetch_k(monkeyp
     assert pipeline._reranker_device == "cpu"
 
 
+def test_search_with_rerank_applies_feedback_boost(monkeypatch):
+    class FakeCrossEncoder:
+        def __init__(self, model_name, max_length, device, local_files_only=False, token=None):
+            self.device = device
+
+        def predict(self, pairs):
+            return [0.55, 0.56, 0.57]
+
+    class FakeVectorStore:
+        def similarity_search(self, query, k):
+            return [
+                Document(page_content="alpha", metadata={"source": "doc-a"}),
+                Document(page_content="beta", metadata={"source": "doc-b"}),
+                Document(page_content="gamma", metadata={"source": "doc-c"}),
+            ]
+
+    monkeypatch.setattr(doc_pipeline, "CrossEncoder", FakeCrossEncoder)
+    monkeypatch.setattr(
+        DocPipeline,
+        "_resolve_device",
+        lambda self, device: device or "cpu",
+    )
+    monkeypatch.setattr(
+        DocPipeline,
+        "_load_feedback_summary_map",
+        lambda self, source_type="doc": {
+            ("doc", "doc-c", ""): {
+                "source_type": "doc",
+                "source_title": "doc-c",
+                "source_url": "",
+                "positive_count": 2,
+                "negative_count": 0,
+                "net_feedback": 2,
+                "total_count": 2,
+                "last_updated_at": 0.0,
+            }
+        },
+    )
+    DocPipeline._reranker_cache.clear()
+
+    pipeline = DocPipeline(device="cpu")
+    pipeline.vectorstore = FakeVectorStore()
+
+    results = pipeline.search_with_rerank("test query", k=3, fetch_k=3)
+
+    assert [doc.metadata["source"] for doc in results] == ["doc-c", "doc-b", "doc-a"]
+    assert results[0].metadata["feedback_positive_count"] == 2
+    assert results[0].metadata["feedback_boost"] > 0
+
+
+def test_format_debug_entry_exposes_feedback_fields():
+    pipeline = DocPipeline(device="cpu")
+
+    entry = pipeline._format_debug_entry(
+        Document(
+            page_content="Alpha findings and supporting detail",
+            metadata={
+                "source": "alpha.md",
+                "search_score": 0.88,
+                "search_channel": "hybrid_rerank",
+                "matched_terms": ["alpha"],
+                "feedback_boost": 0.14,
+                "feedback_net": 1,
+                "feedback_positive_count": 2,
+                "feedback_negative_count": 1,
+            },
+        ),
+        rank=1,
+    )
+
+    assert entry["feedback_boost"] == 0.14
+    assert entry["feedback_net"] == 1
+    assert entry["feedback_positive_count"] == 2
+    assert entry["feedback_negative_count"] == 1
+
+
 def test_normalize_rerank_scores_handles_invalid_values():
     pipeline = DocPipeline(device="cpu")
 

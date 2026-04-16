@@ -23,10 +23,15 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage
 from langchain_core.documents import Document
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 from doc_pipeline import DocPipeline
 from chat_store import SQLiteChatMessageHistory, list_session_memory
-import httpx
+from search_runtime.service import (
+    fetch_webpage_text,
+    quick_answer_text,
+    search_web_text,
+)
 
 load_dotenv()
 
@@ -34,10 +39,11 @@ logger = logging.getLogger(__name__)
 
 # 联网搜索开关（由上层 API / 前端在每次对话前设置）
 _web_search_enabled: bool = True
-DEFAULT_LLM_TIMEOUT_SECONDS = float(os.getenv("AGENT_LLM_TIMEOUT_SECONDS", "35"))
+DEFAULT_LLM_TIMEOUT_SECONDS = float(os.getenv("AGENT_LLM_TIMEOUT_SECONDS", "90"))
 DEFAULT_KB_DOC_CHAR_LIMIT = int(os.getenv("KB_DOC_CHAR_LIMIT", "600"))
 DEFAULT_KB_TOP_K = int(os.getenv("KB_TOP_K", "3"))
 DEFAULT_KB_FETCH_K = int(os.getenv("KB_FETCH_K", "10"))
+DEFAULT_KB_RETRIEVAL_MODE = str(os.getenv("KB_RETRIEVAL_MODE", "auto")).strip().lower()
 CHAT_FILE_CONTEXT_START_MARKER = "[[CHAT_FILE_CONTEXT_START]]"
 CHAT_FILE_CONTEXT_END_MARKER = "[[CHAT_FILE_CONTEXT_END]]"
 
@@ -91,6 +97,226 @@ class BuiltinToolSpec:
 
 
 _BUILTIN_TOOL_REGISTRY: list[BuiltinToolSpec] = []
+
+
+def _normalize_kb_retrieval_mode(mode: Any) -> str:
+    normalized = str(mode or "").strip().lower()
+    if normalized in {"semantic", "keyword", "hybrid", "auto"}:
+        return normalized
+    return "auto"
+
+
+def _should_prefer_hybrid_retrieval(query: Any) -> bool:
+    text = _stringify_user_input(query).strip()
+    if not text:
+        return False
+
+    lowered = text.lower()
+    exact_match_terms = (
+        "字段",
+        "列名",
+        "参数",
+        "接口",
+        "编号",
+        "版本",
+        "路径",
+        "文件名",
+        "sheet",
+        "excel",
+        "csv",
+        "pdf",
+        "json",
+        "yaml",
+        "markdown",
+        "报错",
+        "状态码",
+        "error code",
+    )
+    if any(term in lowered for term in exact_match_terms):
+        return True
+
+    if any(marker in text for marker in ("`", "/", "\\", "_", ".md", ".pdf", ".docx", ".xlsx", ".csv", ".json", ".yaml", ".yml", ".txt")):
+        return True
+
+    if re.search(r"\b[a-z]+[\w.-]*_[\w./:-]+\b", lowered):
+        return True
+    if re.search(r"\b[a-z]+[\w.-]*\d+[\w.-]*\b", lowered):
+        return True
+    if re.search(r"[A-Za-z]{2,}[/:.-][A-Za-z0-9_.:-]+", text):
+        return True
+
+    ascii_tokens = re.findall(r"\b[A-Za-z0-9_.:/-]+\b", text)
+    long_ascii_tokens = [token for token in ascii_tokens if len(token) >= 4]
+    if len(long_ascii_tokens) >= 2 and len(text) <= 96:
+        return True
+
+    digit_count = sum(char.isdigit() for char in text)
+    if digit_count >= 3 and len(text) <= 64:
+        return True
+
+    return False
+
+
+def _choose_kb_retrieval_mode(query: Any, preferred_mode: Any = None) -> str:
+    normalized_mode = _normalize_kb_retrieval_mode(preferred_mode or DEFAULT_KB_RETRIEVAL_MODE)
+    if normalized_mode != "auto":
+        return normalized_mode
+    return "hybrid" if _should_prefer_hybrid_retrieval(query) else "semantic"
+
+
+def _retrieve_kb_documents(
+    pipeline: DocPipeline,
+    query: Any,
+    *,
+    top_k: int,
+    fetch_k: int,
+    preferred_mode: Any = None,
+    use_rerank: bool = True,
+    log_context: str = "knowledge",
+) -> tuple[list[Document], str]:
+    mode = _choose_kb_retrieval_mode(query, preferred_mode=preferred_mode)
+    safe_top_k = max(1, int(top_k or 1))
+    safe_fetch_k = max(safe_top_k, int(fetch_k or safe_top_k))
+    query_text = _stringify_user_input(query).strip()
+
+    if mode == "keyword" and hasattr(pipeline, "keyword_search"):
+        try:
+            docs = pipeline.keyword_search(query_text, k=safe_top_k)
+            if docs:
+                docs = [
+                    Document(
+                        page_content=doc.page_content,
+                        metadata={
+                            **dict(doc.metadata or {}),
+                            "retrieval_mode": "keyword",
+                            "retrieval_query": query_text,
+                            "search_channel": str(
+                                (doc.metadata or {}).get("search_channel") or "keyword"
+                            ),
+                        },
+                    )
+                    for doc in docs
+                ]
+                logger.info("[%s] retrieval_mode=keyword query=%s", log_context, query_text[:80])
+                return docs, "keyword"
+        except Exception:
+            logger.exception("[%s] keyword retrieval failed query=%s", log_context, query_text)
+
+    if mode == "hybrid" and hasattr(pipeline, "hybrid_search"):
+        try:
+            docs = pipeline.hybrid_search(
+                query_text,
+                k=safe_top_k,
+                fetch_k=safe_fetch_k,
+                use_rerank=use_rerank,
+            )
+            if docs:
+                actual_mode = "hybrid_rerank" if use_rerank else "hybrid"
+                docs = [
+                    Document(
+                        page_content=doc.page_content,
+                        metadata={
+                            **dict(doc.metadata or {}),
+                            "retrieval_mode": actual_mode,
+                            "retrieval_query": query_text,
+                            "search_channel": str(
+                                (doc.metadata or {}).get("search_channel") or actual_mode
+                            ),
+                        },
+                    )
+                    for doc in docs
+                ]
+                logger.info("[%s] retrieval_mode=%s query=%s", log_context, actual_mode, query_text[:80])
+                return docs, actual_mode
+        except Exception:
+            logger.exception("[%s] hybrid retrieval failed query=%s", log_context, query_text)
+
+    if use_rerank:
+        docs = [
+            Document(
+                page_content=doc.page_content,
+                metadata={
+                    **dict(doc.metadata or {}),
+                    "retrieval_mode": "semantic_rerank",
+                    "retrieval_query": query_text,
+                    "search_channel": str(
+                        (doc.metadata or {}).get("search_channel") or "semantic_rerank"
+                    ),
+                },
+            )
+            for doc in pipeline.search_with_rerank(query_text, k=safe_top_k, fetch_k=safe_fetch_k)
+        ]
+        logger.info("[%s] retrieval_mode=semantic_rerank query=%s", log_context, query_text[:80])
+        return docs, "semantic_rerank"
+
+    docs = [
+        Document(
+            page_content=doc.page_content,
+            metadata={
+                **dict(doc.metadata or {}),
+                "retrieval_mode": "semantic",
+                "retrieval_query": query_text,
+                "search_channel": str(
+                    (doc.metadata or {}).get("search_channel") or "semantic"
+                ),
+            },
+        )
+        for doc in pipeline.search(query_text, k=safe_top_k)
+    ]
+    logger.info("[%s] retrieval_mode=semantic query=%s", log_context, query_text[:80])
+    return docs, "semantic"
+
+
+def _build_retrieval_meta_from_sources(
+    sources: Optional[list[dict[str, Any]]],
+) -> Optional[dict[str, Any]]:
+    items = [source for source in (sources or []) if isinstance(source, dict)]
+    if not items:
+        return None
+
+    retrieval_modes: list[str] = []
+    channels: list[str] = []
+    matched_terms: list[str] = []
+    scores: list[float] = []
+    source_titles: list[str] = []
+    for source in items:
+        mode = str(source.get("retrieval_mode") or "").strip()
+        if mode:
+            retrieval_modes.append(mode)
+        channel = str(source.get("search_channel") or "").strip()
+        if channel:
+            channels.append(channel)
+        title = str(source.get("title") or "").strip()
+        if title:
+            source_titles.append(title)
+        raw_terms = source.get("matched_terms")
+        if isinstance(raw_terms, list):
+            matched_terms.extend(
+                str(term).strip()
+                for term in raw_terms
+                if str(term).strip()
+            )
+        raw_score = source.get("score")
+        if isinstance(raw_score, (int, float)):
+            scores.append(float(raw_score))
+
+    unique_modes = list(dict.fromkeys(retrieval_modes))
+    unique_channels = list(dict.fromkeys(channels))
+    unique_titles = list(dict.fromkeys(source_titles))
+    unique_terms = list(dict.fromkeys(matched_terms))
+
+    if not unique_modes and not unique_channels and not scores and not unique_terms:
+        return None
+
+    return {
+        "primary_mode": unique_modes[0] if unique_modes else "",
+        "modes": unique_modes,
+        "channels": unique_channels,
+        "source_count": len(items),
+        "source_titles": unique_titles[:3],
+        "matched_terms": unique_terms[:6],
+        "top_score": round(max(scores), 4) if scores else None,
+    }
 
 
 def register_builtin_tool(spec: BuiltinToolSpec) -> None:
@@ -619,6 +845,70 @@ def _strip_think_tags(text: str) -> str:
     return cleaned.strip()
 
 
+class _ThinkTagStreamFilter:
+    OPEN_TAG = "<think>"
+    CLOSE_TAG = "</think>"
+
+    def __init__(self) -> None:
+        self._pending = ""
+        self._inside_think = False
+
+    def feed(self, chunk: str) -> str:
+        data = f"{self._pending}{chunk or ''}"
+        self._pending = ""
+        if not data:
+            return ""
+
+        out: list[str] = []
+        index = 0
+
+        while index < len(data):
+            lowered = data.lower()
+            if self._inside_think:
+                end = lowered.find(self.CLOSE_TAG, index)
+                if end == -1:
+                    keep = min(len(self.CLOSE_TAG) - 1, len(data) - index)
+                    self._pending = data[-keep:] if keep > 0 else ""
+                    return "".join(out)
+                index = end + len(self.CLOSE_TAG)
+                self._inside_think = False
+                continue
+
+            start = lowered.find(self.OPEN_TAG, index)
+            if start == -1:
+                tail = data[index:]
+                keep = 0
+                max_prefix = min(len(self.OPEN_TAG) - 1, len(tail))
+                for length in range(max_prefix, 0, -1):
+                    if self.OPEN_TAG.startswith(tail[-length:].lower()):
+                        keep = length
+                        break
+                visible_end = len(data) - keep
+                if visible_end > index:
+                    out.append(data[index:visible_end])
+                self._pending = data[visible_end:]
+                return "".join(out)
+
+            if start > index:
+                out.append(data[index:start])
+            index = start + len(self.OPEN_TAG)
+            self._inside_think = True
+
+        return "".join(out)
+
+    def flush(self) -> str:
+        if self._inside_think:
+            self._pending = ""
+            return ""
+        pending = self._pending
+        self._pending = ""
+        if not pending:
+            return ""
+        if self.OPEN_TAG.startswith(pending.lower()):
+            return ""
+        return pending
+
+
 def _trim_session_memory_content(content: str, max_chars: int = 280) -> str:
     cleaned = re.sub(r"\s+", " ", (content or "").strip())
     if len(cleaned) <= max_chars:
@@ -1036,6 +1326,15 @@ def _build_dashboard_sources(docs: list[Document]) -> tuple[list[dict[str, Any]]
                 "title": title,
                 "snippet": snippet,
                 "index": index,
+                "retrieval_mode": str(doc.metadata.get("retrieval_mode") or "").strip(),
+                "search_channel": str(doc.metadata.get("search_channel") or "").strip(),
+                "score": doc.metadata.get("search_score"),
+                "matched_terms": doc.metadata.get("matched_terms") or [],
+                "retrieval_query": str(doc.metadata.get("retrieval_query") or "").strip(),
+                "feedback_boost": float(doc.metadata.get("feedback_boost", 0.0) or 0.0),
+                "feedback_net": int(doc.metadata.get("feedback_net", 0) or 0),
+                "feedback_positive_count": int(doc.metadata.get("feedback_positive_count", 0) or 0),
+                "feedback_negative_count": int(doc.metadata.get("feedback_negative_count", 0) or 0),
             }
         )
     return evidence, sources
@@ -1806,7 +2105,16 @@ async def _generate_dashboard_from_knowledge(
         if not query:
             continue
         try:
-            gathered_docs.extend(pipeline.search_with_rerank(query, k=4, fetch_k=12))
+            docs, _ = _retrieve_kb_documents(
+                pipeline,
+                query,
+                top_k=4,
+                fetch_k=12,
+                preferred_mode="auto",
+                use_rerank=True,
+                log_context="dashboard",
+            )
+            gathered_docs.extend(docs)
         except Exception:
             logger.exception("Dashboard retrieval failed for query=%s", query)
 
@@ -1934,6 +2242,67 @@ async def _direct_multimodal_answer(
     return _stringify_user_input(content)
 
 
+def _build_plain_text_chat_messages(
+    user_input: Any,
+    chat_history: list[BaseMessage],
+    *,
+    system_prompt: Optional[str] = None,
+) -> list[BaseMessage]:
+    messages: list[BaseMessage] = [
+        SystemMessage(
+            content=system_prompt
+            or "你是一个中文写作与问答助手。当前请求不需要调用任何工具，请直接基于上下文回答用户问题。始终用中文回答。"
+        )
+    ]
+    messages.extend(_preserve_system_messages_with_recent_history(chat_history, max_recent=8))
+    messages.append(HumanMessage(content=user_input))
+    return messages
+
+
+def _stringify_stream_chunk_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        if content.get("type") == "text":
+            return _stringify_stream_chunk_content(content.get("text", ""))
+        if "content" in content:
+            return _stringify_stream_chunk_content(content.get("content", ""))
+        return str(content)
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            piece = _stringify_stream_chunk_content(item)
+            if piece:
+                parts.append(piece)
+        return "".join(parts)
+    if content is None:
+        return ""
+    return str(content)
+
+
+async def _astream_llm_with_timeout(
+    llm,
+    payload: Any,
+    timeout_seconds: Optional[float] = None,
+):
+    timeout = timeout_seconds or DEFAULT_LLM_TIMEOUT_SECONDS
+    if not hasattr(llm, "astream"):
+        response = await _ainvoke_llm_with_timeout(llm, payload, timeout_seconds=timeout)
+        text = _stringify_stream_chunk_content(getattr(response, "content", response))
+        if text:
+            yield text
+        return
+
+    try:
+        async with asyncio.timeout(timeout):
+            async for chunk in llm.astream(payload):
+                text = _stringify_stream_chunk_content(getattr(chunk, "content", chunk))
+                if text:
+                    yield text
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(f"LLM request timed out after {int(timeout)}s") from exc
+
+
 def _should_bypass_tools_for_plain_text_chat(
     user_input: Any,
     *,
@@ -1985,14 +2354,11 @@ async def _direct_plain_text_answer(
     *,
     system_prompt: Optional[str] = None,
 ) -> str:
-    messages: list[BaseMessage] = [
-        SystemMessage(
-            content=system_prompt
-            or "你是一个中文写作与问答助手。当前请求不需要调用任何工具，请直接基于上下文回答用户问题。始终用中文回答。"
-        )
-    ]
-    messages.extend(_preserve_system_messages_with_recent_history(chat_history, max_recent=8))
-    messages.append(HumanMessage(content=user_input))
+    messages = _build_plain_text_chat_messages(
+        user_input,
+        chat_history,
+        system_prompt=system_prompt,
+    )
     response = await _ainvoke_llm_with_timeout(
         llm,
         messages,
@@ -2002,6 +2368,26 @@ async def _direct_plain_text_answer(
     if isinstance(content, str):
         return content.strip()
     return _stringify_user_input(content)
+
+
+async def _astream_plain_text_answer(
+    llm,
+    user_input: Any,
+    chat_history: list[BaseMessage],
+    *,
+    system_prompt: Optional[str] = None,
+):
+    messages = _build_plain_text_chat_messages(
+        user_input,
+        chat_history,
+        system_prompt=system_prompt,
+    )
+    async for chunk in _astream_llm_with_timeout(
+        llm,
+        messages,
+        timeout_seconds=_plain_text_chat_timeout_seconds(user_input, chat_history),
+    ):
+        yield chunk
 
 
 
@@ -2035,7 +2421,7 @@ def get_llm(
         base_url = base_url or default_base_url_for_connection_type(connection_type)
         model = model_name or default_model_for_connection_type(connection_type)
         # 默认给云端接口更宽裕的网络超时，避免上层 40s/60s 预算未到就先被底层 HTTP 截断。
-        request_timeout = float(os.getenv("CLOUD_LLM_TIMEOUT_SECONDS", "70"))
+        request_timeout = float(os.getenv("CLOUD_LLM_TIMEOUT_SECONDS", "120"))
         resolved_api_key = (
             api_key
             or os.getenv("OPENAI_COMPAT_API_KEY")
@@ -2097,7 +2483,7 @@ def create_tools(
     @tool
     async def query_knowledge(question: str, top_k: int = DEFAULT_KB_TOP_K) -> str:
         """
-        从企业内部知识库中检索相关文档片段 (使用 Rerank 二段重排)
+        从企业内部知识库中检索相关文档片段（自动选择语义/混合检索）
 
         Args:
             question: 用户问题
@@ -2115,10 +2501,14 @@ def create_tools(
             if pipeline.vectorstore is None:
                 return "⚠️ 知识库未初始化,请先上传文档"
 
-            docs = pipeline.search_with_rerank(
+            docs, retrieval_mode = _retrieve_kb_documents(
+                pipeline,
                 question,
-                k=top_k,
+                top_k=top_k,
                 fetch_k=DEFAULT_KB_FETCH_K,
+                preferred_mode="auto",
+                use_rerank=True,
+                log_context="query_knowledge",
             )
             docs = _dedupe_documents(docs, limit=top_k)
 
@@ -2147,6 +2537,15 @@ def create_tools(
                     "title": source,
                     "snippet": content[:200],
                     "index": i,
+                    "retrieval_mode": str(doc.metadata.get("retrieval_mode") or retrieval_mode),
+                    "search_channel": str(doc.metadata.get("search_channel") or "").strip(),
+                    "score": doc.metadata.get("search_score"),
+                    "matched_terms": doc.metadata.get("matched_terms") or [],
+                    "retrieval_query": str(doc.metadata.get("retrieval_query") or question).strip(),
+                    "feedback_boost": float(doc.metadata.get("feedback_boost", 0.0) or 0.0),
+                    "feedback_net": int(doc.metadata.get("feedback_net", 0) or 0),
+                    "feedback_positive_count": int(doc.metadata.get("feedback_positive_count", 0) or 0),
+                    "feedback_negative_count": int(doc.metadata.get("feedback_negative_count", 0) or 0),
                 })
 
             # Embed sources metadata as a JSON comment at the end for execute_tool to parse
@@ -2216,70 +2615,7 @@ def create_tools(
         if not web_search_enabled:
             return "联网搜索已关闭，如需使用请点击输入框上方的「🌐 联网搜索」开关。"
 
-        api_key = os.getenv("TAVILY_API_KEY")
-
-        if not api_key:
-            return "❌ 未配置 TAVILY_API_KEY,无法使用联网搜索功能"
-
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    "https://api.tavily.com/search",
-                    json={
-                        "query": search_query,
-                        "max_results": max_results,
-                        "api_key": api_key,
-                        "search_depth": "basic",
-                        "include_answer": True,
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
-
-                results = data.get("results", [])
-                answer = data.get("answer", "")
-
-                if not results:
-                    return f"未找到相关搜索结果: {search_query}"
-
-                output = []
-
-                if answer:
-                    output.append(f"【AI 总结】\n{answer}\n")
-
-                output.append(f"【搜索结果 - {search_query}】\n")
-
-                for i, result in enumerate(results, 1):
-                    title = result.get("title", "无标题")
-                    url = result.get("url", "")
-                    content = result.get("content", "")
-
-                    output.append(f"{i}. {title}\n链接: {url}\n摘要: {content}")
-
-            # Embed sources metadata
-            import json as _json
-            sources_meta = [
-                {
-                    "type": "web",
-                    "title": r.get("title", "无标题"),
-                    "url": r.get("url", ""),
-                    "snippet": r.get("content", "")[:200],
-                    "index": idx,
-                }
-                for idx, r in enumerate(results, 1)
-            ]
-            sources_marker = f"\n\n__SOURCES__:{_json.dumps(sources_meta, ensure_ascii=False)}"
-            return "\n\n---\n\n".join(output) + sources_marker
-
-        except httpx.HTTPStatusError as e:
-            logger.error("tool=web_search HTTP错误 status=%d", e.response.status_code)
-            return f"❌ 搜索 API 请求失败 (HTTP {e.response.status_code}): {e.response.text}"
-        except httpx.TimeoutException:
-            logger.warning("tool=web_search 请求超时")
-            return "❌ 搜索请求超时,请稍后重试"
-        except Exception as e:
-            logger.exception("tool=web_search 搜索失败")
-            return f"❌ 搜索失败: {str(e)}"
+        return await search_web_text(search_query, max_results=max_results)
 
     @tool
     async def quick_answer(user_question: str) -> str:
@@ -2295,35 +2631,7 @@ def create_tools(
         if not web_search_enabled:
             return "联网搜索已关闭，如需使用请点击输入框上方的「🌐 联网搜索」开关。"
 
-        api_key = os.getenv("TAVILY_API_KEY")
-
-        if not api_key:
-            return "❌ 未配置 TAVILY_API_KEY"
-
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(
-                    "https://api.tavily.com/search",
-                    json={
-                        "query": user_question,
-                        "max_results": 3,
-                        "api_key": api_key,
-                        "search_depth": "basic",
-                        "include_answer": True,
-                    },
-                )
-                response.raise_for_status()
-                data = response.json()
-
-                answer = data.get("answer", "")
-                if answer:
-                    return f"【网络搜索答案】\n{answer}"
-                else:
-                    return "未能生成答案,请使用 web_search 查看详细结果"
-
-        except Exception as e:
-            logger.exception("tool=quick_answer 失败")
-            return f"❌ 快速问答失败: {str(e)}"
+        return await quick_answer_text(user_question)
 
     @tool
     async def fetch_webpage(url: str) -> str:
@@ -2336,49 +2644,9 @@ def create_tools(
         Returns:
             网页的纯文本内容（截断至 8000 字符）
         """
-        try:
-            from bs4 import BeautifulSoup
-        except ImportError:
-            return "❌ 缺少 beautifulsoup4 依赖，请运行: pip install beautifulsoup4"
-
         if not web_search_enabled:
             return "联网搜索已关闭，如需使用请点击输入框上方的「🌐 联网搜索」开关。"
-
-        try:
-            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-                
-                html = response.text
-                soup = BeautifulSoup(html, "html.parser")
-                
-                # Remove unwanted tags
-                for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
-                    tag.decompose()
-                
-                # Extract text
-                text = soup.get_text(separator="\n", strip=True)
-                
-                # Clean up multiple newlines
-                lines = [line.strip() for line in text.split("\n") if line.strip()]
-                text = "\n".join(lines)
-                
-                # Truncate to 8000 characters
-                max_chars = 8000
-                if len(text) > max_chars:
-                    text = text[:max_chars] + "\n\n...[内容已截断]"
-                
-                return f"【网页内容 - {url}】\n\n{text}"
-
-        except httpx.HTTPStatusError as e:
-            logger.error("tool=fetch_webpage HTTP错误 status=%d url=%s", e.response.status_code, url)
-            return f"❌ 无法访问网页 (HTTP {e.response.status_code}): {url}"
-        except httpx.TimeoutException:
-            logger.warning("tool=fetch_webpage 请求超时 url=%s", url)
-            return f"❌ 网页请求超时: {url}"
-        except Exception as e:
-            logger.exception("tool=fetch_webpage 抓取失败 url=%s", url)
-            return f"❌ 抓取网页失败: {str(e)}"
+        return await fetch_webpage_text(url)
 
     declared_tools = {
         "query_knowledge": query_knowledge,
@@ -2403,6 +2671,7 @@ async def build_runtime_tools(
     *,
     web_search_enabled: bool = True,
     knowledge_base_enabled: bool = True,
+    enabled_mcp_servers: list[str] | None = None,
     mcp_tool_loader: Callable[..., Any] = load_mcp_tool_overrides,
 ):
     builtin_tools = create_tools(
@@ -2411,28 +2680,35 @@ async def build_runtime_tools(
         knowledge_base_enabled=knowledge_base_enabled,
     )
     tools_by_name = {tool.name: tool for tool in builtin_tools}
-    expected_tool_names = set(tools_by_name)
 
     mcp_tools = await mcp_tool_loader(
         knowledge_base_enabled=knowledge_base_enabled,
         web_search_enabled=web_search_enabled,
-        expected_tool_names=expected_tool_names,
+        expected_tool_names=None,
+        enabled_server_names=enabled_mcp_servers,
     )
 
     overridden_names: list[str] = []
+    extra_mcp_tools: list[Any] = []
     for name, tool in mcp_tools.items():
-        if name not in tools_by_name:
-            continue
-        tools_by_name[name] = tool
-        overridden_names.append(name)
+        if name in tools_by_name:
+            tools_by_name[name] = tool
+            overridden_names.append(name)
+        else:
+            extra_mcp_tools.append(tool)
 
     if overridden_names:
         logger.info(
             "Using MCP-backed tool overrides: %s",
             ", ".join(sorted(overridden_names)),
         )
+    if extra_mcp_tools:
+        logger.info(
+            "Loaded extra MCP tools: %s",
+            ", ".join(sorted(str(getattr(tool, "name", "") or "") for tool in extra_mcp_tools)),
+        )
 
-    return [
+    runtime_tools = [
         tools_by_name[spec.name]
         for spec in list_enabled_builtin_tool_specs(
             knowledge_base_enabled=knowledge_base_enabled,
@@ -2440,6 +2716,13 @@ async def build_runtime_tools(
         )
         if spec.name in tools_by_name
     ]
+    runtime_tools.extend(
+        sorted(
+            extra_mcp_tools,
+            key=lambda tool: str(getattr(tool, "name", "") or ""),
+        )
+    )
+    return runtime_tools
 
 
 async def _rewrite_search_query(llm, user_input: str, chat_history: list[BaseMessage]) -> str:
@@ -2495,6 +2778,7 @@ class AgentState(TypedDict):
     tool_choice: str
     tool_result: str
     sources: list  # [{"type": "doc"|"web", "title": str, "url"?: str, "snippet": str}]
+    retrieval_meta: dict[str, Any]
     output: str
 
 
@@ -2549,6 +2833,7 @@ async def build_langgraph_agent(
         tool_name: str = "",
         tool_params: Optional[dict[str, Any]] = None,
         tool_result_summary: str = "",
+        retrieval_meta: Optional[dict[str, Any]] = None,
         error: str = "",
     ) -> None:
         sink = _graph_configurable_value(config, "workflow_event_sink", None)
@@ -2569,6 +2854,8 @@ async def build_langgraph_agent(
             payload["tool_params"] = tool_params
         if tool_result_summary:
             payload["tool_result_summary"] = tool_result_summary
+        if retrieval_meta:
+            payload["retrieval_meta"] = retrieval_meta
         if error:
             payload["error"] = error
 
@@ -2576,14 +2863,27 @@ async def build_langgraph_agent(
             sink(payload)
         except Exception:
             logger.exception("[LangGraph] workflow event sink failed node=%s", node_name)
+
+    def _emit_stream_item(config: Any, item: Any) -> None:
+        sink = _graph_configurable_value(config, "stream_item_sink", None)
+        if not callable(sink):
+            return
+        try:
+            sink(item)
+        except Exception:
+            logger.exception("[LangGraph] stream item sink failed")
     
-    async def classify_intent(state: AgentState, config: Any = None) -> AgentState:
+    async def classify_intent(
+        state: AgentState,
+        config: RunnableConfig | None = None,
+    ) -> AgentState:
         """节点1: 分类用户意图，选择工具"""
         started_at = time.monotonic()
         _emit_workflow_state(config, "classify_intent", "running")
         user_input = state["input"]
         chat_history = state.get("chat_history", [])
         state.setdefault("sources", [])
+        state.setdefault("retrieval_meta", {})
 
         try:
             heuristic_choice = _heuristic_langgraph_tool_choice(
@@ -2658,7 +2958,10 @@ async def build_langgraph_agent(
             )
             return state
     
-    async def execute_tool(state: AgentState, config: Any = None) -> AgentState:
+    async def execute_tool(
+        state: AgentState,
+        config: RunnableConfig | None = None,
+    ) -> AgentState:
         """节点2: 执行选定的工具"""
         import json as _json
         started_at = time.monotonic()
@@ -2671,6 +2974,7 @@ async def build_langgraph_agent(
         if tool_choice not in tools_dict:
             state["tool_result"] = ""
             state["sources"] = []
+            state["retrieval_meta"] = {}
             _emit_workflow_state(
                 config,
                 "execute_tool",
@@ -2729,6 +3033,7 @@ async def build_langgraph_agent(
 
             state["tool_result"] = result
             state["sources"] = sources
+            state["retrieval_meta"] = _build_retrieval_meta_from_sources(sources) or {}
             logger.info("[LangGraph] tool_name=%s latency_ms=%d result_len=%d sources=%d",
                         tool_func.name, latency_ms, len(result), len(sources))
             _emit_workflow_state(
@@ -2739,12 +3044,14 @@ async def build_langgraph_agent(
                 tool_name=tool_func.name,
                 tool_params=params,
                 tool_result_summary=_compact_tool_result_for_prompt(result, max_chars=220),
+                retrieval_meta=state.get("retrieval_meta") or None,
             )
             
         except Exception as e:
             logger.exception("[LangGraph] tool_name=%s 执行失败", tool_func.name)
             state["tool_result"] = f"❌ 工具执行失败: {str(e)}"
             state["sources"] = []
+            state["retrieval_meta"] = {}
             _emit_workflow_state(
                 config,
                 "execute_tool",
@@ -2756,7 +3063,10 @@ async def build_langgraph_agent(
         
         return state
     
-    async def generate_answer(state: AgentState, config: Any = None) -> AgentState:
+    async def generate_answer(
+        state: AgentState,
+        config: RunnableConfig | None = None,
+    ) -> AgentState:
         """节点3: 生成最终回答，并在引用文档时注入脚注标记"""
         started_at = time.monotonic()
         _emit_workflow_state(config, "generate_answer", "running")
@@ -2776,6 +3086,8 @@ async def build_langgraph_agent(
                     history_text += f"助手: {msg.content}\n"
         
         role_desc = system_prompt or "你是一个企业知识库助手"
+        streaming_enabled = callable(_graph_configurable_value(config, "stream_item_sink", None))
+        streamed_output_parts: list[str] = []
 
         # Build citation hint so the model knows which index maps to which source
         citation_hint = ""
@@ -2826,17 +3138,41 @@ async def build_langgraph_agent(
 请用自然、友好的语言回答："""
         
         try:
-            response = await _ainvoke_llm_with_timeout(llm, answer_prompt, timeout_seconds=60)
-            raw_output = (
-                response.content.strip()
-                if isinstance(response.content, str)
-                else _stringify_user_input(response.content)
-            )
-            state["output"] = _strip_think_tags(raw_output)
+            if streaming_enabled:
+                stream_filter = _ThinkTagStreamFilter()
+                raw_output_parts: list[str] = []
+                async for chunk in _astream_llm_with_timeout(
+                    llm,
+                    answer_prompt,
+                    timeout_seconds=60,
+                ):
+                    raw_output_parts.append(chunk)
+                    visible = stream_filter.feed(chunk)
+                    if visible:
+                        streamed_output_parts.append(visible)
+                        _emit_stream_item(config, visible)
+
+                tail = stream_filter.flush()
+                if tail:
+                    streamed_output_parts.append(tail)
+                    _emit_stream_item(config, tail)
+
+                raw_output = "".join(raw_output_parts).strip()
+                state["output"] = "".join(streamed_output_parts).strip()
+            else:
+                response = await _ainvoke_llm_with_timeout(llm, answer_prompt, timeout_seconds=60)
+                raw_output = (
+                    response.content.strip()
+                    if isinstance(response.content, str)
+                    else _stringify_user_input(response.content)
+                )
+                state["output"] = _strip_think_tags(raw_output)
             if tool_result and (
                 not state["output"] or _looks_like_reasoning_only_output(raw_output)
             ):
                 state["output"] = _build_kb_timeout_fallback(user_input, tool_result, sources)
+                if streaming_enabled and not streamed_output_parts:
+                    _emit_stream_item(config, state["output"])
                 logger.warning(
                     "[LangGraph] 检测到思维链泄漏，回退到知识库兜底结果 output_len=%d",
                     len(state["output"]),
@@ -2870,6 +3206,19 @@ async def build_langgraph_agent(
                     len(tool_result),
                     len(prompt_tool_result),
                 )
+
+            if streaming_enabled and streamed_output_parts:
+                note = "\n\n[回答在流式生成过程中中断，以下内容可能不完整，请重试。]"
+                state["output"] = f"{''.join(streamed_output_parts).strip()}{note}"
+                _emit_stream_item(config, note)
+                _emit_workflow_state(
+                    config,
+                    "generate_answer",
+                    "failed",
+                    duration_ms=int((time.monotonic() - started_at) * 1000),
+                    error=str(e),
+                )
+                return state
 
             # 带知识库时再用更短的片段重试一次，兼容部分云端中转对长 prompt 不稳定的问题。
             if tool_result:
@@ -3000,6 +3349,7 @@ async def build_agent(
     knowledge_base_enabled: bool = True,
     vector_store_path: Optional[str] = None,
     dashboard_template: Optional[dict[str, Any]] = None,
+    enabled_mcp_servers: list[str] | None = None,
 ):
     """
     构建带工具的 Agent
@@ -3164,6 +3514,10 @@ async def build_agent(
             if tool_result:
                 node["toolResult"] = tool_result
 
+            retrieval_meta = event.get("retrieval_meta")
+            if isinstance(retrieval_meta, dict) and retrieval_meta:
+                node["retrievalMeta"] = retrieval_meta
+
             error = str(event.get("error") or "").strip()
             if error:
                 node["error"] = error
@@ -3288,6 +3642,7 @@ async def build_agent(
                 panel_id: str = "",
                 exclude_ai_answer_group_id: str = "",
                 workflow_event_sink: Optional[Callable[[dict[str, Any]], None]] = None,
+                stream_item_sink: Optional[Callable[[Any], None]] = None,
             ) -> dict[str, Any]:
                 chat_history = _load_chat_history(
                     session_id,
@@ -3325,6 +3680,8 @@ async def build_agent(
                 graph_config: dict[str, Any] = {"configurable": {}}
                 if workflow_event_sink:
                     graph_config["configurable"]["workflow_event_sink"] = workflow_event_sink
+                if stream_item_sink:
+                    graph_config["configurable"]["stream_item_sink"] = stream_item_sink
                 try:
                     result_state = await self.app.ainvoke(state, config=graph_config)
                 except TypeError as exc:
@@ -3415,12 +3772,17 @@ async def build_agent(
                 raw_user_message = str(_configurable_value(config, "raw_user_message", "") or "")
                 raw_images = _configurable_list(config, "raw_images")
                 raw_files = _configurable_list(config, "raw_files")
-                workflow_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+                event_queue: asyncio.Queue[Any] = asyncio.Queue()
                 workflow_events: list[dict[str, Any]] = []
                 event_loop = asyncio.get_running_loop()
+                streamed_sources = False
+                streamed_output = False
 
                 def workflow_event_sink(payload: dict[str, Any]) -> None:
-                    event_loop.call_soon_threadsafe(workflow_queue.put_nowait, payload)
+                    event_loop.call_soon_threadsafe(event_queue.put_nowait, payload)
+
+                def stream_item_sink(item: Any) -> None:
+                    event_loop.call_soon_threadsafe(event_queue.put_nowait, item)
 
                 run_task = asyncio.create_task(
                     self._run_once(
@@ -3429,6 +3791,7 @@ async def build_agent(
                         panel_id=panel_id,
                         exclude_ai_answer_group_id=exclude_ai_answer_group_id,
                         workflow_event_sink=workflow_event_sink,
+                        stream_item_sink=stream_item_sink,
                     )
                 )
 
@@ -3437,19 +3800,29 @@ async def build_agent(
                         if run_task.done():
                             break
                         try:
-                            workflow_event = await asyncio.wait_for(
-                                workflow_queue.get(),
+                            queued_item = await asyncio.wait_for(
+                                event_queue.get(),
                                 timeout=0.05,
                             )
                         except asyncio.TimeoutError:
                             continue
-                        workflow_events.append(workflow_event)
-                        yield workflow_event
+                        if isinstance(queued_item, dict) and queued_item.get("type") == "workflow_state":
+                            workflow_events.append(queued_item)
+                        elif isinstance(queued_item, dict) and queued_item.get("type") == "sources":
+                            streamed_sources = True
+                        elif isinstance(queued_item, str) and queued_item:
+                            streamed_output = True
+                        yield queued_item
 
-                    while not workflow_queue.empty():
-                        workflow_event = workflow_queue.get_nowait()
-                        workflow_events.append(workflow_event)
-                        yield workflow_event
+                    while not event_queue.empty():
+                        queued_item = event_queue.get_nowait()
+                        if isinstance(queued_item, dict) and queued_item.get("type") == "workflow_state":
+                            workflow_events.append(queued_item)
+                        elif isinstance(queued_item, dict) and queued_item.get("type") == "sources":
+                            streamed_sources = True
+                        elif isinstance(queued_item, str) and queued_item:
+                            streamed_output = True
+                        yield queued_item
 
                     result = await run_task
                 except Exception:
@@ -3469,13 +3842,14 @@ async def build_agent(
                 result["workflow_nodes"] = workflow_nodes
 
                 # Yield sources metadata first (as a special dict)
-                if sources:
+                if sources and not streamed_sources:
                     yield {"type": "sources", "sources": sources}
 
-                chunk_size = 20
-                for i in range(0, len(output), chunk_size):
-                    yield output[i : i + chunk_size]
-                    await asyncio.sleep(0.01)
+                if not streamed_output:
+                    chunk_size = 20
+                    for i in range(0, len(output), chunk_size):
+                        yield output[i : i + chunk_size]
+                        await asyncio.sleep(0.01)
 
                 if persist_user_history or persist_ai_history:
                     _persist_panel_history(
@@ -3591,9 +3965,61 @@ async def build_agent(
                 replace_ai_history = bool(
                     _configurable_value(config, "replace_ai_history", False)
                 )
+                task_id = str(_configurable_value(config, "task_id", "") or "")
+                task_type = str(_configurable_value(config, "task_type", "") or "")
                 raw_user_message = str(_configurable_value(config, "raw_user_message", "") or "")
                 raw_images = _configurable_list(config, "raw_images")
                 raw_files = _configurable_list(config, "raw_files")
+                chat_history = _load_chat_history(
+                    session_id,
+                    panel_id,
+                    exclude_ai_answer_group_id=exclude_ai_answer_group_id,
+                )
+                if _should_bypass_tools_for_plain_text_chat(
+                    user_input,
+                    knowledge_base_enabled=knowledge_base_enabled,
+                    web_search_enabled=web_search_enabled,
+                ):
+                    sources = _merge_sources_with_attachments(
+                        [],
+                        raw_files=raw_files,
+                        raw_images=raw_images,
+                        answer_group_id=answer_group_id,
+                    )
+                    if sources:
+                        yield {"type": "sources", "sources": sources}
+
+                    output_parts: list[str] = []
+                    async for chunk in _astream_plain_text_answer(
+                        llm,
+                        user_input,
+                        chat_history,
+                        system_prompt=system_prompt,
+                    ):
+                        output_parts.append(chunk)
+                        yield chunk
+
+                    if persist_user_history or persist_ai_history:
+                        _persist_panel_history(
+                            session_id,
+                            user_input,
+                            "".join(output_parts),
+                            panel_id=panel_id,
+                            model_id=model_id,
+                            answer_group_id=answer_group_id,
+                            persist_user_history=persist_user_history,
+                            persist_ai_history=persist_ai_history,
+                            replace_ai_history=replace_ai_history,
+                            raw_user_message=raw_user_message,
+                            raw_images=raw_images,
+                            raw_files=raw_files,
+                            sources=sources,
+                            workflow_nodes=[],
+                            task_id=task_id,
+                            task_type=task_type,
+                        )
+                    return
+
                 result = await self._run_once(
                     session_id,
                     user_input,
@@ -3645,6 +4071,7 @@ async def build_agent(
             pipeline,
             web_search_enabled=web_search_enabled,
             knowledge_base_enabled=knowledge_base_enabled,
+            enabled_mcp_servers=enabled_mcp_servers,
         )
         
         logger.info("加载了 %d 个工具: %s", len(all_tools), [t.name for t in all_tools])
@@ -3748,9 +4175,66 @@ async def build_agent(
                     replace_ai_history = bool(
                         _configurable_value(config, "replace_ai_history", False)
                     )
+                    task_id = str(_configurable_value(config, "task_id", "") or "")
+                    task_type = str(_configurable_value(config, "task_type", "") or "")
                     raw_user_message = str(_configurable_value(config, "raw_user_message", "") or "")
                     raw_images = _configurable_list(config, "raw_images")
                     raw_files = _configurable_list(config, "raw_files")
+                    chat_history = _load_chat_history(
+                        session_id,
+                        panel_id,
+                        exclude_ai_answer_group_id=exclude_ai_answer_group_id,
+                    )
+                    if not _has_image_input(user_input):
+                        dashboard_result = await _generate_dashboard_from_knowledge(
+                            llm,
+                            pipeline,
+                            user_input,
+                            system_prompt=system_prompt,
+                            dashboard_template=dashboard_template,
+                            knowledge_base_enabled=knowledge_base_enabled,
+                        )
+                        if not dashboard_result:
+                            sources = _merge_sources_with_attachments(
+                                [],
+                                raw_files=raw_files,
+                                raw_images=raw_images,
+                                answer_group_id=answer_group_id,
+                            )
+                            if sources:
+                                yield {"type": "sources", "sources": sources}
+
+                            output_parts: list[str] = []
+                            async for chunk in _astream_plain_text_answer(
+                                llm,
+                                user_input,
+                                chat_history,
+                                system_prompt=system_prompt,
+                            ):
+                                output_parts.append(chunk)
+                                yield chunk
+
+                            if persist_user_history or persist_ai_history:
+                                _persist_panel_history(
+                                    session_id,
+                                    user_input,
+                                    "".join(output_parts),
+                                    panel_id=panel_id,
+                                    model_id=model_id,
+                                    answer_group_id=answer_group_id,
+                                    persist_user_history=persist_user_history,
+                                    persist_ai_history=persist_ai_history,
+                                    replace_ai_history=replace_ai_history,
+                                    raw_user_message=raw_user_message,
+                                    raw_images=raw_images,
+                                    raw_files=raw_files,
+                                    sources=sources,
+                                    workflow_nodes=[],
+                                    task_id=task_id,
+                                    task_type=task_type,
+                                )
+                            return
+
                     result = await self._run_once(
                         session_id,
                         user_input,
@@ -3947,9 +4431,61 @@ async def build_agent(
                 replace_ai_history = bool(
                     _configurable_value(config, "replace_ai_history", False)
                 )
+                task_id = str(_configurable_value(config, "task_id", "") or "")
+                task_type = str(_configurable_value(config, "task_type", "") or "")
                 raw_user_message = str(_configurable_value(config, "raw_user_message", "") or "")
                 raw_images = _configurable_list(config, "raw_images")
                 raw_files = _configurable_list(config, "raw_files")
+                chat_history = _load_chat_history(
+                    session_id,
+                    panel_id,
+                    exclude_ai_answer_group_id=exclude_ai_answer_group_id,
+                )
+                if _should_bypass_tools_for_plain_text_chat(
+                    user_input,
+                    knowledge_base_enabled=knowledge_base_enabled,
+                    web_search_enabled=web_search_enabled,
+                ):
+                    sources = _merge_sources_with_attachments(
+                        [],
+                        raw_files=raw_files,
+                        raw_images=raw_images,
+                        answer_group_id=answer_group_id,
+                    )
+                    if sources:
+                        yield {"type": "sources", "sources": sources}
+
+                    output_parts: list[str] = []
+                    async for chunk in _astream_plain_text_answer(
+                        llm,
+                        user_input,
+                        chat_history,
+                        system_prompt=system_prompt,
+                    ):
+                        output_parts.append(chunk)
+                        yield chunk
+
+                    if persist_user_history or persist_ai_history:
+                        _persist_panel_history(
+                            session_id,
+                            user_input,
+                            "".join(output_parts),
+                            panel_id=panel_id,
+                            model_id=model_id,
+                            answer_group_id=answer_group_id,
+                            persist_user_history=persist_user_history,
+                            persist_ai_history=persist_ai_history,
+                            replace_ai_history=replace_ai_history,
+                            raw_user_message=raw_user_message,
+                            raw_images=raw_images,
+                            raw_files=raw_files,
+                            sources=sources,
+                            workflow_nodes=[],
+                            task_id=task_id,
+                            task_type=task_type,
+                        )
+                    return
+
                 result = await self._run_once(
                     session_id,
                     user_input,
@@ -4000,7 +4536,7 @@ async def test_agent():
     """测试 Agent 功能"""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s %(message)s")
     logger.info("=" * 60)
-    logger.info("测试企业 AI 知识库 Agent")
+    logger.info("Testing InsightDesk Agent")
     logger.info("=" * 60)
 
     agent = await build_agent(verbose=True)

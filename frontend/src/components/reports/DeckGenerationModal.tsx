@@ -14,6 +14,9 @@ interface DeckGenerationModalProps {
   open: boolean
   panels: PanelOption[]
   knowledgeBaseEnabled: boolean
+  initialPanelId?: string
+  initialTheme?: 'default' | 'midnight' | 'sunrise'
+  initialSlideCount?: number
   onClose: () => void
   onSubmit: (payload: {
     panel_config: ModelConfig
@@ -47,6 +50,9 @@ export const DeckGenerationModal: React.FC<DeckGenerationModalProps> = ({
   open,
   panels,
   knowledgeBaseEnabled,
+  initialPanelId,
+  initialTheme = 'default',
+  initialSlideCount = 8,
   onClose,
   onSubmit,
 }) => {
@@ -57,10 +63,10 @@ export const DeckGenerationModal: React.FC<DeckGenerationModalProps> = ({
 
   useEffect(() => {
     if (!open) return
-    setSelectedPanelId((current) => current || panels[0]?.id || '')
-    setTargetSlideCount(8)
-    setSelectedTheme('default')
-  }, [open, panels])
+    setSelectedPanelId(initialPanelId || panels[0]?.id || '')
+    setTargetSlideCount(Math.max(4, Math.min(10, initialSlideCount)))
+    setSelectedTheme(initialTheme)
+  }, [initialPanelId, initialSlideCount, initialTheme, open, panels])
 
   const selectedPanel = panels.find((panel) => panel.id === selectedPanelId) ?? panels[0] ?? null
 
@@ -81,7 +87,7 @@ export const DeckGenerationModal: React.FC<DeckGenerationModalProps> = ({
 
   return (
     <Modal open={open} onClose={() => !submitting && onClose()} title="生成演示稿" width="max-w-2xl">
-      <div className="space-y-5">
+      <div className="space-y-5" data-testid="deck-generation-modal">
         <div className="rounded-2xl border border-bg-border bg-bg-primary/60 p-4">
           <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
             <Layers3 size={16} />
@@ -189,7 +195,13 @@ export const DeckGenerationModal: React.FC<DeckGenerationModalProps> = ({
           <Button variant="ghost" onClick={onClose} disabled={submitting}>
             取消
           </Button>
-          <Button variant="primary" onClick={() => void handleSubmit()} loading={submitting} disabled={!selectedPanel}>
+          <Button
+            variant="primary"
+            onClick={() => void handleSubmit()}
+            loading={submitting}
+            disabled={!selectedPanel}
+            data-testid="deck-generation-submit"
+          >
             开始生成
           </Button>
         </div>

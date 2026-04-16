@@ -132,10 +132,38 @@ export interface Workspace {
   name: string
   description: string
   color: 'slate' | 'blue' | 'green' | 'amber' | 'rose'
+  preset?: WorkspacePreset
   is_active: boolean
   created_at: number
   updated_at: number
   session_count: number
+}
+
+export interface WorkspaceToolConfig {
+  web_search_enabled: boolean
+  knowledge_base_enabled: boolean
+  mcp_servers_enabled: string[]
+}
+
+export interface WorkspaceOutputPreset {
+  deck_theme: 'default' | 'midnight' | 'sunrise'
+  target_slide_count: number
+}
+
+export interface WorkspacePreset {
+  default_panels: ModelConfig[]
+  tool_config: WorkspaceToolConfig
+  output_preset: WorkspaceOutputPreset
+}
+
+export interface McpConnector {
+  name: string
+  label: string
+  description: string
+  category: string
+  builtin: boolean
+  transport: string
+  source: string
 }
 
 export type SessionMemoryKind = 'summary' | 'fact' | 'decision' | 'todo'
@@ -179,11 +207,48 @@ function normalizeSession(raw: Partial<Session> & Pick<Session, 'session_id' | '
 
 function normalizeWorkspace(raw: Partial<Workspace> & Pick<Workspace, 'workspace_id' | 'name' | 'created_at' | 'updated_at' | 'session_count'>): Workspace {
   const color = typeof raw.color === 'string' ? raw.color.trim().toLowerCase() : 'blue'
+  const rawPreset = (raw as Partial<Workspace> & { preset?: Partial<WorkspacePreset> }).preset
+  const rawToolConfig = rawPreset?.tool_config
+  const rawOutputPreset = rawPreset?.output_preset
   return {
     workspace_id: raw.workspace_id,
     name: raw.name,
     description: typeof raw.description === 'string' ? raw.description : '',
     color: (['slate', 'blue', 'green', 'amber', 'rose'].includes(color) ? color : 'blue') as Workspace['color'],
+    preset: {
+      default_panels: Array.isArray(rawPreset?.default_panels)
+        ? rawPreset!.default_panels
+          .filter(
+            (item) =>
+              Boolean(
+                item &&
+                typeof item === 'object' &&
+                typeof (item as { panel_id?: string }).panel_id === 'string' &&
+                (item as { panel_id?: string }).panel_id?.trim(),
+              ),
+          )
+          .map((item) => normalizeModelConfig(item as Partial<ModelConfig> & { panel_id: string }))
+        : [],
+      tool_config: {
+        web_search_enabled: rawToolConfig?.web_search_enabled === true,
+        knowledge_base_enabled: rawToolConfig?.knowledge_base_enabled !== false,
+        mcp_servers_enabled: Array.isArray(rawToolConfig?.mcp_servers_enabled)
+          ? rawToolConfig.mcp_servers_enabled.filter(
+              (item): item is string => typeof item === 'string' && item.trim().length > 0,
+            )
+          : ['knowledge-base', 'web-search'],
+      },
+      output_preset: {
+        deck_theme:
+          rawOutputPreset?.deck_theme === 'midnight' || rawOutputPreset?.deck_theme === 'sunrise'
+            ? rawOutputPreset.deck_theme
+            : 'default',
+        target_slide_count: Math.max(
+          4,
+          Math.min(10, Number(rawOutputPreset?.target_slide_count ?? 8) || 8),
+        ),
+      },
+    },
     is_active: raw.is_active === true,
     created_at: raw.created_at,
     updated_at: raw.updated_at,
@@ -358,6 +423,15 @@ export interface SourceItem {
   url?: string
   snippet: string
   index?: number
+  retrieval_mode?: string
+  search_channel?: string
+  score?: number
+  matched_terms?: string[]
+  retrieval_query?: string
+  feedback_boost?: number
+  feedback_net?: number
+  feedback_positive_count?: number
+  feedback_negative_count?: number
   answer_group_id?: string
   attachment_kind?: 'file' | 'image'
   media_type?: string
@@ -426,6 +500,15 @@ export interface SSEChunk {
   tool_name?: string
   tool_params?: Record<string, unknown>
   tool_result_summary?: string
+  retrieval_meta?: {
+    primary_mode?: string
+    modes?: string[]
+    channels?: string[]
+    source_count?: number
+    source_titles?: string[]
+    matched_terms?: string[]
+    top_score?: number | null
+  }
   error?: string
   timestamp?: number
 }
@@ -520,11 +603,39 @@ export interface KnowledgeBaseChunksResponse {
 export interface RetrievalTestResult {
   results_count: number
   latency_ms: number
-  search_mode?: 'vector' | 'vector_rerank'
+  retrieval_mode?: 'semantic' | 'keyword' | 'hybrid'
+  search_mode?: 'semantic' | 'semantic_rerank' | 'keyword' | 'hybrid' | 'hybrid_rerank'
   search_k?: number
+  top_k?: number
   fetch_k?: number
-  top_results?: { source: string; snippet: string }[]
+  rewrite_query?: string
+  rewrite_applied?: boolean
+  query_terms?: string[]
+  coverage?: {
+    unique_sources: number
+    source_ratio: number
+    matched_terms: string[]
+    matched_term_count: number
+  }
+  top_results?: RetrievalDebugItem[]
+  semantic_candidates?: RetrievalDebugItem[]
+  keyword_candidates?: RetrievalDebugItem[]
+  fused_candidates?: RetrievalDebugItem[]
   error?: string
+}
+
+export interface RetrievalDebugItem {
+  rank: number
+  source: string
+  snippet: string
+  score: number
+  channel: string
+  matched_terms?: string[]
+  feedback_boost?: number
+  feedback_net?: number
+  feedback_positive_count?: number
+  feedback_negative_count?: number
+  score_breakdown?: Record<string, number>
 }
 
 export interface MessagesResponse {
@@ -533,6 +644,11 @@ export interface MessagesResponse {
   total_messages: number
   panels?: SessionPanel[]
   panel_messages?: Record<string, Message[]>
+}
+
+export interface ImportSessionMessagesPayload {
+  panels: ModelConfig[]
+  messages: Message[]
 }
 
 export interface Bookmark {
@@ -555,6 +671,73 @@ export interface SessionAttachmentsResponse {
   attachments: SessionAttachment[]
   summary: SessionAttachmentSummary
   current_vector_store_path?: string
+}
+
+export interface AnswerGroupReviewFactor {
+  factor: string
+  winner_panel_id: string
+  detail: string
+}
+
+export interface AnswerGroupReviewComparisonFactorDelta {
+  factor: string
+  delta: number
+  detail: string
+}
+
+export interface AnswerGroupReviewComparison {
+  against_panel_id: string
+  against_model_id: string
+  score_gap: number
+  recommended_advantages: string[]
+  tradeoffs: string[]
+  factor_deltas: AnswerGroupReviewComparisonFactorDelta[]
+}
+
+export interface AnswerGroupReviewResponseItem {
+  panel_id: string
+  model_id: string
+  content: string
+  excerpt: string
+  source_count: number
+  workflow_node_count: number
+  completed_workflow_count: number
+  content_length: number
+  score: number
+  score_breakdown: Record<string, number>
+  strengths: string[]
+  concerns: string[]
+  is_primary_panel: boolean
+}
+
+export interface AnswerGroupReviewResponse {
+  session_id: string
+  answer_group_id: string
+  review_mode: string
+  reviewer_label: string
+  recommended_panel_id: string
+  recommended_model_id: string
+  confidence: number
+  confidence_label: string
+  summary: string
+  why_recommended: string
+  decision_factors: AnswerGroupReviewFactor[]
+  comparisons: AnswerGroupReviewComparison[]
+  responses: AnswerGroupReviewResponseItem[]
+}
+
+export interface PromoteAnswerResponse {
+  ok: boolean
+  target_panel_id: string
+  source_panel_id: string
+  answer_group_id: string
+  content: string
+  model_id: string
+  sources?: SourceItem[]
+  workflow_nodes?: WorkflowNode[]
+  task_id?: string
+  task_type?: string
+  review?: AnswerGroupReviewResponse
 }
 
 export interface ShareLinkResponse {
@@ -581,6 +764,8 @@ export interface DeckMeta {
   session_id: string
   source_mode: 'kb_plus_chat' | 'chat_only'
   generator_panel_id: string
+  source_answer_group_id?: string
+  source_panel_id?: string
 }
 
 export interface DeckGeneration {
@@ -659,6 +844,107 @@ export interface DeckSpec {
   source_registry: DeckSourceItem[]
 }
 
+export type ArtifactType = 'report' | 'deck'
+export type ArtifactExportFormat = 'md' | 'pptx'
+
+export interface ReportArtifactQA {
+  question: string
+  answer: string
+}
+
+export interface ReportArtifactContent {
+  markdown: string
+  qa_pairs: ReportArtifactQA[]
+  answer_group_id?: string | null
+  panel_id?: string | null
+}
+
+export interface DeckArtifactContent {
+  deck_id: string
+  theme: string
+  slide_count: number
+  answer_group_id?: string | null
+  panel_id?: string | null
+}
+
+export interface ArtifactRecord {
+  artifact_id: string
+  session_id: string
+  artifact_type: ArtifactType
+  title: string
+  status: string
+  linked_resource_type?: string | null
+  linked_resource_id?: string | null
+  content: ReportArtifactContent | DeckArtifactContent | Record<string, unknown>
+  available_formats: ArtifactExportFormat[]
+  created_at: number
+  updated_at: number
+}
+
+function normalizeArtifact(raw: unknown): ArtifactRecord {
+  const data = (raw ?? {}) as Record<string, unknown>
+  const artifactType = data.artifact_type === 'deck' ? 'deck' : 'report'
+  const rawContent =
+    typeof data.content === 'object' && data.content !== null
+      ? (data.content as Record<string, unknown>)
+      : {}
+
+  const content =
+    artifactType === 'deck'
+      ? {
+          deck_id: typeof rawContent.deck_id === 'string' ? rawContent.deck_id : '',
+          theme: typeof rawContent.theme === 'string' ? rawContent.theme : 'default',
+          slide_count:
+            typeof rawContent.slide_count === 'number'
+              ? rawContent.slide_count
+              : Number(rawContent.slide_count ?? 0) || 0,
+          answer_group_id:
+            typeof rawContent.answer_group_id === 'string' ? rawContent.answer_group_id : null,
+          panel_id: typeof rawContent.panel_id === 'string' ? rawContent.panel_id : null,
+        }
+      : {
+          markdown: typeof rawContent.markdown === 'string' ? rawContent.markdown : '',
+          qa_pairs: Array.isArray(rawContent.qa_pairs)
+            ? rawContent.qa_pairs
+                .filter(
+                  (item): item is Record<string, unknown> =>
+                    typeof item === 'object' && item !== null,
+                )
+                .map((item) => ({
+                  question: typeof item.question === 'string' ? item.question : '',
+                  answer: typeof item.answer === 'string' ? item.answer : '',
+                }))
+            : [],
+          answer_group_id:
+            typeof rawContent.answer_group_id === 'string' ? rawContent.answer_group_id : null,
+          panel_id: typeof rawContent.panel_id === 'string' ? rawContent.panel_id : null,
+        }
+
+  return {
+    artifact_id: typeof data.artifact_id === 'string' ? data.artifact_id : '',
+    session_id: typeof data.session_id === 'string' ? data.session_id : '',
+    artifact_type: artifactType,
+    title: typeof data.title === 'string' ? data.title : 'Untitled Artifact',
+    status: typeof data.status === 'string' ? data.status : 'ready',
+    linked_resource_type:
+      typeof data.linked_resource_type === 'string' ? data.linked_resource_type : null,
+    linked_resource_id:
+      typeof data.linked_resource_id === 'string' ? data.linked_resource_id : null,
+    content,
+    available_formats: Array.isArray(data.available_formats)
+      ? data.available_formats.filter(
+          (item): item is ArtifactExportFormat => item === 'md' || item === 'pptx',
+        )
+      : artifactType === 'report'
+        ? ['md', 'pptx']
+        : ['pptx'],
+    created_at:
+      typeof data.created_at === 'number' ? data.created_at : Number(data.created_at ?? 0) || 0,
+    updated_at:
+      typeof data.updated_at === 'number' ? data.updated_at : Number(data.updated_at ?? 0) || 0,
+  }
+}
+
 // ── Sessions ─────────────────────────────────
 
 export async function getSessions(params?: {
@@ -699,11 +985,35 @@ export async function getWorkspaces(): Promise<{ workspaces: Workspace[]; active
   }
 }
 
+export async function getMcpConnectors(): Promise<{
+  connectors: McpConnector[]
+  default_enabled: string[]
+}> {
+  const res = await fetch(`${BASE}/connectors/mcp`)
+  const data = await res.json().catch(() => ({ detail: res.statusText })) as {
+    detail?: string
+    connectors?: McpConnector[]
+    default_enabled?: string[]
+  }
+  if (!res.ok) {
+    throw new Error(data.detail ?? res.statusText)
+  }
+  return {
+    connectors: Array.isArray(data.connectors) ? data.connectors : [],
+    default_enabled: Array.isArray(data.default_enabled)
+      ? data.default_enabled.filter(
+          (item): item is string => typeof item === 'string' && item.trim().length > 0,
+        )
+      : ['knowledge-base', 'web-search'],
+  }
+}
+
 export async function createWorkspace(payload: {
   name: string
   description?: string
   color?: Workspace['color']
   activate?: boolean
+  preset?: Partial<WorkspacePreset>
 }): Promise<Workspace> {
   const res = await fetch(`${BASE}/workspaces`, {
     method: 'POST',
@@ -713,6 +1023,20 @@ export async function createWorkspace(payload: {
       description: payload.description ?? '',
       color: payload.color ?? 'blue',
       activate: payload.activate ?? true,
+      preset: payload.preset
+        ? {
+            default_panels: payload.preset.default_panels ?? [],
+            tool_config: payload.preset.tool_config ?? {
+              web_search_enabled: false,
+              knowledge_base_enabled: true,
+              mcp_servers_enabled: ['knowledge-base', 'web-search'],
+            },
+            output_preset: payload.preset.output_preset ?? {
+              deck_theme: 'default',
+              target_slide_count: 8,
+            },
+          }
+        : undefined,
     }),
   })
   if (!res.ok) {
@@ -729,12 +1053,29 @@ export async function updateWorkspace(
     name?: string
     description?: string
     color?: Workspace['color']
+    preset?: Partial<WorkspacePreset>
   },
 ): Promise<Workspace> {
   const res = await fetch(`${BASE}/workspaces/${encodeURIComponent(workspaceId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(patch),
+    body: JSON.stringify({
+      ...patch,
+      preset: patch.preset
+        ? {
+            default_panels: patch.preset.default_panels ?? [],
+            tool_config: patch.preset.tool_config ?? {
+              web_search_enabled: false,
+              knowledge_base_enabled: true,
+              mcp_servers_enabled: ['knowledge-base', 'web-search'],
+            },
+            output_preset: patch.preset.output_preset ?? {
+              deck_theme: 'default',
+              target_slide_count: 8,
+            },
+          }
+        : undefined,
+    }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
@@ -961,6 +1302,123 @@ export async function getSessionMessages(sessionId: string): Promise<MessagesRes
     panels: (data.panels ?? []) as SessionPanel[],
     panel_messages: (data.panel_messages ?? {}) as Record<string, Message[]>,
   }
+}
+
+export async function importSessionMessages(
+  sessionId: string,
+  payload: ImportSessionMessagesPayload,
+): Promise<MessagesResponse> {
+  const res = await fetch(`${BASE}/sessions/${encodeURIComponent(sessionId)}/messages/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  const data = await res.json().catch(() => ({ detail: res.statusText })) as {
+    detail?: string
+    messages?: Message[]
+    context_limit?: number
+    total_messages?: number
+    panels?: SessionPanel[]
+    panel_messages?: Record<string, Message[]>
+  }
+  if (!res.ok) {
+    throw new Error(data.detail ?? res.statusText)
+  }
+  return {
+    messages: (data.messages ?? []) as Message[],
+    context_limit: data.context_limit ?? 16,
+    total_messages: data.total_messages ?? (data.messages ?? []).length,
+    panels: (data.panels ?? []) as SessionPanel[],
+    panel_messages: (data.panel_messages ?? {}) as Record<string, Message[]>,
+  }
+}
+
+export interface GeneratedReport {
+  markdown: string
+  title: string
+  artifact_id?: string
+}
+
+export interface ReportScopeOptions {
+  answer_group_id?: string
+  panel_id?: string
+}
+
+export async function generateSessionReport(
+  sessionId: string,
+  options?: ReportScopeOptions,
+): Promise<GeneratedReport> {
+  const res = await fetch(`${BASE}/reports/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      session_id: sessionId,
+      answer_group_id: options?.answer_group_id,
+      panel_id: options?.panel_id,
+    }),
+  })
+  const data = await res.json().catch(() => ({ detail: res.statusText })) as {
+    detail?: string
+    markdown?: string
+    title?: string
+    artifact_id?: string
+  }
+  if (!res.ok) {
+    throw new Error(data.detail ?? res.statusText)
+  }
+  if (typeof data.markdown !== 'string' || typeof data.title !== 'string') {
+    throw new Error('报告生成返回的数据无效。')
+  }
+  return {
+    markdown: data.markdown,
+    title: data.title,
+    artifact_id: typeof data.artifact_id === 'string' ? data.artifact_id : undefined,
+  }
+}
+
+export async function getSessionArtifacts(
+  sessionId: string,
+  options?: { artifact_type?: ArtifactType },
+): Promise<ArtifactRecord[]> {
+  const params = new URLSearchParams()
+  if (options?.artifact_type) params.set('artifact_type', options.artifact_type)
+  const query = params.toString()
+  const res = await fetch(
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/artifacts${query ? `?${query}` : ''}`,
+  )
+  const data = await res.json().catch(() => ({ detail: res.statusText })) as {
+    detail?: string
+    artifacts?: unknown[]
+  }
+  if (!res.ok) {
+    throw new Error(data.detail ?? res.statusText)
+  }
+  return Array.isArray(data.artifacts) ? data.artifacts.map((item) => normalizeArtifact(item)) : []
+}
+
+export async function getArtifact(artifactId: string): Promise<ArtifactRecord> {
+  const res = await fetch(`${BASE}/artifacts/${encodeURIComponent(artifactId)}`)
+  const data = await res.json().catch(() => ({ detail: res.statusText })) as {
+    detail?: string
+  }
+  if (!res.ok) {
+    throw new Error(data.detail ?? res.statusText)
+  }
+  return normalizeArtifact(data)
+}
+
+export async function exportArtifact(
+  artifactId: string,
+  format: ArtifactExportFormat,
+): Promise<Blob> {
+  const res = await fetch(
+    `${BASE}/artifacts/${encodeURIComponent(artifactId)}/export?format=${encodeURIComponent(format)}`,
+  )
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail ?? res.statusText)
+  }
+  return res.blob()
 }
 
 export async function setMessageFeedback(
@@ -1245,10 +1703,12 @@ export async function summarizeSessionMemory(
 export async function getSessionAttachments(
   sessionId: string,
   vectorStorePath?: string,
+  workspaceId?: string,
 ): Promise<SessionAttachmentsResponse> {
-  const query = vectorStorePath?.trim()
-    ? `?vector_store_path=${encodeURIComponent(vectorStorePath.trim())}`
-    : ''
+  const searchParams = new URLSearchParams()
+  if (vectorStorePath?.trim()) searchParams.set('vector_store_path', vectorStorePath.trim())
+  if (workspaceId?.trim()) searchParams.set('workspace_id', workspaceId.trim())
+  const query = searchParams.toString() ? `?${searchParams.toString()}` : ''
   const res = await fetch(`${BASE}/sessions/${sessionId}/attachments${query}`)
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
@@ -1274,10 +1734,12 @@ export async function promoteSessionAttachmentToKnowledgeBase(
   sessionId: string,
   attachmentId: string,
   vectorStorePath?: string,
+  workspaceId?: string,
 ): Promise<TaskRecord> {
-  const query = vectorStorePath?.trim()
-    ? `?vector_store_path=${encodeURIComponent(vectorStorePath.trim())}`
-    : ''
+  const searchParams = new URLSearchParams()
+  if (vectorStorePath?.trim()) searchParams.set('vector_store_path', vectorStorePath.trim())
+  if (workspaceId?.trim()) searchParams.set('workspace_id', workspaceId.trim())
+  const query = searchParams.toString() ? `?${searchParams.toString()}` : ''
   const res = await fetch(
     `${BASE}/sessions/${encodeURIComponent(sessionId)}/attachments/${encodeURIComponent(attachmentId)}/promote${query}`,
     { method: 'POST' },
@@ -1297,14 +1759,7 @@ export async function promotePanelAnswer(
   sessionId: string,
   answerGroupId: string,
   panelId: string,
-): Promise<{
-  ok: boolean
-  target_panel_id: string
-  source_panel_id: string
-  answer_group_id: string
-  content: string
-  model_id: string
-}> {
+): Promise<PromoteAnswerResponse> {
   const res = await fetch(
     `${BASE}/sessions/${encodeURIComponent(sessionId)}/answer-groups/${encodeURIComponent(answerGroupId)}/promote?panel_id=${encodeURIComponent(panelId)}`,
     { method: 'POST' },
@@ -1314,6 +1769,35 @@ export async function promotePanelAnswer(
     throw new Error(err.detail ?? res.statusText)
   }
   return res.json()
+}
+
+export async function getAnswerGroupReview(
+  sessionId: string,
+  answerGroupId: string,
+): Promise<AnswerGroupReviewResponse> {
+  const res = await fetch(
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/answer-groups/${encodeURIComponent(answerGroupId)}/review`,
+  )
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail ?? res.statusText)
+  }
+  return res.json() as Promise<AnswerGroupReviewResponse>
+}
+
+export async function promoteRecommendedAnswerGroup(
+  sessionId: string,
+  answerGroupId: string,
+): Promise<PromoteAnswerResponse> {
+  const res = await fetch(
+    `${BASE}/sessions/${encodeURIComponent(sessionId)}/answer-groups/${encodeURIComponent(answerGroupId)}/promote/recommended`,
+    { method: 'POST' },
+  )
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail ?? res.statusText)
+  }
+  return res.json() as Promise<PromoteAnswerResponse>
 }
 
 // ── Chat ─────────────────────────────────────
@@ -1360,6 +1844,7 @@ export function streamChat(
   models: ModelConfig[],
   webSearchEnabled: boolean,
   knowledgeBaseEnabled: boolean,
+  enabledMcpServers: string[],
   images: ChatImage[],
   files: ChatFile[],
   answerGroupId: string,
@@ -1382,6 +1867,7 @@ export function streamChat(
           models,
           web_search_enabled: webSearchEnabled,
           knowledge_base_enabled: knowledgeBaseEnabled,
+          enabled_mcp_servers: enabledMcpServers,
           answer_group_id: answerGroupId,
         }),
         signal: controller.signal,
@@ -1416,6 +1902,7 @@ export function streamSingleChat(
   panelConfig: ModelConfig,
   webSearchEnabled: boolean,
   knowledgeBaseEnabled: boolean,
+  enabledMcpServers: string[],
   images: ChatImage[],
   files: ChatFile[],
   answerGroupId: string,
@@ -1439,6 +1926,7 @@ export function streamSingleChat(
           panel_config: panelConfig,
           web_search_enabled: webSearchEnabled,
           knowledge_base_enabled: knowledgeBaseEnabled,
+          enabled_mcp_servers: enabledMcpServers,
           answer_group_id: answerGroupId,
           persist_user_history: false,
           persist_ai_history: true,
@@ -1657,6 +2145,8 @@ export async function createDeckDraft(payload: {
   knowledge_base_enabled: boolean
   target_slide_count: number
   theme?: 'default' | 'midnight' | 'sunrise'
+  answer_group_id?: string
+  panel_id?: string
 }): Promise<DeckSpec> {
   const res = await fetch(`${BASE}/decks`, {
     method: 'POST',
@@ -1826,7 +2316,12 @@ export async function deleteKnowledgeBaseChunk(chunkId: string, path?: string): 
 
 export async function testKBRetrieval(
   query: string,
-  options?: { search_k?: number; fetch_k?: number; use_rerank?: boolean },
+  options?: {
+    search_k?: number
+    fetch_k?: number
+    use_rerank?: boolean
+    retrieval_mode?: 'semantic' | 'keyword' | 'hybrid'
+  },
 ): Promise<RetrievalTestResult> {
   const res = await fetch(`${BASE}/knowledge-base/test-retrieval`, {
     method: 'POST',

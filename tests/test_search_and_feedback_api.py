@@ -364,3 +364,65 @@ def test_retrieval_feedback_can_be_saved_and_listed(monkeypatch, tmp_path):
     )
     assert invalid.status_code == 400
     assert invalid.json()["detail"] == "消息反馈值只能是 -1、0 或 1"
+
+
+def test_retrieval_feedback_can_be_aggregated_by_source(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "chat_history.db"
+    history_cls = _history_cls_for_db(db_path)
+
+    history = history_cls("session-feedback-aggregate")
+    history.add_user_message("Need references", answer_group_id="grp-ref")
+    history.add_ai_message(
+        "Reference answer",
+        panel_id="panel-main",
+        answer_group_id="grp-ref",
+        model_id="qwen-main",
+    )
+
+    source_payload = {
+        "type": "doc",
+        "title": "Quarterly report",
+        "url": "",
+        "snippet": "Revenue grew 15% year over year.",
+        "index": 1,
+    }
+
+    chat_store.set_retrieval_feedback(
+        "session-feedback-aggregate",
+        panel_id="panel-main",
+        answer_group_id="grp-ref",
+        source=source_payload,
+        feedback_value=1,
+        db_path=str(db_path),
+    )
+    chat_store.set_retrieval_feedback(
+        "session-feedback-aggregate",
+        panel_id="panel-side",
+        answer_group_id="grp-ref-2",
+        source=source_payload,
+        feedback_value=-1,
+        db_path=str(db_path),
+    )
+    chat_store.set_retrieval_feedback(
+        "session-feedback-aggregate",
+        panel_id="panel-alt",
+        answer_group_id="grp-ref-3",
+        source={
+            **source_payload,
+            "title": "Annual report",
+        },
+        feedback_value=1,
+        db_path=str(db_path),
+    )
+
+    summary = chat_store.aggregate_retrieval_feedback_by_source(
+        source_type="doc",
+        db_path=str(db_path),
+    )
+
+    assert summary[0]["source_title"] == "Annual report"
+    quarterly = next(item for item in summary if item["source_title"] == "Quarterly report")
+    assert quarterly["positive_count"] == 1
+    assert quarterly["negative_count"] == 1
+    assert quarterly["net_feedback"] == 0

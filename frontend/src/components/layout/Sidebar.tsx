@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+﻿import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Plus,
   MessageSquare,
@@ -31,13 +31,20 @@ import {
   deleteBookmark as deleteBookmarkRequest,
   deleteWorkspace as deleteWorkspaceRequest,
   deleteSession,
+  getMcpConnectors,
   getSessionMessages,
   reorderSessions,
   updateSessionMeta,
   updateWorkspace as updateWorkspaceRequest,
 } from '../../api/client'
-import type { Bookmark as StoredBookmark, Message, Session, Workspace } from '../../api/client'
+import type { Bookmark as StoredBookmark, McpConnector, Message, Session, Workspace } from '../../api/client'
 import { Button } from '../ui/Button'
+
+const WORKSPACE_DECK_THEME_LABELS: Record<NonNullable<Workspace['preset']>['output_preset']['deck_theme'], string> = {
+  default: '缁忓吀钃濆浘',
+  midnight: 'Midnight Brief',
+  sunrise: '鏅ㄦ洣鍥為【',
+}
 
 function mapMessages(messages: Message[]) {
   return messages.map((message, index) => ({
@@ -68,6 +75,7 @@ function findLatestWorkflowNodes(messages: Message[]) {
 
 type SessionViewMode = 'all' | 'favorite' | 'archived'
 const DEFAULT_WORKSPACE_ID = 'workspace-default'
+const DEFAULT_ENABLED_MCP_SERVERS = ['knowledge-base', 'web-search']
 
 const WORKSPACE_COLOR_TONES: Record<Workspace['color'], string> = {
   blue: 'bg-accent-blue/15 text-accent-blue',
@@ -78,11 +86,18 @@ const WORKSPACE_COLOR_TONES: Record<Workspace['color'], string> = {
 }
 
 const WORKSPACE_COLOR_LABELS: Record<Workspace['color'], string> = {
-  blue: '蓝色',
-  green: '绿色',
-  amber: '琥珀',
-  rose: '玫瑰',
-  slate: '石板',
+  blue: '钃濊壊',
+  green: '缁胯壊',
+  amber: '鐞ョ弨',
+  rose: '鐜懓',
+  slate: '鐭虫澘',
+}
+
+function toggleConnectorSelection(current: string[], connectorName: string, enabled: boolean): string[] {
+  if (enabled) {
+    return Array.from(new Set([...current, connectorName]))
+  }
+  return current.filter((item) => item !== connectorName)
 }
 
 interface BookmarkGroup {
@@ -100,6 +115,9 @@ export const Sidebar: React.FC = () => {
     currentSessionId,
     sidebarOpen,
     panels: storePanels,
+    webSearchEnabled,
+    knowledgeBaseEnabled,
+    enabledMcpServers,
     setWorkspaces,
     setCurrentWorkspace,
     setSessions,
@@ -112,6 +130,9 @@ export const Sidebar: React.FC = () => {
     clearMessages,
     loadMessagesToAllPanels,
     setPanels,
+    setWebSearchEnabled,
+    setKnowledgeBaseEnabled,
+    setEnabledMcpServers,
     setSettingsOpen,
     setJumpTarget,
     toggleSidebar,
@@ -139,9 +160,20 @@ export const Sidebar: React.FC = () => {
   const [showWorkspaceDeleteForm, setShowWorkspaceDeleteForm] = useState(false)
   const [workspaceName, setWorkspaceName] = useState('')
   const [workspaceColor, setWorkspaceColor] = useState<Workspace['color']>('blue')
+  const [workspacePresetWebSearch, setWorkspacePresetWebSearch] = useState(false)
+  const [workspacePresetKnowledgeBase, setWorkspacePresetKnowledgeBase] = useState(true)
+  const [workspacePresetMcpServers, setWorkspacePresetMcpServers] = useState<string[]>(DEFAULT_ENABLED_MCP_SERVERS)
+  const [workspacePresetDeckTheme, setWorkspacePresetDeckTheme] = useState<'default' | 'midnight' | 'sunrise'>('default')
+  const [workspacePresetDeckSlideCount, setWorkspacePresetDeckSlideCount] = useState(8)
   const [workspaceEditName, setWorkspaceEditName] = useState('')
   const [workspaceEditDescription, setWorkspaceEditDescription] = useState('')
   const [workspaceEditColor, setWorkspaceEditColor] = useState<Workspace['color']>('blue')
+  const [workspaceEditPresetWebSearch, setWorkspaceEditPresetWebSearch] = useState(false)
+  const [workspaceEditPresetKnowledgeBase, setWorkspaceEditPresetKnowledgeBase] = useState(true)
+  const [workspaceEditPresetMcpServers, setWorkspaceEditPresetMcpServers] = useState<string[]>(DEFAULT_ENABLED_MCP_SERVERS)
+  const [workspaceEditPresetDeckTheme, setWorkspaceEditPresetDeckTheme] = useState<'default' | 'midnight' | 'sunrise'>('default')
+  const [workspaceEditPresetDeckSlideCount, setWorkspaceEditPresetDeckSlideCount] = useState(8)
+  const [availableMcpConnectors, setAvailableMcpConnectors] = useState<McpConnector[]>([])
   const [workspaceDeleteTargetId, setWorkspaceDeleteTargetId] = useState(DEFAULT_WORKSPACE_ID)
   const [movingSessionId, setMovingSessionId] = useState<string | null>(null)
   const [exportingId, setExportingId] = useState<string | null>(null)
@@ -162,6 +194,15 @@ export const Sidebar: React.FC = () => {
       workspaces.find((workspace) => workspace.workspace_id === currentWorkspaceId) ?? null,
     [currentWorkspaceId, workspaces],
   )
+  const currentWorkspacePreset = currentWorkspace?.preset
+  const currentWorkspacePanelSummary = useMemo(
+    () =>
+      (currentWorkspacePreset?.default_panels ?? [])
+        .map((panel) => panel.model)
+        .filter((model) => model.trim().length > 0)
+        .join(' / '),
+    [currentWorkspacePreset],
+  )
   const workspaceNameMap = useMemo(
     () => new Map(workspaces.map((workspace) => [workspace.workspace_id, workspace.name])),
     [workspaces],
@@ -171,6 +212,85 @@ export const Sidebar: React.FC = () => {
       workspaces.filter((workspace) => workspace.workspace_id !== currentWorkspace?.workspace_id),
     [currentWorkspace?.workspace_id, workspaces],
   )
+  const connectorLabelMap = useMemo(
+    () => new Map(availableMcpConnectors.map((connector) => [connector.name, connector.label])),
+    [availableMcpConnectors],
+  )
+  const currentWorkspaceConnectorSummary = useMemo(() => {
+    const connectorNames = currentWorkspacePreset?.tool_config.mcp_servers_enabled ?? []
+    if (connectorNames.length === 0) {
+      return 'None enabled'
+    }
+    return connectorNames
+      .map((name) => connectorLabelMap.get(name) ?? name)
+      .join(' / ')
+  }, [connectorLabelMap, currentWorkspacePreset])
+
+  const applyWorkspacePreset = useCallback((workspace: Workspace | null) => {
+    if (!workspace?.preset) return
+
+    setWebSearchEnabled(workspace.preset.tool_config.web_search_enabled)
+    setKnowledgeBaseEnabled(workspace.preset.tool_config.knowledge_base_enabled)
+    setEnabledMcpServers(workspace.preset.tool_config.mcp_servers_enabled)
+
+    if (workspace.preset.default_panels.length > 0) {
+      setPanels(
+        workspace.preset.default_panels.map((panelConfig) => ({
+          id: panelConfig.panel_id,
+          modelConfig: panelConfig,
+          messages: [],
+        })),
+      )
+    }
+  }, [setEnabledMcpServers, setKnowledgeBaseEnabled, setPanels, setWebSearchEnabled])
+
+  const buildWorkspacePresetPayload = useCallback(
+    (
+      toolConfig: {
+        web_search_enabled: boolean
+        knowledge_base_enabled: boolean
+        mcp_servers_enabled: string[]
+      },
+      outputPreset: {
+        deck_theme: 'default' | 'midnight' | 'sunrise'
+        target_slide_count: number
+      },
+    ) => ({
+      default_panels: storePanels.map((panel) => panel.modelConfig),
+      tool_config: toolConfig,
+      output_preset: outputPreset,
+    }),
+    [storePanels],
+  )
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadConnectorCatalog = async () => {
+      try {
+        const payload = await getMcpConnectors()
+        if (cancelled) return
+        setAvailableMcpConnectors(payload.connectors)
+        if (enabledMcpServers.length === 0) {
+          setEnabledMcpServers(payload.default_enabled)
+        }
+        setWorkspacePresetMcpServers((current) =>
+          current.length > 0 ? current : payload.default_enabled,
+        )
+        setWorkspaceEditPresetMcpServers((current) =>
+          current.length > 0 ? current : payload.default_enabled,
+        )
+      } catch (loadError) {
+        console.error(loadError)
+      }
+    }
+
+    void loadConnectorCatalog()
+
+    return () => {
+      cancelled = true
+    }
+  }, [enabledMcpServers.length, setEnabledMcpServers])
 
   useEffect(() => {
     let cancelled = false
@@ -185,13 +305,16 @@ export const Sidebar: React.FC = () => {
               ? currentWorkspaceId
               : payload.active_workspace_id ?? payload.workspaces[0]?.workspace_id ?? null
           setCurrentWorkspace(nextWorkspaceId)
+          applyWorkspacePreset(
+            payload.workspaces.find((item) => item.workspace_id === nextWorkspaceId) ?? null,
+          )
           setError('')
           setWorkspaceReady(true)
         }
       } catch (loadError) {
         console.error(loadError)
         if (!cancelled) {
-          setError('加载工作区失败。')
+          setError('Failed to load workspaces.')
           setWorkspaceReady(true)
         }
       }
@@ -202,7 +325,7 @@ export const Sidebar: React.FC = () => {
     return () => {
       cancelled = true
     }
-  }, [currentWorkspaceId, setCurrentWorkspace, setWorkspaces])
+  }, [applyWorkspacePreset, currentWorkspaceId, setCurrentWorkspace, setWorkspaces])
 
   useEffect(() => {
     if (!workspaceReady) return
@@ -231,7 +354,7 @@ export const Sidebar: React.FC = () => {
       } catch (loadError) {
         console.error(loadError)
         if (!cancelled) {
-          setError('加载对话历史失败。')
+          setError('Failed to load sessions.')
         }
       }
     }
@@ -277,7 +400,7 @@ export const Sidebar: React.FC = () => {
     setLoadingNew(true)
     setMovingSessionId(null)
     try {
-      const s = await createSession('新建对话', {
+      const s = await createSession('鏂板缓瀵硅瘽', {
         workspace_id: currentWorkspaceId ?? undefined,
       })
       addSession({
@@ -319,6 +442,7 @@ export const Sidebar: React.FC = () => {
     try {
       const activated = await activateWorkspace(workspaceId)
       setCurrentWorkspace(activated.workspace_id)
+      applyWorkspacePreset(activated)
       setWorkspaces(
         workspaces.map((workspace) =>
           workspace.workspace_id === activated.workspace_id
@@ -328,14 +452,14 @@ export const Sidebar: React.FC = () => {
       )
     } catch (workspaceError) {
       console.error(workspaceError)
-      setError((workspaceError as Error).message ?? '切换工作区失败。')
+      setError((workspaceError as Error).message ?? 'Failed to switch workspace.')
     }
   }
 
   const handleCreateWorkspace = async () => {
     const name = workspaceName.trim()
     if (!name) {
-      setError('工作区名称不能为空。')
+      setError('Workspace name is required.')
       return
     }
     setCreatingWorkspace(true)
@@ -345,6 +469,17 @@ export const Sidebar: React.FC = () => {
         name,
         color: workspaceColor,
         activate: true,
+        preset: buildWorkspacePresetPayload(
+          {
+            web_search_enabled: workspacePresetWebSearch,
+            knowledge_base_enabled: workspacePresetKnowledgeBase,
+            mcp_servers_enabled: workspacePresetMcpServers,
+          },
+          {
+            deck_theme: workspacePresetDeckTheme,
+            target_slide_count: workspacePresetDeckSlideCount,
+          },
+        ),
       })
       setWorkspaces(
         [
@@ -356,14 +491,22 @@ export const Sidebar: React.FC = () => {
         ],
       )
       setCurrentWorkspace(workspace.workspace_id)
+      applyWorkspacePreset(workspace)
       setWorkspaceName('')
       setWorkspaceColor('blue')
+      setWorkspacePresetWebSearch(webSearchEnabled)
+      setWorkspacePresetKnowledgeBase(knowledgeBaseEnabled)
+      setWorkspacePresetMcpServers(
+        workspace.preset?.tool_config.mcp_servers_enabled ?? DEFAULT_ENABLED_MCP_SERVERS,
+      )
+      setWorkspacePresetDeckTheme('default')
+      setWorkspacePresetDeckSlideCount(8)
       setShowWorkspaceForm(false)
       setShowWorkspaceEditForm(false)
       setShowWorkspaceDeleteForm(false)
     } catch (workspaceError) {
       console.error(workspaceError)
-      setError((workspaceError as Error).message ?? '创建工作区失败。')
+      setError((workspaceError as Error).message ?? 'Failed to create workspace.')
     } finally {
       setCreatingWorkspace(false)
     }
@@ -374,6 +517,21 @@ export const Sidebar: React.FC = () => {
     setWorkspaceEditName(currentWorkspace.name)
     setWorkspaceEditDescription(currentWorkspace.description)
     setWorkspaceEditColor(currentWorkspace.color)
+    setWorkspaceEditPresetWebSearch(
+      currentWorkspace.preset?.tool_config.web_search_enabled ?? webSearchEnabled,
+    )
+    setWorkspaceEditPresetKnowledgeBase(
+      currentWorkspace.preset?.tool_config.knowledge_base_enabled ?? knowledgeBaseEnabled,
+    )
+    setWorkspaceEditPresetMcpServers(
+      currentWorkspace.preset?.tool_config.mcp_servers_enabled ?? enabledMcpServers,
+    )
+    setWorkspaceEditPresetDeckTheme(
+      currentWorkspace.preset?.output_preset.deck_theme ?? 'default',
+    )
+    setWorkspaceEditPresetDeckSlideCount(
+      currentWorkspace.preset?.output_preset.target_slide_count ?? 8,
+    )
     setShowWorkspaceEditForm(true)
     setShowWorkspaceForm(false)
     setShowWorkspaceDeleteForm(false)
@@ -385,6 +543,11 @@ export const Sidebar: React.FC = () => {
     setWorkspaceEditName('')
     setWorkspaceEditDescription('')
     setWorkspaceEditColor('blue')
+    setWorkspaceEditPresetWebSearch(false)
+    setWorkspaceEditPresetKnowledgeBase(true)
+    setWorkspaceEditPresetMcpServers(enabledMcpServers)
+    setWorkspaceEditPresetDeckTheme('default')
+    setWorkspaceEditPresetDeckSlideCount(8)
   }
 
   const openWorkspaceDeletePrompt = () => {
@@ -405,7 +568,7 @@ export const Sidebar: React.FC = () => {
     if (!currentWorkspace) return
     const name = workspaceEditName.trim()
     if (!name) {
-      setError('工作区名称不能为空。')
+      setError('Workspace name is required.')
       return
     }
 
@@ -416,12 +579,26 @@ export const Sidebar: React.FC = () => {
         name,
         description: workspaceEditDescription.trim(),
         color: workspaceEditColor,
+        preset: buildWorkspacePresetPayload(
+          {
+            web_search_enabled: workspaceEditPresetWebSearch,
+            knowledge_base_enabled: workspaceEditPresetKnowledgeBase,
+            mcp_servers_enabled: workspaceEditPresetMcpServers,
+          },
+          {
+            deck_theme: workspaceEditPresetDeckTheme,
+            target_slide_count: workspaceEditPresetDeckSlideCount,
+          },
+        ),
       })
       updateWorkspaceInStore(updated.workspace_id, updated)
+      if (updated.workspace_id === currentWorkspaceId) {
+        applyWorkspacePreset(updated)
+      }
       cancelWorkspaceEditor()
     } catch (workspaceError) {
       console.error(workspaceError)
-      setError((workspaceError as Error).message ?? '更新工作区失败。')
+      setError((workspaceError as Error).message ?? 'Failed to update workspace.')
     } finally {
       setUpdatingWorkspace(false)
     }
@@ -444,11 +621,14 @@ export const Sidebar: React.FC = () => {
       const payload = await getWorkspaces()
       setWorkspaces(payload.workspaces)
       setCurrentWorkspace(result.target_workspace_id)
+      applyWorkspacePreset(
+        payload.workspaces.find((item) => item.workspace_id === result.target_workspace_id) ?? null,
+      )
       cancelWorkspaceDelete()
       cancelWorkspaceEditor()
     } catch (workspaceError) {
       console.error(workspaceError)
-      setError((workspaceError as Error).message ?? '删除工作区失败。')
+      setError((workspaceError as Error).message ?? 'Failed to delete workspace.')
     } finally {
       setDeletingWorkspace(false)
     }
@@ -460,6 +640,7 @@ export const Sidebar: React.FC = () => {
     try {
       const activated = await activateWorkspace(session.workspace_id)
       setCurrentWorkspace(activated.workspace_id)
+      applyWorkspacePreset(activated)
       setWorkspaces(
         workspaces.map((workspace) =>
           workspace.workspace_id === activated.workspace_id
@@ -573,7 +754,7 @@ export const Sidebar: React.FC = () => {
     }
 
     if (!targetSession) {
-      setError('未找到对应的书签会话。')
+      setError('Bookmark session not found.')
       return
     }
 
@@ -585,12 +766,12 @@ export const Sidebar: React.FC = () => {
     setExportingId(session.session_id)
     try {
       const { messages } = await getSessionMessages(session.session_id)
-      const lines: string[] = [`# ${session.title || '对话记录'}`, '']
+      const lines: string[] = [`# ${session.title || '瀵硅瘽璁板綍'}`, '']
       const dateStr = new Date(session.updated_at * 1000).toLocaleString('zh-CN')
-      lines.push(`> 导出时间：${dateStr}`, '')
+      lines.push(`> 瀵煎嚭鏃堕棿锛?{dateStr}`, '')
       for (const msg of messages) {
         if (msg.role === 'user') {
-          lines.push(`**用户**`, '', msg.content, '')
+          lines.push(`**鐢ㄦ埛**`, '', msg.content, '')
         } else if (msg.role === 'assistant') {
           const model = msg.model_id ? ` (${msg.model_id})` : ''
           lines.push(`**AI${model}**`, '', msg.content, '')
@@ -600,11 +781,11 @@ export const Sidebar: React.FC = () => {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `${(session.title || '对话记录').replace(/[/\\?%*:|"<>]/g, '-')}.md`
+      a.download = `${(session.title || '瀵硅瘽璁板綍').replace(/[/\\?%*:|"<>]/g, '-')}.md`
       a.click()
       URL.revokeObjectURL(url)
     } catch (e) {
-      console.error('导出失败', e)
+      console.error('瀵煎嚭澶辫触', e)
     } finally {
       setExportingId(null)
     }
@@ -641,7 +822,7 @@ export const Sidebar: React.FC = () => {
       removeBookmark(bookmarkId)
     } catch (bookmarkError) {
       console.error(bookmarkError)
-      setError((bookmarkError as Error).message ?? '移除书签失败。')
+      setError((bookmarkError as Error).message ?? 'Failed to remove bookmark.')
     } finally {
       setRemovingBookmarkId(null)
     }
@@ -684,7 +865,7 @@ export const Sidebar: React.FC = () => {
       }
     } catch (saveError) {
       console.error(saveError)
-      setError((saveError as Error).message ?? '更新对话失败。')
+      setError((saveError as Error).message ?? 'Failed to update session.')
     } finally {
       setSavingId((current) => (current === sessionId ? null : current))
     }
@@ -693,7 +874,7 @@ export const Sidebar: React.FC = () => {
   const startEditing = (e: React.MouseEvent, session: Session) => {
     e.stopPropagation()
     setEditingSessionId(session.session_id)
-    setEditingTitle(session.title || '新建对话')
+    setEditingTitle(session.title || '鏂板缓瀵硅瘽')
     setEditingTags(session.tags.join(', '))
     setMovingSessionId(null)
     setError('')
@@ -733,7 +914,7 @@ export const Sidebar: React.FC = () => {
       updateSession(session.session_id, updated)
     } catch (moveError) {
       console.error(moveError)
-      setError((moveError as Error).message ?? '移动对话失败。')
+      setError((moveError as Error).message ?? 'Failed to move session.')
     } finally {
       setSavingId((current) => (current === session.session_id ? null : current))
     }
@@ -743,7 +924,7 @@ export const Sidebar: React.FC = () => {
     if (!editingSessionId) return
     const nextTitle = editingTitle.trim()
     if (!nextTitle) {
-      setError('对话标题不能为空。')
+      setError('Session title is required.')
       return
     }
     await applySessionPatch(null, editingSessionId, {
@@ -816,7 +997,7 @@ export const Sidebar: React.FC = () => {
     const groups = new Map<string, BookmarkGroup>()
 
     filteredBookmarks.forEach((bookmark) => {
-      const title = bookmark.sessionTitle.trim() || '未命名会话'
+      const title = bookmark.sessionTitle.trim() || 'Untitled session'
       const key = bookmark.sessionId || `session-title:${title}`
       const existing = groups.get(key)
 
@@ -854,10 +1035,10 @@ export const Sidebar: React.FC = () => {
     !reorderingSessions
 
   const emptyStateMessage = (() => {
-    if (search.trim()) return '没有找到匹配的跨会话结果。'
-    if (viewMode === 'favorite') return '还没有收藏的对话。'
-    if (viewMode === 'archived') return '没有已归档的对话。'
-    return '暂无对话记录'
+    if (search.trim()) return 'No matching cross-session results.'
+    if (viewMode === 'favorite') return 'No favorite sessions yet.'
+    if (viewMode === 'archived') return 'No archived sessions.'
+    return '鏆傛棤瀵硅瘽璁板綍'
   })()
 
   const handleSessionDrop = async (targetSessionId: string) => {
@@ -895,7 +1076,7 @@ export const Sidebar: React.FC = () => {
       setSessions(orderedSessions)
     } catch (reorderError) {
       console.error(reorderError)
-      setError((reorderError as Error).message ?? '会话排序失败。')
+      setError((reorderError as Error).message ?? 'Failed to reorder sessions.')
       try {
         const fallbackSessions = await getSessions({
           workspace_id: currentWorkspaceId ?? undefined,
@@ -918,12 +1099,12 @@ export const Sidebar: React.FC = () => {
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-blue/20">
             <Brain size={18} className="text-accent-blue" />
           </div>
-          <span className="truncate text-sm font-semibold text-text-primary">企业 AI 助手</span>
+          <span className="truncate text-sm font-semibold text-text-primary">InsightDesk</span>
         </div>
         <button
           onClick={toggleSidebar}
           className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-          title="收起侧边栏"
+          title="Collapse sidebar"
         >
           <ChevronLeft size={16} />
         </button>
@@ -934,14 +1115,13 @@ export const Sidebar: React.FC = () => {
           <div className="mb-2 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-[11px] font-medium text-text-primary">
               <FolderOpen size={13} className="text-accent-blue" />
-              工作区
-            </div>
+              宸ヤ綔鍖?            </div>
             <div className="flex items-center gap-1">
               <button
                 type="button"
                 onClick={openWorkspaceEditor}
                 className="rounded-lg p-1 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-                title="编辑工作区"
+                title="Edit workspace"
                 disabled={!currentWorkspace}
               >
                 <Pencil size={12} />
@@ -952,8 +1132,8 @@ export const Sidebar: React.FC = () => {
                 className="rounded-lg p-1 text-text-secondary transition-colors hover:bg-accent-red/10 hover:text-accent-red disabled:cursor-not-allowed disabled:opacity-40"
                 title={
                   currentWorkspace?.workspace_id === DEFAULT_WORKSPACE_ID
-                    ? '默认工作区不可删除'
-                    : '删除工作区'
+                    ? 'Default workspace cannot be deleted'
+                    : 'Delete workspace'
                 }
                 disabled={!currentWorkspace || currentWorkspace.workspace_id === DEFAULT_WORKSPACE_ID}
               >
@@ -962,13 +1142,23 @@ export const Sidebar: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
-                  setShowWorkspaceForm((current) => !current)
+                  setShowWorkspaceForm((current) => {
+                    const next = !current
+                    if (next) {
+                      setWorkspacePresetWebSearch(webSearchEnabled)
+                      setWorkspacePresetKnowledgeBase(knowledgeBaseEnabled)
+                      setWorkspacePresetMcpServers(enabledMcpServers)
+                      setWorkspacePresetDeckTheme('default')
+                      setWorkspacePresetDeckSlideCount(8)
+                    }
+                    return next
+                  })
                   setShowWorkspaceEditForm(false)
                   setShowWorkspaceDeleteForm(false)
                   setError('')
                 }}
                 className="rounded-lg p-1 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-                title="新建工作区"
+                title="Create workspace"
               >
                 <Plus size={12} />
               </button>
@@ -983,7 +1173,7 @@ export const Sidebar: React.FC = () => {
           >
             {workspaces.map((workspace) => (
               <option key={workspace.workspace_id} value={workspace.workspace_id}>
-                {workspace.name}（{workspace.session_count} 个对话）
+                {workspace.name} ({workspace.session_count} sessions)
               </option>
             ))}
           </select>
@@ -1001,18 +1191,30 @@ export const Sidebar: React.FC = () => {
                   </div>
                 </div>
                 <span className="shrink-0 text-[10px] text-text-secondary">
-                  {currentWorkspace.session_count} 个对话
-                </span>
+                  {currentWorkspace.session_count} 涓璇?                </span>
               </div>
               {currentWorkspace.description && (
                 <div className="mt-1.5 text-[11px] leading-relaxed text-text-secondary">
                   {currentWorkspace.description}
                 </div>
               )}
+              <div className="mt-2 grid gap-1 text-[10px] text-text-secondary">
+                <div>
+                  Tools: {currentWorkspacePreset?.tool_config.web_search_enabled ? 'Web on' : 'Web off'} / {currentWorkspacePreset?.tool_config.knowledge_base_enabled === false ? 'KB off' : 'KB on'}
+
+                </div>
+                <div>Connectors: {currentWorkspaceConnectorSummary}</div>
+                <div>
+                  Panels: {currentWorkspacePreset?.default_panels.length ?? 0}{currentWorkspacePanelSummary ? ` / ${currentWorkspacePanelSummary}` : ''}
+                </div>
+                <div>
+                  Deck: {WORKSPACE_DECK_THEME_LABELS[currentWorkspacePreset?.output_preset.deck_theme ?? 'default']} / {currentWorkspacePreset?.output_preset.target_slide_count ?? 8} slides
+
+                </div>
+              </div>
               {currentWorkspace.workspace_id === DEFAULT_WORKSPACE_ID && (
                 <div className="mt-1.5 text-[10px] text-text-secondary">
-                  默认工作区受保护，不能被删除。
-                </div>
+                  榛樿宸ヤ綔鍖哄彈淇濇姢锛屼笉鑳借鍒犻櫎銆?                </div>
               )}
             </div>
           )}
@@ -1021,7 +1223,7 @@ export const Sidebar: React.FC = () => {
               <input
                 value={workspaceName}
                 onChange={(event) => setWorkspaceName(event.target.value)}
-                placeholder="工作区名称"
+                placeholder="Workspace name"
                 className="w-full rounded-lg border border-bg-border bg-bg-secondary px-2.5 py-2 text-xs text-text-primary outline-none placeholder:text-text-secondary"
               />
               <select
@@ -1029,12 +1231,95 @@ export const Sidebar: React.FC = () => {
                 onChange={(event) => setWorkspaceColor(event.target.value as Workspace['color'])}
                 className="w-full rounded-lg border border-bg-border bg-bg-secondary px-2.5 py-2 text-xs text-text-primary outline-none"
               >
-                <option value="blue">蓝色</option>
-                <option value="green">绿色</option>
-                <option value="amber">琥珀</option>
-                <option value="rose">玫瑰</option>
-                <option value="slate">石板</option>
+                <option value="blue">钃濊壊</option>
+                <option value="green">缁胯壊</option>
+                <option value="amber">鐞ョ弨</option>
+                <option value="rose">鐜懓</option>
+                <option value="slate">鐭虫澘</option>
               </select>
+              <div className="rounded-lg border border-bg-border bg-bg-secondary/60 p-2.5 text-[11px] text-text-secondary">
+                <div className="font-medium text-text-primary">Workspace preset</div>
+                <div className="mt-1">Save the current workbench snapshot: panels, tool toggles, and deck defaults.</div>
+                <div className="mt-2 grid gap-2">
+                  <label className="flex items-center justify-between gap-3">
+                    <span>鑱旂綉鎼滅储</span>
+                    <input
+                      type="checkbox"
+                      checked={workspacePresetWebSearch}
+                      onChange={(event) => setWorkspacePresetWebSearch(event.target.checked)}
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-3">
+                    <span>Knowledge base</span>
+                    <input
+                      type="checkbox"
+                      checked={workspacePresetKnowledgeBase}
+                      onChange={(event) => setWorkspacePresetKnowledgeBase(event.target.checked)}
+                    />
+                  </label>
+                  <div className="grid gap-1">
+                    <span>MCP Connectors</span>
+                    {availableMcpConnectors.length === 0 ? (
+                      <div className="rounded-lg border border-dashed border-bg-border bg-bg-primary px-2.5 py-2 text-[10px] text-text-secondary">
+                        No connectors available.
+                      </div>
+                    ) : (
+                      <div className="grid gap-1.5 rounded-lg border border-bg-border bg-bg-primary p-2">
+                        {availableMcpConnectors.map((connector) => (
+                          <label
+                            key={`workspace-create-${connector.name}`}
+                            className="flex items-start justify-between gap-3 rounded-md px-2 py-1.5 hover:bg-bg-hover"
+                          >
+                            <div className="min-w-0">
+                              <div className="text-text-primary">{connector.label}</div>
+                              <div className="text-[10px] leading-relaxed text-text-secondary">
+                                {connector.description}
+                              </div>
+                            </div>
+                            <input
+                              type="checkbox"
+                              checked={workspacePresetMcpServers.includes(connector.name)}
+                              onChange={(event) =>
+                                setWorkspacePresetMcpServers((current) =>
+                                  toggleConnectorSelection(current, connector.name, event.target.checked),
+                                )
+                              }
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <label className="grid gap-1">
+                    <span>Deck 涓婚</span>
+                    <select
+                      value={workspacePresetDeckTheme}
+                      onChange={(event) => setWorkspacePresetDeckTheme(event.target.value as 'default' | 'midnight' | 'sunrise')}
+                      className="w-full rounded-lg border border-bg-border bg-bg-primary px-2.5 py-2 text-xs text-text-primary outline-none"
+                    >
+                      <option value="default">Default</option>
+                      <option value="midnight">Midnight Brief</option>
+                      <option value="sunrise">Sunrise Review</option>
+                    </select>
+                  </label>
+                  <label className="grid gap-1">
+                    <span>Deck 椤垫暟</span>
+                    <input
+                      type="number"
+                      min={4}
+                      max={10}
+                      value={workspacePresetDeckSlideCount}
+                      onChange={(event) =>
+                        setWorkspacePresetDeckSlideCount(
+                          Math.max(4, Math.min(10, Number(event.target.value) || 8)),
+                        )
+                      }
+                      className="w-full rounded-lg border border-bg-border bg-bg-primary px-2.5 py-2 text-xs text-text-primary outline-none"
+                    />
+                  </label>
+                  <div>Current panel snapshot: {storePanels.length} panels</div>
+                </div>
+              </div>
               <div className="flex items-center justify-end gap-2">
                 <button
                   type="button"
@@ -1042,10 +1327,15 @@ export const Sidebar: React.FC = () => {
                     setShowWorkspaceForm(false)
                     setWorkspaceName('')
                     setWorkspaceColor('blue')
+                    setWorkspacePresetWebSearch(webSearchEnabled)
+                    setWorkspacePresetKnowledgeBase(knowledgeBaseEnabled)
+                    setWorkspacePresetMcpServers(enabledMcpServers)
+                    setWorkspacePresetDeckTheme('default')
+                    setWorkspacePresetDeckSlideCount(8)
                   }}
                   className="rounded-lg px-2 py-1 text-[11px] text-text-secondary transition-colors hover:text-text-primary"
                 >
-                  取消
+                  鍙栨秷
                 </button>
                 <button
                   type="button"
@@ -1055,7 +1345,7 @@ export const Sidebar: React.FC = () => {
                   disabled={creatingWorkspace}
                   className="rounded-lg border border-bg-border px-2.5 py-1 text-[11px] text-text-primary transition-colors hover:border-accent-blue/40 disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  {creatingWorkspace ? '创建中…' : '创建'}
+                  {creatingWorkspace ? 'Creating...' : 'Create'}
                 </button>
               </div>
             </div>
@@ -1065,13 +1355,13 @@ export const Sidebar: React.FC = () => {
               <input
                 value={workspaceEditName}
                 onChange={(event) => setWorkspaceEditName(event.target.value)}
-                placeholder="工作区名称"
+                placeholder="Workspace name"
                 className="w-full rounded-lg border border-bg-border bg-bg-secondary px-2.5 py-2 text-xs text-text-primary outline-none placeholder:text-text-secondary"
               />
               <textarea
                 value={workspaceEditDescription}
                 onChange={(event) => setWorkspaceEditDescription(event.target.value)}
-                placeholder="工作区描述"
+                placeholder="Workspace description"
                 className="min-h-[72px] w-full resize-none rounded-lg border border-bg-border bg-bg-secondary px-2.5 py-2 text-xs text-text-primary outline-none placeholder:text-text-secondary"
               />
               <select
@@ -1079,19 +1369,102 @@ export const Sidebar: React.FC = () => {
                 onChange={(event) => setWorkspaceEditColor(event.target.value as Workspace['color'])}
                 className="w-full rounded-lg border border-bg-border bg-bg-secondary px-2.5 py-2 text-xs text-text-primary outline-none"
               >
-                <option value="blue">蓝色</option>
-                <option value="green">绿色</option>
-                <option value="amber">琥珀</option>
-                <option value="rose">玫瑰</option>
-                <option value="slate">石板</option>
+                <option value="blue">钃濊壊</option>
+                <option value="green">缁胯壊</option>
+                <option value="amber">鐞ョ弨</option>
+                <option value="rose">鐜懓</option>
+                <option value="slate">鐭虫澘</option>
               </select>
+              <div className="rounded-lg border border-bg-border bg-bg-secondary/60 p-2.5 text-[11px] text-text-secondary">
+                <div className="font-medium text-text-primary">Workspace preset</div>
+                <div className="mt-1">Saving here overwrites the workspace default panels with the current workbench snapshot.</div>
+                <div className="mt-2 grid gap-2">
+                  <label className="flex items-center justify-between gap-3">
+                    <span>鑱旂綉鎼滅储</span>
+                    <input
+                      type="checkbox"
+                      checked={workspaceEditPresetWebSearch}
+                      onChange={(event) => setWorkspaceEditPresetWebSearch(event.target.checked)}
+                    />
+                  </label>
+                  <label className="flex items-center justify-between gap-3">
+                    <span>Knowledge base</span>
+                    <input
+                      type="checkbox"
+                      checked={workspaceEditPresetKnowledgeBase}
+                      onChange={(event) => setWorkspaceEditPresetKnowledgeBase(event.target.checked)}
+                    />
+                  </label>
+                  <div className="grid gap-1">
+                    <span>MCP Connectors</span>
+                    {availableMcpConnectors.length === 0 ? (
+                      <div className="rounded-lg border border-dashed border-bg-border bg-bg-primary px-2.5 py-2 text-[10px] text-text-secondary">
+                        No connectors available.
+                      </div>
+                    ) : (
+                      <div className="grid gap-1.5 rounded-lg border border-bg-border bg-bg-primary p-2">
+                        {availableMcpConnectors.map((connector) => (
+                          <label
+                            key={`workspace-edit-${connector.name}`}
+                            className="flex items-start justify-between gap-3 rounded-md px-2 py-1.5 hover:bg-bg-hover"
+                          >
+                            <div className="min-w-0">
+                              <div className="text-text-primary">{connector.label}</div>
+                              <div className="text-[10px] leading-relaxed text-text-secondary">
+                                {connector.description}
+                              </div>
+                            </div>
+                            <input
+                              type="checkbox"
+                              checked={workspaceEditPresetMcpServers.includes(connector.name)}
+                              onChange={(event) =>
+                                setWorkspaceEditPresetMcpServers((current) =>
+                                  toggleConnectorSelection(current, connector.name, event.target.checked),
+                                )
+                              }
+                            />
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <label className="grid gap-1">
+                    <span>Deck 涓婚</span>
+                    <select
+                      value={workspaceEditPresetDeckTheme}
+                      onChange={(event) => setWorkspaceEditPresetDeckTheme(event.target.value as 'default' | 'midnight' | 'sunrise')}
+                      className="w-full rounded-lg border border-bg-border bg-bg-primary px-2.5 py-2 text-xs text-text-primary outline-none"
+                    >
+                      <option value="default">Default</option>
+                      <option value="midnight">Midnight Brief</option>
+                      <option value="sunrise">Sunrise Review</option>
+                    </select>
+                  </label>
+                  <label className="grid gap-1">
+                    <span>Deck 椤垫暟</span>
+                    <input
+                      type="number"
+                      min={4}
+                      max={10}
+                      value={workspaceEditPresetDeckSlideCount}
+                      onChange={(event) =>
+                        setWorkspaceEditPresetDeckSlideCount(
+                          Math.max(4, Math.min(10, Number(event.target.value) || 8)),
+                        )
+                      }
+                      className="w-full rounded-lg border border-bg-border bg-bg-primary px-2.5 py-2 text-xs text-text-primary outline-none"
+                    />
+                  </label>
+                  <div>Current panel snapshot: {storePanels.length} panels</div>
+                </div>
+              </div>
               <div className="flex items-center justify-end gap-2">
                 <button
                   type="button"
                   onClick={cancelWorkspaceEditor}
                   className="rounded-lg px-2 py-1 text-[11px] text-text-secondary transition-colors hover:text-text-primary"
                 >
-                  取消
+                  鍙栨秷
                 </button>
                 <button
                   type="button"
@@ -1101,7 +1474,7 @@ export const Sidebar: React.FC = () => {
                   disabled={updatingWorkspace}
                   className="rounded-lg border border-bg-border px-2.5 py-1 text-[11px] text-text-primary transition-colors hover:border-accent-blue/40 disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  {updatingWorkspace ? '保存中…' : '保存'}
+                  {updatingWorkspace ? 'Saving...' : 'Save'}
                 </button>
               </div>
             </div>
@@ -1110,10 +1483,9 @@ export const Sidebar: React.FC = () => {
             currentWorkspace &&
             currentWorkspace.workspace_id !== DEFAULT_WORKSPACE_ID && (
               <div className="mt-3 space-y-2 rounded-xl border border-accent-red/20 bg-accent-red/5 p-2.5">
-                <div className="text-xs font-medium text-text-primary">删除工作区</div>
+                <div className="text-xs font-medium text-text-primary">Delete workspace</div>
                 <div className="text-[11px] leading-relaxed text-text-secondary">
-                  删除前会先把当前工作区内的全部对话迁移到其他工作区。
-                </div>
+                  鍒犻櫎鍓嶄細鍏堟妸褰撳墠宸ヤ綔鍖哄唴鐨勫叏閮ㄥ璇濊縼绉诲埌鍏朵粬宸ヤ綔鍖恒€?                </div>
                 <select
                   value={workspaceDeleteTargetId}
                   onChange={(event) => setWorkspaceDeleteTargetId(event.target.value)}
@@ -1121,7 +1493,7 @@ export const Sidebar: React.FC = () => {
                 >
                   {workspaceDeleteTargets.map((workspace) => (
                     <option key={workspace.workspace_id} value={workspace.workspace_id}>
-                      迁移到 {workspace.name}
+                      杩佺Щ鍒?{workspace.name}
                     </option>
                   ))}
                 </select>
@@ -1131,7 +1503,7 @@ export const Sidebar: React.FC = () => {
                     onClick={cancelWorkspaceDelete}
                     className="rounded-lg px-2 py-1 text-[11px] text-text-secondary transition-colors hover:text-text-primary"
                   >
-                    取消
+                    鍙栨秷
                   </button>
                   <button
                     type="button"
@@ -1141,7 +1513,7 @@ export const Sidebar: React.FC = () => {
                     disabled={deletingWorkspace || workspaceDeleteTargets.length === 0}
                     className="rounded-lg border border-accent-red/30 px-2.5 py-1 text-[11px] text-accent-red transition-colors hover:bg-accent-red/10 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    {deletingWorkspace ? '删除中…' : '确认删除'}
+                    {deletingWorkspace ? 'Deleting...' : 'Confirm delete'}
                   </button>
                 </div>
               </div>
@@ -1154,7 +1526,7 @@ export const Sidebar: React.FC = () => {
           loading={loadingNew}
         >
           <Plus size={15} />
-          新建对话
+          鏂板缓瀵硅瘽
         </Button>
       </div>
 
@@ -1164,7 +1536,7 @@ export const Sidebar: React.FC = () => {
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="搜索标题、标签或消息内容"
+            placeholder="鎼滅储鏍囬銆佹爣绛炬垨娑堟伅鍐呭"
             className="w-full bg-transparent text-xs text-text-primary outline-none placeholder:text-text-secondary"
           />
         </label>
@@ -1187,12 +1559,12 @@ export const Sidebar: React.FC = () => {
             }`}
           >
             <Bookmark size={10} />
-            书签 {bookmarks.length > 0 ? bookmarks.length : ''}
+            涔︾ {bookmarks.length > 0 ? bookmarks.length : ''}
           </button>
           {([
-            ['all', `全部 ${counts.all}`],
-            ['favorite', `收藏 ${counts.favorite}`],
-            ['archived', `归档 ${counts.archived}`],
+            ['all', `鍏ㄩ儴 ${counts.all}`],
+            ['favorite', `鏀惰棌 ${counts.favorite}`],
+            ['archived', `褰掓。 ${counts.archived}`],
           ] as Array<[SessionViewMode, string]>).map(([value, label]) => {
             const active = viewMode === value
             return (
@@ -1217,7 +1589,7 @@ export const Sidebar: React.FC = () => {
             <input
               value={bookmarkSearch}
               onChange={(event) => setBookmarkSearch(event.target.value)}
-              placeholder="搜索书签内容、会话名或模型"
+              placeholder="Search bookmarks, sessions, or models"
               className="w-full bg-transparent text-xs text-text-primary outline-none placeholder:text-text-secondary"
             />
           </label>
@@ -1243,7 +1615,7 @@ export const Sidebar: React.FC = () => {
         )}
         {canDragSort && filteredSessions.length > 1 && (
           <p className="mt-2 text-[10px] text-text-secondary/65">
-            提示：可拖拽会话调整顺序
+            鎻愮ず锛氬彲鎷栨嫿浼氳瘽璋冩暣椤哄簭
           </p>
         )}
 
@@ -1255,15 +1627,14 @@ export const Sidebar: React.FC = () => {
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 pb-2">
-        {/* 书签视图 */}
+        {/* 涔︾瑙嗗浘 */}
         {showBookmarks && (
           <div className="mb-2">
             {bookmarks.length === 0 ? (
-              <div className="py-6 text-center text-xs text-text-secondary">暂无书签消息</div>
+              <div className="py-6 text-center text-xs text-text-secondary">鏆傛棤涔︾娑堟伅</div>
             ) : bookmarkGroups.length === 0 ? (
               <div className="py-6 text-center text-xs text-text-secondary">
-                没有找到匹配的书签。
-              </div>
+                娌℃湁鎵惧埌鍖归厤鐨勪功绛俱€?              </div>
             ) : (
               <div className="space-y-3">
                 {bookmarkGroups.map((group) => (
@@ -1277,8 +1648,7 @@ export const Sidebar: React.FC = () => {
                           {group.title}
                         </div>
                         <div className="mt-0.5 text-[10px] text-text-secondary/60">
-                          {group.items.length} 条书签
-                        </div>
+                          {group.items.length} 鏉′功绛?                        </div>
                       </div>
                       <div className="shrink-0 text-[10px] text-text-secondary/55">
                         {formatTime(group.updatedAt)}
@@ -1304,7 +1674,7 @@ export const Sidebar: React.FC = () => {
                           <div className="mb-1.5 flex items-start justify-between gap-2">
                             <div className="min-w-0 flex-1">
                               <div className="truncate text-[10px] text-text-secondary/60">
-                                {bm.modelId ? `${bm.modelId} · ` : ''}
+                                {bm.modelId ? `${bm.modelId} 路 ` : ''}
                                 {formatTime(bm.updatedAt || bm.createdAt)}
                               </div>
                             </div>
@@ -1316,7 +1686,7 @@ export const Sidebar: React.FC = () => {
                                   pushComposerSeed({ text: bm.content })
                                 }}
                                 className="rounded p-0.5 text-text-secondary/50 transition-colors hover:text-accent-blue"
-                                title="填入输入框"
+                                title="Send to composer"
                               >
                                 <Plus size={10} />
                               </button>
@@ -1328,7 +1698,7 @@ export const Sidebar: React.FC = () => {
                                 }}
                                 disabled={removingBookmarkId === bm.id}
                                 className="rounded p-0.5 text-text-secondary/50 transition-colors hover:text-accent-red"
-                                title="移除书签"
+                                title="绉婚櫎涔︾"
                               >
                                 <X size={10} />
                               </button>
@@ -1338,8 +1708,7 @@ export const Sidebar: React.FC = () => {
                             {bm.content}
                           </p>
                           <div className="mt-2 text-[10px] text-text-secondary/55">
-                            点击可跳转到原消息
-                          </div>
+                            鐐瑰嚮鍙烦杞埌鍘熸秷鎭?                          </div>
                         </div>
                       ))}
                     </div>
@@ -1353,7 +1722,7 @@ export const Sidebar: React.FC = () => {
         {!showBookmarks && filteredSessions.length === 0 ? (
           <div className="py-8 text-center text-xs text-text-secondary">{emptyStateMessage}</div>
         ) : !showBookmarks && (
-          <div className="space-y-1">
+          <div className="space-y-1" data-testid="session-list">
             {filteredSessions.map((session) => {
               const isActive = session.session_id === currentSessionId
               const isEditing = editingSessionId === session.session_id
@@ -1369,6 +1738,8 @@ export const Sidebar: React.FC = () => {
               return (
                 <div
                   key={session.session_id}
+                  data-testid="session-item"
+                  data-session-id={session.session_id}
                   className={`group cursor-pointer rounded-xl px-3 py-2.5 transition-colors ${
                     isActive
                       ? 'bg-accent-blue/15 text-text-primary'
@@ -1433,7 +1804,7 @@ export const Sidebar: React.FC = () => {
                             onChange={(event) => setEditingTitle(event.target.value)}
                             onKeyDown={handleEditKeyDown}
                             className="w-full rounded-lg border border-bg-border bg-bg-primary px-2.5 py-1.5 text-xs text-text-primary outline-none"
-                            placeholder="对话标题"
+                            placeholder="瀵硅瘽鏍囬"
                             autoFocus
                           />
                           <div className="flex items-start gap-2 rounded-lg border border-bg-border bg-bg-primary px-2.5 py-1.5">
@@ -1443,7 +1814,7 @@ export const Sidebar: React.FC = () => {
                               onChange={(event) => setEditingTags(event.target.value)}
                               onKeyDown={handleEditKeyDown}
                               className="w-full bg-transparent text-[11px] text-text-primary outline-none placeholder:text-text-secondary"
-                              placeholder="标签，用逗号分隔"
+                              placeholder="鏍囩锛岀敤閫楀彿鍒嗛殧"
                             />
                           </div>
                           <div className="flex items-center justify-end gap-1.5">
@@ -1454,7 +1825,7 @@ export const Sidebar: React.FC = () => {
                                 cancelEditing()
                               }}
                               className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-                              title="取消"
+                              title="鍙栨秷"
                             >
                               <X size={13} />
                             </button>
@@ -1465,7 +1836,7 @@ export const Sidebar: React.FC = () => {
                                 void saveEditing()
                               }}
                               className="rounded-lg p-1.5 text-accent-blue transition-colors hover:bg-accent-blue/10"
-                              title="保存"
+                              title="淇濆瓨"
                             >
                               <Check size={13} />
                             </button>
@@ -1481,7 +1852,7 @@ export const Sidebar: React.FC = () => {
                               />
                             )}
                             <div className="truncate text-xs font-medium">
-                              {session.title || '新建对话'}
+                              {session.title || '鏂板缓瀵硅瘽'}
                             </div>
                             {session.is_pinned && (
                               <Pin size={11} className="shrink-0 fill-current text-accent-blue" />
@@ -1491,13 +1862,11 @@ export const Sidebar: React.FC = () => {
                             )}
                             {session.is_archived && (
                               <span className="rounded-full border border-bg-border px-1.5 py-0.5 text-[9px] text-text-secondary">
-                                已归档
-                              </span>
+                                宸插綊妗?                              </span>
                             )}
                           </div>
                           <div className="mt-0.5 text-[10px] text-text-secondary/70">
-                            {formatTime(session.updated_at)} · {session.message_count} 条消息
-                          </div>
+                            {formatTime(session.updated_at)} 路 {session.message_count} 鏉℃秷鎭?                          </div>
                           {search.trim() && (
                             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                               <span className="rounded-full bg-bg-secondary px-2 py-0.5 text-[10px] text-text-secondary">
@@ -1547,7 +1916,7 @@ export const Sidebar: React.FC = () => {
                             : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
                         }`}
                         disabled={savingId === session.session_id}
-                        title={session.is_pinned ? '取消置顶' : '置顶会话'}
+                        title={session.is_pinned ? '鍙栨秷缃《' : '缃《浼氳瘽'}
                       >
                         <Pin size={12} className={session.is_pinned ? 'fill-current' : ''} />
                       </button>
@@ -1564,7 +1933,7 @@ export const Sidebar: React.FC = () => {
                             : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
                         }`}
                         disabled={savingId === session.session_id}
-                        title={session.is_favorite ? '取消收藏' : '收藏对话'}
+                        title={session.is_favorite ? '鍙栨秷鏀惰棌' : '鏀惰棌瀵硅瘽'}
                       >
                         <Star size={12} className={session.is_favorite ? 'fill-current' : ''} />
                       </button>
@@ -1580,7 +1949,7 @@ export const Sidebar: React.FC = () => {
                         }}
                         className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
                         disabled={savingId === session.session_id}
-                        title="移动到工作区"
+                        title="绉诲姩鍒板伐浣滃尯"
                       >
                         <FolderOpen size={12} />
                       </button>
@@ -1589,7 +1958,7 @@ export const Sidebar: React.FC = () => {
                         onClick={(event) => startEditing(event, session)}
                         className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
                         disabled={savingId === session.session_id}
-                        title="重命名与编辑标签"
+                        title="閲嶅懡鍚嶄笌缂栬緫鏍囩"
                       >
                         <Pencil size={12} />
                       </button>
@@ -1602,7 +1971,7 @@ export const Sidebar: React.FC = () => {
                         }}
                         className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
                         disabled={savingId === session.session_id}
-                        title={session.is_archived ? '恢复对话' : '归档对话'}
+                        title={session.is_archived ? '鎭㈠瀵硅瘽' : '褰掓。瀵硅瘽'}
                       >
                         {session.is_archived ? (
                           <ArchiveRestore size={12} />
@@ -1615,7 +1984,7 @@ export const Sidebar: React.FC = () => {
                         onClick={(event) => void handleExport(event, session)}
                         className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
                         disabled={exportingId === session.session_id}
-                        title="导出为 Markdown"
+                        title="瀵煎嚭涓?Markdown"
                       >
                         {exportingId === session.session_id ? (
                           <span className="block h-3 w-3 rounded-full border border-current border-t-transparent animate-spin" />
@@ -1627,7 +1996,7 @@ export const Sidebar: React.FC = () => {
                         onClick={(event) => handleDelete(event, session)}
                         className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-accent-red/10 hover:text-accent-red"
                         disabled={deletingId === session.session_id}
-                        title="删除对话"
+                        title="鍒犻櫎瀵硅瘽"
                       >
                         {deletingId === session.session_id ? (
                           <span className="block h-3 w-3 rounded-full border border-current border-t-transparent animate-spin" />
@@ -1643,7 +2012,7 @@ export const Sidebar: React.FC = () => {
                       onClick={(event) => event.stopPropagation()}
                     >
                       <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-text-secondary">
-                        移动到工作区
+                        绉诲姩鍒板伐浣滃尯
                       </div>
                       <select
                         value={session.workspace_id}
@@ -1674,8 +2043,7 @@ export const Sidebar: React.FC = () => {
           className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 pb-[calc(env(safe-area-inset-bottom)+0.625rem)] text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
         >
           <Settings size={15} />
-          设置与上传
-        </button>
+          璁剧疆涓庝笂浼?        </button>
       </div>
     </>
   )
@@ -1690,14 +2058,14 @@ export const Sidebar: React.FC = () => {
         <button
           onClick={toggleSidebar}
           className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-          title="展开侧边栏"
+          title="Expand sidebar"
         >
           <Brain size={20} />
         </button>
         <button
           onClick={handleNewChat}
           className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-          title="新建对话"
+          title="鏂板缓瀵硅瘽"
         >
           <Plus size={20} />
         </button>
@@ -1710,7 +2078,7 @@ export const Sidebar: React.FC = () => {
       <>
         <button
           type="button"
-          aria-label="关闭侧边栏遮罩"
+          aria-label="Close sidebar overlay"
           onClick={toggleSidebar}
           className="fixed inset-0 z-30 bg-black/50 backdrop-blur-[1px]"
         />

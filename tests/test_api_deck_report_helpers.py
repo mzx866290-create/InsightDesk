@@ -78,6 +78,8 @@ def test_build_create_deck_kwargs_resolves_prompt_runtime_and_theme():
         knowledge_base_enabled=True,
         target_slide_count=6,
         theme="sunrise",
+        answer_group_id=" group-1 ",
+        panel_id=" panel-main ",
     )
 
     kwargs = api_deck_report_helpers.build_create_deck_kwargs(
@@ -98,6 +100,8 @@ def test_build_create_deck_kwargs_resolves_prompt_runtime_and_theme():
         "vector_store_path": "kb-path",
         "system_prompt": "prompt-content",
         "theme": "SUNRISE",
+        "source_answer_group_id": "group-1",
+        "source_panel_id": "panel-main",
     }
 
 
@@ -227,3 +231,100 @@ def test_report_download_payload_builds_presentation_and_filename():
     buffer = io.BytesIO()
     presentation.save(buffer)
     assert buffer.getvalue()
+
+
+def test_build_scoped_report_messages_selects_requested_panel_and_appends_sources():
+    records = [
+        {
+            "type": "human",
+            "content": "Board Update",
+            "answer_group_id": "group-1",
+            "timestamp": 1,
+        },
+        {
+            "type": "ai",
+            "content": "Other panel answer.",
+            "panel_id": "panel-alt",
+            "answer_group_id": "group-1",
+            "timestamp": 2,
+            "sources": [],
+            "task_type": "",
+            "model_id": "assistant",
+        },
+        {
+            "type": "ai",
+            "content": "Research answer.",
+            "panel_id": "panel-main",
+            "answer_group_id": "group-1",
+            "timestamp": 3,
+            "sources": [
+                {
+                    "title": "Example Source",
+                    "url": "https://example.com/report",
+                    "snippet": "Fresh market signal",
+                }
+            ],
+            "task_type": "web_research",
+            "model_id": "web_research",
+        },
+    ]
+
+    messages = api_deck_report_helpers.build_scoped_report_messages(
+        records,
+        answer_group_id="group-1",
+        panel_id="panel-main",
+        human_message_factory=lambda content: HumanMessage(content=content),
+        ai_message_factory=lambda content: AIMessage(content=content),
+    )
+
+    assert [message.__class__.__name__ for message in messages] == [
+        "HumanMessage",
+        "AIMessage",
+    ]
+    assert messages[0].content == "Board Update"
+    assert "Research answer." in messages[1].content
+    assert "参考来源" in messages[1].content
+    assert "https://example.com/report" in messages[1].content
+    assert "Other panel answer." not in messages[1].content
+
+
+def test_build_scoped_report_messages_prefers_web_research_when_panel_is_omitted():
+    records = [
+        {
+            "type": "human",
+            "content": "Trend scan",
+            "answer_group_id": "group-2",
+            "timestamp": 1,
+        },
+        {
+            "type": "ai",
+            "content": "Generic answer.",
+            "panel_id": "panel-a",
+            "answer_group_id": "group-2",
+            "timestamp": 5,
+            "sources": [],
+            "task_type": "",
+            "model_id": "assistant",
+        },
+        {
+            "type": "ai",
+            "content": "Research-first answer.",
+            "panel_id": "panel-b",
+            "answer_group_id": "group-2",
+            "timestamp": 2,
+            "sources": [{"title": "Live feed", "snippet": "Realtime update"}],
+            "task_type": "web_research",
+            "model_id": "web_research",
+        },
+    ]
+
+    messages = api_deck_report_helpers.build_scoped_report_messages(
+        records,
+        answer_group_id="group-2",
+        human_message_factory=lambda content: HumanMessage(content=content),
+        ai_message_factory=lambda content: AIMessage(content=content),
+    )
+
+    assert messages[0].content == "Trend scan"
+    assert "Research-first answer." in messages[1].content
+    assert "Generic answer." not in messages[1].content

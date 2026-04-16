@@ -21,6 +21,7 @@ import type {
   KnowledgeBase,
   KnowledgeBaseChunk,
   KBHealthData,
+  RetrievalDebugItem,
   RetrievalTestResult,
   DashboardTemplateConfig,
 } from '../../api/client'
@@ -159,6 +160,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
   const [testQuery, setTestQuery] = useState('')
   const [testResult, setTestResult] = useState<RetrievalTestResult | null>(null)
   const [testingRetrieval, setTestingRetrieval] = useState(false)
+  const [retrievalMode, setRetrievalMode] = useState<'semantic' | 'keyword' | 'hybrid'>('semantic')
   const [retrievalSearchK, setRetrievalSearchK] = useState(5)
   const [retrievalFetchK, setRetrievalFetchK] = useState(10)
   const [retrievalUseRerank, setRetrievalUseRerank] = useState(false)
@@ -557,6 +559,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
     setTestResult(null)
     try {
       const result = await testKBRetrieval(testQuery, {
+        retrieval_mode: retrievalMode,
         search_k: retrievalSearchK,
         fetch_k: retrievalFetchK,
         use_rerank: retrievalUseRerank,
@@ -567,6 +570,71 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
     } finally {
       setTestingRetrieval(false)
     }
+  }
+
+  const renderRetrievalDebugList = (
+    title: string,
+    items: RetrievalTestResult['top_results'] | undefined,
+    accentClass: string,
+  ) => {
+    if (!items || items.length === 0) return null
+    return (
+      <div className="space-y-1.5 mt-2">
+        <p className="text-[11px] font-medium text-text-secondary/70">{title}</p>
+        {items.map((item, index) => (
+          <div key={`${title}-${index}`} className="bg-bg-secondary/60 rounded-md p-2 space-y-1">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${accentClass}`}>#{item.rank ?? index + 1}</span>
+                <p className="text-[11px] font-medium text-accent-blue/80 truncate">{item.source}</p>
+              </div>
+              <span className="text-[10px] text-text-secondary/70 whitespace-nowrap">
+                score {Number(item.score ?? 0).toFixed(3)}
+              </span>
+            </div>
+            {renderFeedbackSummary(item)}
+            <p className="text-[11px] text-text-secondary/80 leading-relaxed">{item.snippet}</p>
+            {item.matched_terms && item.matched_terms.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {item.matched_terms.slice(0, 6).map((term) => (
+                  <span key={term} className="rounded-full bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-secondary">
+                    {term}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  const renderFeedbackSummary = (item: RetrievalDebugItem) => {
+    const positiveCount = typeof item.feedback_positive_count === 'number' ? item.feedback_positive_count : 0
+    const negativeCount = typeof item.feedback_negative_count === 'number' ? item.feedback_negative_count : 0
+    const netFeedback = typeof item.feedback_net === 'number' ? item.feedback_net : positiveCount - negativeCount
+    const feedbackBoost = typeof item.feedback_boost === 'number' ? item.feedback_boost : 0
+    const hasFeedbackSignal =
+      positiveCount > 0 ||
+      negativeCount > 0 ||
+      netFeedback !== 0 ||
+      Math.abs(feedbackBoost) >= 0.0005
+
+    if (!hasFeedbackSignal) return null
+
+    return (
+      <div className="flex flex-wrap gap-1">
+        <span className="rounded-full bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-secondary">
+          反馈 +{positiveCount}/-{negativeCount}
+        </span>
+        <span className="rounded-full bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-secondary">
+          净值 {netFeedback >= 0 ? '+' : ''}{netFeedback}
+        </span>
+        <span className="rounded-full bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-secondary">
+          boost {feedbackBoost >= 0 ? '+' : ''}{feedbackBoost.toFixed(3)}
+        </span>
+      </div>
+    )
   }
 
   const handleChunkSearch = () => {
@@ -1631,6 +1699,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                 {/* 参数配置 */}
                 <div className="mb-2 flex flex-wrap items-center gap-3 text-xs">
                   <label className="flex items-center gap-1.5 text-text-secondary">
+                    模式
+                    <select
+                      value={retrievalMode}
+                      onChange={(e) => setRetrievalMode(e.target.value as 'semantic' | 'keyword' | 'hybrid')}
+                      className="input-base py-0.5 text-xs"
+                    >
+                      <option value="semantic">仅向量</option>
+                      <option value="keyword">仅关键词</option>
+                      <option value="hybrid">混合检索</option>
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-1.5 text-text-secondary">
                     <input
                       type="checkbox"
                       checked={retrievalUseRerank}
@@ -1687,20 +1767,39 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                           <span className="text-text-secondary">命中数：<span className="text-text-primary font-medium">{testResult.results_count}</span></span>
                           <span className="text-text-secondary">耗时：<span className="text-text-primary font-medium">{testResult.latency_ms} ms</span></span>
                           {testResult.search_mode && (
-                            <span className={`rounded-full px-2 py-0.5 font-medium ${testResult.search_mode === 'vector_rerank' ? 'bg-accent-green/15 text-accent-green' : 'bg-accent-blue/15 text-accent-blue'}`}>
-                              {testResult.search_mode === 'vector_rerank' ? '向量 + 重排' : '仅向量'}
+                            <span className={`rounded-full px-2 py-0.5 font-medium ${
+                              testResult.search_mode.includes('rerank')
+                                ? 'bg-accent-green/15 text-accent-green'
+                                : testResult.search_mode === 'keyword'
+                                  ? 'bg-amber-300/15 text-amber-300'
+                                  : 'bg-accent-blue/15 text-accent-blue'
+                            }`}>
+                              {testResult.search_mode}
                             </span>
                           )}
                         </div>
-                        {testResult.top_results && testResult.top_results.length > 0 && (
-                          <div className="space-y-1.5 mt-2">
-                            {testResult.top_results.map((r, i) => (
-                              <div key={i} className="bg-bg-secondary/60 rounded-md p-2">
-                                <p className="text-[11px] font-medium text-accent-blue/80 mb-0.5">{r.source}</p>
-                                <p className="text-[11px] text-text-secondary/80 leading-relaxed">{r.snippet}</p>
-                              </div>
-                            ))}
+                        {testResult.coverage && (
+                          <div className="grid grid-cols-2 gap-2 text-[11px]">
+                            <div className="rounded-md bg-bg-secondary/60 p-2 text-text-secondary/80">
+                              去重来源：<span className="font-medium text-text-primary">{testResult.coverage.unique_sources}</span>
+                            </div>
+                            <div className="rounded-md bg-bg-secondary/60 p-2 text-text-secondary/80">
+                              命中词：<span className="font-medium text-text-primary">{testResult.coverage.matched_term_count}</span>
+                            </div>
                           </div>
+                        )}
+                        {testResult.rewrite_query && (
+                          <div className="rounded-md bg-bg-secondary/60 p-2 text-[11px] text-text-secondary/80">
+                            Effective Query：<span className="text-text-primary">{testResult.rewrite_query}</span>
+                          </div>
+                        )}
+                        {testResult.top_results && testResult.top_results.length > 0 && (
+                          <>
+                            {renderRetrievalDebugList('Top 命中片段', testResult.top_results, 'bg-accent-blue/15 text-accent-blue')}
+                            {renderRetrievalDebugList('向量候选', testResult.semantic_candidates, 'bg-accent-green/15 text-accent-green')}
+                            {renderRetrievalDebugList('关键词候选', testResult.keyword_candidates, 'bg-amber-300/15 text-amber-300')}
+                            {renderRetrievalDebugList('融合候选', testResult.fused_candidates, 'bg-accent-blue/15 text-accent-blue')}
+                          </>
                         )}
                       </>
                     )}

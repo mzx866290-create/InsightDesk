@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 echo ========================================
-echo 启动企业 AI 知识库系统
+echo 启动 InsightDesk
 echo ========================================
 echo.
 echo 正在启动 React + FastAPI 版本...

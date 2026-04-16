@@ -97,13 +97,11 @@ The most defensible areas are:
 - retrieval control UI
 - attachment workspace data isolation
 
-### Sprint 3
+### Sprint 3 (completed)
 
-- diff/comparison views
-- best-answer synthesis
 - continue / retry / fork lifecycle
 
-### Sprint 4
+### Sprint 4 (completed)
 
 - artifact abstraction
 - delivery matrix
@@ -122,6 +120,28 @@ The most defensible areas are:
 - task center
 - workflow visualization
 - deck/report generation path
+- retrieval diagnostics API
+- retrieval control UI (v1)
+- semantic / keyword / hybrid retrieval debug modes
+- citation retrieval feedback
+- attachment workspace data isolation
+- answer-group comparison review
+- recommended-answer promotion
+- continue / retry / fork lifecycle
+- artifact abstraction (v1)
+- delivery matrix (v1)
+- workspace presets (v1)
+- MCP connector catalog and workspace-scoped selection (v1)
+- security status, share-link audit, and token-safe request logging (v1)
+
+## Current Retrieval State
+
+- the production answer path defaults to semantic retrieval plus rerank, with automatic hybrid escalation for keyword-like queries
+- the retrieval console can already compare semantic / keyword / hybrid modes
+- fetch/top-k controls, candidate inspection, and basic coverage signals are available in the debug flow
+- answer citations and workflow nodes now expose basic retrieval observability metadata
+- citation thumbs-up / thumbs-down now feed back into lightweight source-level retrieval ranking
+- citation panels and retrieval debug lists now expose source-level feedback counts, net signal, and boost summary
 
 ## What Should Be Avoided
 

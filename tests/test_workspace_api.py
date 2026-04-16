@@ -71,6 +71,187 @@ def test_workspaces_list_create_and_activate(monkeypatch, tmp_path):
     assert stored_session["workspace_id"] == created_workspace["workspace_id"]
 
 
+def test_workspace_preset_roundtrip(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(api_server.app)
+
+    created = client.post(
+        "/api/workspaces",
+        json={
+            "name": "Research",
+            "color": "blue",
+            "activate": True,
+            "preset": {
+                "default_panels": [
+                    {
+                        "panel_id": "panel-main",
+                        "provider": "ollama",
+                        "connection_type": "ollama",
+                        "model": "qwen-main",
+                        "base_url": "http://localhost:11434",
+                        "api_key": "",
+                        "temperature": 0.3,
+                        "agent_mode": "auto",
+                    },
+                    {
+                        "panel_id": "panel-compare",
+                        "provider": "openai_compatible",
+                        "connection_type": "openai_compatible",
+                        "model": "openai/gpt-4o-mini",
+                        "base_url": "https://openrouter.ai/api/v1",
+                        "api_key": "",
+                        "temperature": 0.6,
+                        "agent_mode": "langgraph",
+                    },
+                ],
+                "tool_config": {
+                    "web_search_enabled": True,
+                    "knowledge_base_enabled": False,
+                    "mcp_servers_enabled": ["web-search"],
+                },
+                "output_preset": {
+                    "deck_theme": "midnight",
+                    "target_slide_count": 6,
+                },
+            },
+        },
+    )
+
+    assert created.status_code == 200
+    workspace = created.json()["workspace"]
+    assert workspace["preset"]["tool_config"] == {
+        "web_search_enabled": True,
+        "knowledge_base_enabled": False,
+        "mcp_servers_enabled": ["web-search"],
+    }
+    assert workspace["preset"]["output_preset"] == {
+        "deck_theme": "midnight",
+        "target_slide_count": 6,
+    }
+    assert [item["panel_id"] for item in workspace["preset"]["default_panels"]] == [
+        "panel-main",
+        "panel-compare",
+    ]
+
+    updated = client.patch(
+        f"/api/workspaces/{workspace['workspace_id']}",
+        json={
+            "preset": {
+                "default_panels": [
+                    {
+                        "panel_id": "panel-main",
+                        "provider": "ollama",
+                        "connection_type": "ollama",
+                        "model": "qwen-updated",
+                        "base_url": "http://localhost:11434",
+                        "api_key": "",
+                        "temperature": 0.4,
+                        "agent_mode": "plain_chat",
+                    }
+                ],
+                "tool_config": {
+                    "web_search_enabled": False,
+                    "knowledge_base_enabled": True,
+                    "mcp_servers_enabled": ["knowledge-base", "custom-crm"],
+                },
+                "output_preset": {
+                    "deck_theme": "sunrise",
+                    "target_slide_count": 9,
+                },
+            }
+        },
+    )
+
+    assert updated.status_code == 200
+    updated_workspace = updated.json()["workspace"]
+    assert updated_workspace["preset"]["tool_config"] == {
+        "web_search_enabled": False,
+        "knowledge_base_enabled": True,
+        "mcp_servers_enabled": ["knowledge-base", "custom-crm"],
+    }
+    assert updated_workspace["preset"]["output_preset"] == {
+        "deck_theme": "sunrise",
+        "target_slide_count": 9,
+    }
+    assert [item["model"] for item in updated_workspace["preset"]["default_panels"]] == [
+        "qwen-updated"
+    ]
+
+    listed = client.get("/api/workspaces")
+    assert listed.status_code == 200
+    listed_workspace = next(
+        item
+        for item in listed.json()["workspaces"]
+        if item["workspace_id"] == workspace["workspace_id"]
+    )
+    assert listed_workspace["preset"]["output_preset"]["deck_theme"] == "sunrise"
+    assert listed_workspace["preset"]["tool_config"]["mcp_servers_enabled"] == [
+        "knowledge-base",
+        "custom-crm",
+    ]
+
+
+def test_mcp_connector_catalog_endpoint(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        api_server,
+        "list_mcp_server_catalog",
+        lambda: [
+            {
+                "name": "knowledge-base",
+                "label": "Knowledge Base",
+                "description": "Internal KB",
+                "category": "knowledge",
+                "builtin": True,
+                "transport": "stdio",
+                "source": "default",
+            },
+            {
+                "name": "custom-crm",
+                "label": "CRM",
+                "description": "CRM records",
+                "category": "business",
+                "builtin": False,
+                "transport": "stdio",
+                "source": "config",
+            },
+        ],
+    )
+    monkeypatch.setattr(
+        api_server,
+        "default_mcp_server_names",
+        lambda: ["knowledge-base"],
+    )
+
+    client = TestClient(api_server.app)
+    response = client.get("/api/connectors/mcp")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "connectors": [
+            {
+                "name": "knowledge-base",
+                "label": "Knowledge Base",
+                "description": "Internal KB",
+                "category": "knowledge",
+                "builtin": True,
+                "transport": "stdio",
+                "source": "default",
+            },
+            {
+                "name": "custom-crm",
+                "label": "CRM",
+                "description": "CRM records",
+                "category": "business",
+                "builtin": False,
+                "transport": "stdio",
+                "source": "config",
+            },
+        ],
+        "default_enabled": ["knowledge-base"],
+    }
+
+
 def test_sessions_support_workspace_filters_and_move(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     db_path = tmp_path / "chat_history.db"
@@ -372,6 +553,68 @@ def test_delete_session_suppresses_late_task_writeback(monkeypatch, tmp_path):
     )
     assert task_store.get(late_record.task_id) is None
     assert api_server._tasks == {}
+
+
+def test_attachment_workspace_endpoints_require_session_in_current_workspace(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "chat_history.db"
+    history_cls = _history_cls_for_db(db_path)
+    client = TestClient(api_server.app)
+
+    created_workspace = client.post(
+        "/api/workspaces",
+        json={"name": "Ops", "color": "green", "activate": True},
+    )
+    assert created_workspace.status_code == 200
+    workspace = created_workspace.json()["workspace"]
+
+    other_workspace = client.post(
+        "/api/workspaces",
+        json={"name": "Finance", "color": "amber", "activate": False},
+    )
+    assert other_workspace.status_code == 200
+    wrong_workspace = other_workspace.json()["workspace"]
+
+    session_id = "session-attachment-workspace"
+    history = history_cls(session_id)
+    history.add_user_message(
+        "Use this brief",
+        answer_group_id="grp-brief",
+        files=[
+            {
+                "name": "brief.txt",
+                "media_type": "text/plain",
+                "data_url": "data:text/plain;base64,QnJpZWY=",
+                "size_bytes": 5,
+                "extracted_text": "Workspace isolated brief",
+            }
+        ],
+    )
+
+    stored_session = chat_store.get_session(session_id, db_path=str(db_path))
+    assert stored_session is not None
+    assert stored_session["workspace_id"] == workspace["workspace_id"]
+
+    ok_response = client.get(
+        f"/api/sessions/{session_id}/attachments",
+        params={"workspace_id": workspace["workspace_id"]},
+    )
+    assert ok_response.status_code == 200
+    attachment_id = ok_response.json()["attachments"][0]["attachment_id"]
+
+    blocked_list = client.get(
+        f"/api/sessions/{session_id}/attachments",
+        params={"workspace_id": wrong_workspace["workspace_id"]},
+    )
+    assert blocked_list.status_code == 404
+    assert blocked_list.json()["detail"] == "当前工作区中不存在该会话"
+
+    blocked_promote = client.post(
+        f"/api/sessions/{session_id}/attachments/{attachment_id}/promote",
+        params={"workspace_id": wrong_workspace["workspace_id"]},
+    )
+    assert blocked_promote.status_code == 404
+    assert blocked_promote.json()["detail"] == "当前工作区中不存在该会话"
 
 
 def test_delete_session_invalidates_session_and_deck_share_links(monkeypatch, tmp_path):

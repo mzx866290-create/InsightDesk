@@ -123,6 +123,12 @@ class SQLiteTaskStore:
                 ON attachment_promotions(task_id)
                 """
             )
+            cursor.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_attachment_promotions_status_updated
+                ON attachment_promotions(status, updated_at DESC, created_at DESC)
+                """
+            )
             conn.commit()
 
     @staticmethod
@@ -467,8 +473,8 @@ class SQLiteTaskStore:
         limit: int | None = None,
         ttl_seconds: int | None = None,
     ) -> None:
-        effective_limit = self.history_limit if limit is None else int(limit)
-        effective_ttl = self.ttl_seconds if ttl_seconds is None else int(ttl_seconds)
+        effective_limit = max(0, self.history_limit if limit is None else int(limit))
+        effective_ttl = max(0, self.ttl_seconds if ttl_seconds is None else int(ttl_seconds))
         with connect_sqlite(self.db_path) as conn:
             now = time.time()
             conn.execute(
@@ -504,4 +510,61 @@ class SQLiteTaskStore:
                     "DELETE FROM tasks WHERE task_id = ?",
                     [(task_id,) for task_id in stale_ids],
                 )
+            self._prune_orphaned_attachment_promotions(
+                conn,
+                limit=effective_limit,
+                ttl_seconds=effective_ttl,
+                now=now,
+            )
             conn.commit()
+
+    def _prune_orphaned_attachment_promotions(
+        self,
+        conn: Any,
+        *,
+        limit: int,
+        ttl_seconds: int,
+        now: float,
+    ) -> None:
+        conn.execute(
+            """
+            DELETE FROM attachment_promotions
+            WHERE status IN (?, ?)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM tasks
+                  WHERE tasks.task_id = attachment_promotions.task_id
+              )
+              AND ? - updated_at > ?
+            """,
+            (
+                TaskStatus.COMPLETED.value,
+                TaskStatus.FAILED.value,
+                now,
+                ttl_seconds,
+            ),
+        )
+
+        orphan_rows = conn.execute(
+            """
+            SELECT attachment_id, vector_store_path
+            FROM attachment_promotions
+            WHERE status IN (?, ?)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM tasks
+                  WHERE tasks.task_id = attachment_promotions.task_id
+              )
+            ORDER BY updated_at DESC, created_at DESC
+            """,
+            (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value),
+        ).fetchall()
+        stale_rows = orphan_rows[limit:] if len(orphan_rows) > limit else []
+        if stale_rows:
+            conn.executemany(
+                """
+                DELETE FROM attachment_promotions
+                WHERE attachment_id = ? AND vector_store_path = ?
+                """,
+                [(attachment_id, vector_store_path) for attachment_id, vector_store_path in stale_rows],
+            )

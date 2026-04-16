@@ -7,6 +7,7 @@ from api_chat_stream_helpers import (
     build_agent_config_payload,
     done_event,
     encode_sse,
+    heartbeat_event,
     panel_event,
     stream_parallel_sse,
     stream_single_sse,
@@ -20,6 +21,7 @@ def test_encode_helpers_build_expected_sse_payloads():
     )
     assert done_event("panel-1") == 'data: {"panel_id": "panel-1", "type": "done"}\n\n'
     assert all_done_event() == 'data: {"type": "all_done"}\n\n'
+    assert heartbeat_event() == 'data: {"type": "heartbeat"}\n\n'
 
 
 def test_build_agent_config_payload_includes_optional_task_metadata():
@@ -103,6 +105,29 @@ def test_stream_single_sse_stops_without_all_done_after_disconnect():
 
     assert len(items) == 1
     assert json.loads(items[0].removeprefix("data: ").strip())["content"] == "a"
+
+
+def test_stream_single_sse_emits_heartbeat_while_waiting():
+    async def source():
+        await asyncio.sleep(0.03)
+        yield panel_event("panel-1", "chunk", content="late")
+        yield panel_event("panel-1", "done")
+
+    async def collect():
+        items = []
+        async for item in stream_single_sse(
+            source(),
+            is_disconnected=lambda: _false(),
+            heartbeat_interval_seconds=0.01,
+        ):
+            items.append(item)
+        return items
+
+    items = asyncio.run(collect())
+    payloads = [json.loads(item.removeprefix("data: ").strip()) for item in items]
+
+    assert any(payload["type"] == "heartbeat" for payload in payloads)
+    assert payloads[-1] == {"type": "all_done"}
 
 
 def test_stream_parallel_sse_merges_sources_and_appends_all_done():
