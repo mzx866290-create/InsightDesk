@@ -1,337 +1,124 @@
 # InsightDesk
 
-## 一句话说明
-
-这是一个面向企业知识问答、资料分析与结果交付的 AI 工作台，基于 `React + FastAPI + LangChain + LangGraph` 构建，支持本地模型与云端模型双模式运行，覆盖“提问、检索、分析、沉淀、生成报告/演示稿”的完整链路。
+InsightDesk 是一个面向企业知识问答、资料分析与结果交付的 AI 工作台。  
+它把聊天、知识库检索、附件分析、联网研究、会话记忆、异步任务、报告生成和 PPT 交付整合在同一个项目里。
 
 ## 项目定位
 
-很多 AI 项目只解决“回答问题”，这个项目更强调“完成工作”。
+这个项目不是单纯的“聊天页面”或“RAG Demo”，而是一个更偏工作流闭环的 AI 应用底座，重点解决下面几类问题：
 
-它不是一个单纯的聊天页面，也不是一个只做 RAG 检索的 Demo，而是一个可持续迭代的工程化智能体平台，核心目标包括：
+- 让企业内部资料变成可检索、可引用、可追溯的知识资产
+- 让用户围绕同一个会话持续完成提问、分析、沉淀和交付
+- 让会话结果可以继续沉淀为报告、Deck 和 `PPTX`
+- 同时支持本地模型和云模型，适配不同成本与部署约束
 
-- 将企业内部文档转化为可检索、可引用、可追溯的知识资产
-- 让用户围绕同一会话完成问答、附件分析、记忆沉淀与任务推进
-- 将对话结果进一步结构化为报告、仪表盘卡片和 `PPTX` 演示稿
-- 支持本地私有化模型和云端模型并存，适配不同成本、安全和算力场景
+## 核心能力
 
-## 核心价值
-
-- 面向业务交付，而不是只做模型试玩
-- 前后端分层明确，已经具备持续演进为团队内部产品的基础
-- 功能覆盖从知识入库到最终输出，减少“问完还要手工整理”的断层
-- 保留工程可控性，支持本地部署、Docker 部署和 Windows 一键启动
-
-## 当前能力概览
-
-### 1. 智能问答工作台
-
-- 支持多会话、多工作区管理
-- 工作区支持保存默认面板快照、工具开关与 Deck 默认值，切换工作区时可恢复对应工作台预设
-- 支持多面板并行对话，可用于多模型对比、不同参数策略对比
-- 支持同一 answer group 的多面板答案评审、差异对比与推荐答案一键提升为主答案
-- 支持单面板 answer 的 continue / retry / fork 生命周期，fork 会将当前分支历史持久化为独立会话
-- 支持流式响应和前端实时展示
-- 支持系统 Prompt 管理与激活切换
-
-### 2. 知识库与检索增强
-
-- 支持 `PDF / DOC / DOCX / TXT / Markdown / CSV / Excel` 等文档接入
-- 支持文档切块、向量化、向量库持久化
-- 主回答链路默认采用语义召回 + `CrossEncoder` 二段重排，并会对关键词 / 编号 / 英文术语类问题自动提升为 hybrid 检索
-- 检索诊断支持 `semantic / keyword / hybrid` 三种模式切换，可调 `Top K / Fetch K` 与是否重排
-- 回答引用与 LangGraph workflow 节点可携带 `retrieval_mode / search_channel / score / matched_terms` 等检索观测信息
-- 引用来源的点赞/点踩会按来源聚合，作为后续知识库检索排序的轻量反馈信号
-- 支持知识库统计、健康检查、检索测试、Chunk 编辑与删除
-- 回答结果可附带来源引用，便于校验与追溯
-
-### 3. 附件分析与会话增强
-
-- 支持聊天过程中上传附件与图片
-- 支持围绕附件内容继续分析，而不是仅做一次性上传
-- 附件工作区接口已按 `workspace_id` 校验会话归属，避免跨工作区读取附件与触发入库
-- 支持附件提升为知识库任务
-- 支持收藏、引用查看、消息反馈等增强能力
-
-### 4. 会话记忆与沉淀
-
-- 支持会话级记忆管理
-- 支持手动固定关键结论、事实、决策
-- 支持自动阶段总结，缓解长会话上下文膨胀
-- 支持在记忆工作区中编辑、删除、二次发送到输入区
-
-### 5. 任务中心与异步执行
-
-- 支持异步任务创建、轮询、状态追踪
-- 已覆盖知识库导入、附件入库、报告生成等任务场景
-- 前端提供任务中心，便于查看执行进度和失败原因
-
-### 6. 报告与演示稿交付
-
-- 支持从会话内容生成结构化报告
-- 支持生成 Deck 并编辑主题、内容与页面
-- 支持会话级交付物矩阵，统一查看/打开/导出 `report` 与 `deck` artifact
-- 支持导出 `PPTX`
-- 支持会话与 Deck 分享链接
-
-### 7. Agent 编排与可观测性
-
-- 支持 `function_calling`、`langgraph`、`auto` 三种 Agent 模式
-- 支持本地 `Ollama` 与 OpenAI-Compatible / OpenRouter 等云端模型
-- 支持联网搜索工具与知识库工具协同
-- 已接入 LangGraph 工作流可视化，前端可查看节点执行过程
-- 预留 `MCP Server` 扩展目录，便于后续接入更多工具
-
-## 架构概览
-
-```mermaid
-flowchart TD
-    User["User"] --> Frontend["React + Vite Frontend"]
-    Frontend --> API["FastAPI API Server"]
-
-    API --> Agent["Agent Core"]
-    API --> ChatStore["SQLite Chat Store"]
-    API --> Pipeline["Document Pipeline"]
-    API --> Deck["Deck Service"]
-    API --> Tasks["Task Runtime"]
-
-    Agent --> Tools["Tool Orchestration"]
-    Tools --> KB["Knowledge Retrieval"]
-    Tools --> Web["Web Search"]
-    Tools --> Memory["Session Memory"]
-
-    Pipeline --> Embed["Embeddings"]
-    Pipeline --> Vector["FAISS Vector Store"]
-    Pipeline --> Rerank["CrossEncoder Reranker"]
-
-    Agent --> LocalModel["Ollama"]
-    Agent --> CloudModel["OpenAI-Compatible APIs"]
-
-    Deck --> PPT["PPTX Export"]
-```
-
-## 主要模块
-
-- `frontend/`
-  React 前端，负责工作区、会话、聊天面板、引用查看、附件工作区、记忆工作区、任务中心、Deck 预览与编辑等交互。
-
-- `backend/api_server.py`
-  FastAPI 服务入口，提供 REST API、SSE 流式输出、分享、报告、知识库管理、任务调度等能力。
-
-- `backend/agent_core.py`
-  智能体核心编排层，负责模型接入、工具路由、Agent 模式切换、引用组装、会话记忆注入等。
-
-- `backend/doc_pipeline.py`
-  文档处理与检索链路，负责加载文档、切块、向量化、FAISS 持久化、召回与重排。
-
-- `backend/chat_store.py`
-  SQLite 持久层，负责会话、消息、工作区、收藏、Prompt、会话记忆等数据管理。
-
-- `backend/deck_service.py`
-  演示稿生成与导出模块，负责 Deck 结构生成、主题管理、页面重生成、`PPTX` 导出与持久化。
-
-- `backend/artifact_service.py`
-  交付物持久化模块，负责 `report / deck` artifact 的统一存储、列表、读取与导出元数据同步。
-
-- `mcp_servers/`
-  MCP 扩展工具目录，适合后续接入专有知识源或外部业务系统。
-
-- `tests/`
-  自动化测试目录，已覆盖 API、知识库、记忆、Deck、任务、附件、分享等主要能力。
+- 多工作区、多会话、多面板对话，支持答案对比、推荐答案提升、`continue / retry / fork`
+- 知识库导入与检索，支持 `PDF / DOC / DOCX / TXT / Markdown / CSV / Excel`
+- 检索调试与增强，支持 `semantic / keyword / hybrid` 三种模式
+- 附件上传、附件追问、附件转知识库任务
+- 会话记忆管理，支持手动固定与阶段性总结
+- 异步任务中心，覆盖导入、分析、报告生成等任务场景
+- 报告、Deck 与 `PPTX` 导出能力
+- `function_calling`、`langgraph`、`auto` 三种 Agent 运行模式
+- 工作流可视化、检索可观测性、安全状态与审计可见性
 
 ## 技术栈
 
 | 层级 | 技术 |
 | --- | --- |
-| 前端 | React、TypeScript、Vite、Tailwind CSS、Zustand |
+| 前端 | React 18、TypeScript、Vite、Tailwind CSS、Zustand |
 | 后端 | FastAPI、Uvicorn |
 | Agent | LangChain、LangGraph |
 | 模型接入 | Ollama、OpenAI-Compatible API、OpenRouter |
 | 检索 | FAISS、sentence-transformers、CrossEncoder |
 | 数据存储 | SQLite |
 | 文档处理 | pypdf、docx2txt、mammoth、unstructured、pandas |
-| 导出能力 | python-pptx |
-| 部署 | Windows 脚本、Docker、docker-compose |
+| 交付导出 | python-pptx |
+| 部署 | Windows 脚本、Docker、docker compose |
 
-## 文档结构
+## 目录结构
 
-- [QUICKSTART.md](/f:/项目/AI智能体/QUICKSTART.md)
-  最短启动路径。
-
-- [docs/README.md](/f:/项目/AI智能体/docs/README.md)
-  整体文档目录。
-
-- [docs/GETTING_STARTED.md](/f:/项目/AI智能体/docs/GETTING_STARTED.md)
-  安装、模型模式、首次运行与排错。
-
-- [docs/AGENT_AND_WORKFLOW.md](/f:/项目/AI智能体/docs/AGENT_AND_WORKFLOW.md)
-  Agent 模式、LangGraph、工作流可视化与实现边界。
-
-- [docs/PRODUCT_ROADMAP.md](/f:/项目/AI智能体/docs/PRODUCT_ROADMAP.md)
-  产品路线图、迁移方向与执行优先级。
-
-- [docs/DECK_DELIVERY_PLAN.md](/f:/项目/AI智能体/docs/DECK_DELIVERY_PLAN.md)
-  报告与 PPT 交付能力的演进方案。
-
-- [docs/VALIDATION.md](/f:/项目/AI智能体/docs/VALIDATION.md)
-  冒烟、回归与发布前校验。
-
-## 搜索增强 v1 实施清单
-
-- [x] 检索诊断接口支持 explainable payload，返回 `retrieval_mode / search_mode / top_k / fetch_k / coverage`
-- [x] 检索诊断接口支持 `semantic / keyword / hybrid` 三种调试模式
-- [x] 设置区与知识库面板支持检索模式切换、参数调节和候选结果查看
-- [x] 主回答链路支持自动选择 `semantic / hybrid`，改进关键词/术语类问题命中
-- [x] 回答引用与 workflow 节点支持展示检索观测信息，便于排查命中路径
-- [x] 引用点赞/点踩已接入知识库检索排序微调，形成反馈闭环 v1
-- [x] 引用来源支持相关/不相关反馈写回，便于后续检索优化
-- [x] 引用面板与检索调试结果支持展示反馈计数、净反馈与排序 boost，补齐反馈可解释性
-- [x] 已补充搜索增强 v1 的后端单测与 API 测试
-
-说明：当前 `keyword / hybrid` 已接入主回答链路自动选择；显式三模式切换仍主要体现在检索诊断与控制台调参。
-
-## Sprint 4 交付增强实施清单
-
-- [x] workspace presets v1：工作区可保存默认面板快照、工具开关与 Deck 默认值
-- [x] artifact abstraction v1：`report / deck` 已统一沉淀为可持久化 artifact，并提供统一读取/导出接口
-- [x] delivery matrix v1：报告预览内已接入会话级交付物矩阵，可统一查看、打开与导出历史交付物
-
-说明：当前交付物矩阵 v1 先覆盖 `report / deck` 两类；更丰富的 artifact 类型与模板化输出仍在后续迭代范围内。
-
-## Sprint 5 连接器产品化实施清单
-
-- [x] connector registry v1：后端提供 `GET /api/connectors/mcp`，统一暴露可用 MCP 连接器目录与默认启用集
-- [x] workspace presets v1.1：工作区预设已支持保存 `mcp_servers_enabled`，切换工作区时恢复对应连接器启用状态
-- [x] chat runtime wiring v1：并行/单面板聊天请求会携带当前工作区启用的 MCP 连接器列表
-- [x] runtime tool composition v1：MCP 工具既可覆盖同名内置工具，也可作为额外工具追加到运行时工具集
-- [x] connector management UI v1：侧边栏工作区创建/编辑表单已支持查看和勾选 MCP 连接器
-- [x] 已补充 MCP helper、runtime tool choice、workspace API 与 connector catalog 的目标测试，并完成前端构建校验
-
-说明：当前连接器产品化 v1 先以工作区级预设和 MCP catalog 为主，不包含更完整的组织级权限、凭据托管和第三方业务系统模板市场。
-
-## Sprint 5 体验加固实施清单
-
-- [x] security status v1：后端提供 `GET /api/security/status`，集中暴露远程访问保护、分享密钥健康度、CORS 与上传限制状态
-- [x] share link audit v1：后端提供 `GET /api/share-links`，可按管理员视角审计分享链接的资源类型、有效期、访问计数与访问痕迹
-- [x] share token hygiene v1：分享链接创建/打开统一使用运行时 `SHARE_LINK_SECRET`，避免常量与环境变量漂移
-- [x] request / audit log hardening v1：分享 token 不再以原文出现在安全审计日志和通用请求日志中
-- [x] basic rate limit v1：远程管理接口新增轻量固定窗口限流，本地请求与主聊天链路默认不受影响
-- [x] 已补充 security hardening 与 share flow 的目标回归测试
-
-## Sprint 6 鉴权与 RBAC Lite 实施清单
-
-- [x] token catalog v1：后端支持 `APP_AUTH_TOKENS_JSON`，并兼容 `ADMIN_API_TOKEN / EDITOR_API_TOKEN / VIEWER_API_TOKEN`
-- [x] auth headers v1：远程访问同时支持 `Authorization: Bearer <token>`、`X-API-Token` 和兼容头 `X-Admin-Token`
-- [x] RBAC lite v1：按 `viewer / editor / admin` 三档角色保护 `security / prompts / documents / knowledge-base / share-links` 管理接口
-- [x] auth observability v1：新增 `GET /api/auth/whoami`，并让安全审计日志优先记录 token 派生的 `user_id / role / auth_source`
-- [x] auth token catalog visibility v1：新增 `GET /api/auth/tokens`，管理员可查看当前生效 token 的脱敏预览、指纹、角色与来源
-- [x] auth token hygiene visibility v1：`GET /api/security/status` 与 `GET /api/auth/tokens` 可识别过短 token 与 legacy token 配置
-- [x] 已补充 authentication + RBAC lite 的目标回归测试
-
-说明：当前体验加固已覆盖分享边界、管理员可见性、日志脱敏以及 token-based authentication / RBAC lite；完整用户目录、凭据托管、组织级审计与监控告警仍在后续范围内。
-
-## Sprint 6 运行可观测性实施清单
-
-- [x] runtime status v1：新增 `GET /api/operations/runtime`，聚合服务启动时间、运行时长、请求计数与任务摘要
-- [x] request/error counters v1：基于现有中间件补充请求总量、状态码分布、最近请求时间与异常计数
-- [x] recent error visibility v1：全局异常处理器写入最近错误窗口，返回 `request_id / path / method / error_code`
-- [x] task summary v1：运行态总览可查看内存任务池中的 `pending / running / completed / failed`
-- [x] 已补充 observability v1 的目标回归测试
-
-说明：当前监控能力先提供轻量运行状态与错误可见性，不含完整指标上报、外部监控系统集成、告警和链路追踪。
-
-## Sprint 6 安全审计可见性实施清单
-
-- [x] recent security audit events v1：新增 `GET /api/security/audit-events`，按管理员视角读取最近安全审计事件
-- [x] audit identity visibility v1：审计事件保留 `request_id / action / result / auth_source / user_id / user_role`
-- [x] audit filtering v1：支持按 `action / result / limit` 读取审计窗口，便于快速排查远程访问与权限问题
-- [x] persisted audit window v1：最近安全审计事件同步写入 SQLite，服务重启后仍可读取近期审计轨迹
-- [x] audit retention visibility v1：`GET /api/security/status` 可查看当前审计存储类型、留存上限、已持久化事件数与内存窗口上限
-- [x] audit retention config hardening v1：`SECURITY_AUDIT_HISTORY_LIMIT` 非法时自动回退，`GET /api/security/status` 同步暴露当前配置来源
-- [x] audit cleanup control v1：管理员可通过 `POST /api/security/audit-events/cleanup` 裁剪持久化与内存审计窗口
-- [x] 已补充 security audit visibility v1 的目标回归测试
-
-说明：当前安全审计可见性 v1 已覆盖进程内窗口与 SQLite 持久化最近事件，但仍不含跨实例聚合、长期留存策略和外部 SIEM 对接。
-
-## 适用场景
-
-- 企业内部知识助手
-- 规章制度、项目文档、培训资料问答
-- 基于附件和资料的分析问答
-- 多模型对比评估
-- 汇报材料、分析报告、演示稿草稿生成
-- 团队内部私有化 AI 工作台原型
-
-## 当前工程边界
-
-这个项目已经具备较完整的产品骨架，但当前定位更适合“团队内部可用的单机/轻量部署系统”，而不是开箱即用的企业级多租户 SaaS。现阶段边界主要包括：
-
-- 默认以 `SQLite + 本地文件 + 本地 FAISS` 为主，适合单机部署
-- 已具备 token-based authentication、RBAC lite 与安全审计日志；但完整用户体系、组织级权限和凭据托管仍未完成
-- 检索与任务运行仍以单服务进程为中心，未做分布式拆分
-- 联网搜索可使用外部 API Key（如 `TAVILY_API_KEY`），Docker Compose 也内置了本地 `SearXNG` 作为默认备用搜索源
-- 已具备 runtime status 与 recent error visibility v1；但生产化监控、限流、告警、链路追踪能力仍有继续增强空间
-
-## 推荐演进方向
-
-### P0：生产可用性补强
-
-- 增加鉴权、用户体系、权限隔离
-- 增加统一审计日志与操作留痕
-- 增加结构化监控、错误告警、任务观测
-- 将关键配置改造为更明确的环境与运行时配置管理
-
-### P1：架构升级
-
-- 将会话存储迁移到 `PostgreSQL`
-- 将缓存与异步任务状态迁移到 `Redis`
-- 将知识库检索和任务执行拆分为独立服务
-- 为分享、导出、文件处理增加更清晰的安全边界
-
-### P2：产品能力增强
-
-- 增加更完整的知识库治理和评测体系
-- 增加组织级 Prompt、模板、工作流配置
-- 增加更强的报告模板化与品牌化输出能力
-- 增加 MCP 工具生态与业务系统连接器
-
-## 快速启动
-
-### 本地启动
-
-```bash
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-
-cd frontend
-npm install
+```text
+.
+├─ frontend/          React 前端
+├─ backend/           FastAPI 接口、Agent 编排、业务服务
+├─ search_runtime/    联网搜索与研究流程
+├─ mcp_servers/       MCP 扩展服务
+├─ tests/             后端测试与接口回归
+├─ docs/              详细文档
+├─ Dockerfile
+├─ docker-compose.yml
+├─ QUICKSTART.md
+└─ README.md
 ```
 
-复制配置文件：
+## 快速开始
+
+### 方式一：Windows 本地快速启动
+
+1. 复制配置文件
 
 ```bash
 copy .env.example .env
 ```
 
-启动后端：
+2. 配置至少一种模型接入方式
+
+- 本地模型：配置 `OLLAMA_BASE_URL`，并准备好 Ollama 模型
+- 云模型：配置 `OPENAI_API_KEY` 或 OpenRouter 对应配置
+
+3. 运行启动脚本
+
+```bash
+start.bat
+```
+
+4. 打开前端
+
+```text
+http://localhost:5173
+```
+
+### 方式二：手动启动
+
+1. 安装 Python 依赖
+
+```bash
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+2. 安装前端依赖
+
+```bash
+cd frontend
+npm install
+cd ..
+```
+
+3. 复制配置文件
+
+```bash
+copy .env.example .env
+```
+
+4. 启动后端
 
 ```bash
 python -m uvicorn backend.api_server:app --host 0.0.0.0 --port 8000
 ```
 
-启动前端：
+5. 启动前端
 
 ```bash
 cd frontend
 npm run dev -- --host 0.0.0.0 --port 5173
 ```
 
-### Windows 一键启动
-
-项目根目录提供 `start.bat`、`setup.bat` 和 `一键启动.bat`，适合本地快速体验和团队内部演示。
-
-### Docker 启动
+### 方式三：Docker
 
 ```bash
 copy .env.example .env
@@ -340,11 +127,58 @@ docker compose up --build -d
 
 说明：
 
-- `docker compose` 默认会同时启动 `app / ollama / searxng`
-- 容器内后端默认使用 `SEARXNG_URL=http://searxng:8080`，因此在 Docker 环境里会优先走本地 `SearXNG`
-- 如果你已经有可用的 `TAVILY_API_KEY`，运行时仍会优先使用 `tavily`，再回退到 `searxng`
+- `docker compose` 默认会启动 `app`、`ollama` 和 `searxng`
+- 容器内后端默认优先使用 `SEARXNG_URL=http://searxng:8080`
+- 如果同时配置了可用的 `TAVILY_API_KEY`，运行时仍会优先使用 `tavily`
+
+## 配置说明
+
+常用环境变量可在 [`.env.example`](./.env.example) 中查看，重点包括：
+
+- 模型配置：`OLLAMA_BASE_URL`、`OPENAI_API_KEY`、OpenRouter 相关项
+- 联网搜索：`TAVILY_API_KEY`、`SEARXNG_URL`
+- 远程访问保护：`APP_AUTH_TOKENS_JSON`、`ADMIN_API_TOKEN` 等
+- 分享与安全：`SHARE_LINK_SECRET`、审计与安全状态相关配置
+
+## 文档入口
+
+- [QUICKSTART.md](./QUICKSTART.md)
+  最短启动路径
+- [docs/README.md](./docs/README.md)
+  文档导航
+- [docs/GETTING_STARTED.md](./docs/GETTING_STARTED.md)
+  安装、模型模式与首次运行说明
+- [docs/AGENT_AND_WORKFLOW.md](./docs/AGENT_AND_WORKFLOW.md)
+  Agent 模式、LangGraph 与工作流可视化
+- [docs/RESEARCH_LOGIC_V2.md](./docs/RESEARCH_LOGIC_V2.md)
+  联网研究与搜索链路设计
+- [docs/PRODUCT_ROADMAP.md](./docs/PRODUCT_ROADMAP.md)
+  产品路线图与后续演进方向
+- [docs/DECK_DELIVERY_PLAN.md](./docs/DECK_DELIVERY_PLAN.md)
+  报告与 PPT 交付能力规划
+- [docs/VALIDATION.md](./docs/VALIDATION.md)
+  冒烟、回归与发布前检查
+
+## 当前边界
+
+当前项目已经具备较完整的产品骨架，但更适合作为团队内部可用的单机或轻量部署系统，而不是开箱即用的企业级多租户 SaaS。
+
+当前边界主要包括：
+
+- 默认仍以 `SQLite + 本地文件 + 本地 FAISS` 为主
+- 已具备 token 鉴权、RBAC lite 与安全审计基础能力，但还不是完整用户体系
+- 检索、任务和文件处理目前仍以单服务进程部署为主
+- 更完整的组织级权限、监控告警、分布式任务与外部系统集成仍在持续演进
+
+## 建议阅读顺序
+
+1. [README.md](./README.md)
+2. [QUICKSTART.md](./QUICKSTART.md)
+3. [docs/GETTING_STARTED.md](./docs/GETTING_STARTED.md)
+4. [docs/AGENT_AND_WORKFLOW.md](./docs/AGENT_AND_WORKFLOW.md)
+5. [docs/PRODUCT_ROADMAP.md](./docs/PRODUCT_ROADMAP.md)
 
 ## 总结
 
-这个项目的价值不在于“又做了一个聊天机器人”，而在于它已经把企业知识问答、附件分析、会话沉淀、任务执行和结果交付整合到了一个统一工作台里。  
-如果后续继续补齐用户目录、监控、存储和部署能力，它完全可以继续演进为一个更稳定的企业内部 AI 应用底座。
+InsightDesk 的重点不是“再做一个聊天机器人”，而是把企业知识问答、附件分析、会话沉淀、任务执行与交付输出串成一个更完整的工作闭环。  
+如果你需要一个可本地部署、可继续工程化演进的 AI 工作台，这个项目已经具备不错的基础。
