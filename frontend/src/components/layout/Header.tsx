@@ -618,6 +618,7 @@ export const Header: React.FC = () => {
               </button>
               <button
                 onClick={() => setSettingsOpen(true)}
+                data-testid="header-open-settings"
                 className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
                 title="设置"
               >

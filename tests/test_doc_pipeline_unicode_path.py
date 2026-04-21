@@ -1,7 +1,7 @@
 from pathlib import Path
 
-import doc_pipeline
-from doc_pipeline import DocPipeline
+import backend.doc_pipeline as doc_pipeline
+from backend.doc_pipeline import DocPipeline
 
 
 class _FakeVectorStore:

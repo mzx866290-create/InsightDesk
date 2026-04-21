@@ -9,6 +9,7 @@ from .base import SearchProvider
 from ..types import (
     SearchConfigError,
     SearchDocument,
+    SearchProviderCapabilities,
     SearchProviderHTTPError,
     SearchResponse,
     SearchTimeoutError,
@@ -17,6 +18,14 @@ from ..types import (
 
 class TavilySearchProvider(SearchProvider):
     name = "tavily"
+    capabilities = SearchProviderCapabilities(
+        name="tavily",
+        supports_time_range=True,
+        supports_news_topic=True,
+        supports_answer=True,
+        supports_raw_content=True,
+        supports_domain_filter_native=False,
+    )
 
     async def search(
         self,
@@ -94,4 +103,5 @@ class TavilySearchProvider(SearchProvider):
             results=documents,
             answer=str(payload.get("answer", "") or ""),
             search_depth=search_depth or "basic",
+            provider_capabilities=[self.get_capabilities()],
         )

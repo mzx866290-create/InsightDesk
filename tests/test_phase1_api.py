@@ -9,10 +9,11 @@ from fastapi.testclient import TestClient
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage
 
-import agent_core
-import api_server
-import chat_store
-import deck_service
+import backend.agent_core as agent_core
+import backend.api_config_store as api_config_store
+import backend.api_server as api_server
+import backend.chat_store as chat_store
+import backend.deck_service as deck_service
 
 
 def _history_cls_for_db(db_path: Path):
@@ -46,6 +47,136 @@ def test_session_messages_returns_full_history(monkeypatch, tmp_path):
     assert payload["context_limit"] == 2
     assert payload["total_messages"] == 5
     assert [item["content"] for item in payload["messages"]] == ["u1", "a1", "u2", "a2", "u3"]
+
+
+def test_save_config_persists_valid_tavily_key(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    store = api_config_store.SQLiteAppConfigStore(db_path=str(db_path))
+    monkeypatch.setattr(api_server, "_app_config_store", store)
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+    async def fake_validate(api_key: str) -> None:
+        assert api_key == "tvly-valid-key"
+
+    monkeypatch.setattr(api_server, "_validate_tavily_api_key", fake_validate)
+
+    client = TestClient(api_server.app)
+    response = client.post("/api/config", json={"tavily_api_key": "tvly-valid-key"})
+
+    assert response.status_code == 200
+    assert response.json()["tavily_api_key_set"] is True
+    assert store.get_value("tavily_api_key") == "tvly-valid-key"
+    assert api_server.os.environ.get("TAVILY_API_KEY") == "tvly-valid-key"
+
+
+def test_save_config_rejects_invalid_tavily_key(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    store = api_config_store.SQLiteAppConfigStore(db_path=str(db_path))
+    monkeypatch.setattr(api_server, "_app_config_store", store)
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+    async def fake_validate(api_key: str) -> None:
+        raise api_server.HTTPException(status_code=400, detail="Tavily API Key 无效，保存失败。")
+
+    monkeypatch.setattr(api_server, "_validate_tavily_api_key", fake_validate)
+
+    client = TestClient(api_server.app)
+    response = client.post("/api/config", json={"tavily_api_key": "tvly-invalid-key"})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Tavily API Key 无效，保存失败。"
+    assert store.get("tavily_api_key") is None
+    assert api_server.os.environ.get("TAVILY_API_KEY") in (None, "")
+
+
+def test_get_config_reads_persisted_tavily_key(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    store = api_config_store.SQLiteAppConfigStore(db_path=str(db_path))
+    store.set("tavily_api_key", "tvly-persisted-key")
+    monkeypatch.setattr(api_server, "_app_config_store", store)
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+
+    client = TestClient(api_server.app)
+    response = client.get("/api/config")
+
+    assert response.status_code == 200
+    assert response.json()["tavily_api_key_set"] is True
+    assert api_server.os.environ.get("TAVILY_API_KEY") == "tvly-persisted-key"
+
+
+def test_save_config_allows_clearing_persisted_tavily_key(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    store = api_config_store.SQLiteAppConfigStore(db_path=str(db_path))
+    store.set("tavily_api_key", "tvly-old-key")
+    monkeypatch.setattr(api_server, "_app_config_store", store)
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-old-key")
+
+    client = TestClient(api_server.app)
+    response = client.post("/api/config", json={"tavily_api_key": ""})
+
+    assert response.status_code == 200
+    assert response.json()["tavily_api_key_set"] is False
+    assert store.get("tavily_api_key") is None
+    assert api_server.os.environ.get("TAVILY_API_KEY") in (None, "")
+
+
+def test_save_cloud_model_api_key_persists_encrypted_secret(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    store = api_config_store.SQLiteAppConfigStore(db_path=str(db_path))
+    monkeypatch.setattr(api_server, "_app_config_store", store)
+
+    client = TestClient(api_server.app)
+    response = client.post(
+        "/api/config/cloud-model-api-key",
+        json={"api_key": "sk-cloud-secret"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["api_key_set"] is True
+    assert payload["api_key_ref"].startswith("cmk-")
+    assert (
+        store.get_value(f"cloud_model_api_key:{payload['api_key_ref']}")
+        == "sk-cloud-secret"
+    )
+
+
+def test_delete_cloud_model_api_key_removes_persisted_secret(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    store = api_config_store.SQLiteAppConfigStore(db_path=str(db_path))
+    monkeypatch.setattr(api_server, "_app_config_store", store)
+    store.set("cloud_model_api_key:cmk-delete-test", "sk-delete-me")
+
+    client = TestClient(api_server.app)
+    response = client.delete("/api/config/cloud-model-api-key/cmk-delete-test")
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+    assert store.get("cloud_model_api_key:cmk-delete-test") is None
+
+
+def test_resolve_runtime_model_config_uses_stored_cloud_model_key(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    store = api_config_store.SQLiteAppConfigStore(db_path=str(db_path))
+    monkeypatch.setattr(api_server, "_app_config_store", store)
+    store.set("cloud_model_api_key:cmk-runtime-test", "sk-runtime-secret")
+
+    resolved = api_server._resolve_runtime_model_config(
+        {
+            "panel_id": "panel-cloud",
+            "provider": "openai_compatible",
+            "connection_type": "openai_compatible",
+            "model": "gpt-4o-mini",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "",
+            "api_key_ref": "cmk-runtime-test",
+            "temperature": 0.3,
+            "agent_mode": "auto",
+        }
+    )
+
+    assert resolved.api_key == "sk-runtime-secret"
+    assert resolved.api_key_ref == "cmk-runtime-test"
 
 
 def test_session_messages_restore_assistant_metadata(monkeypatch, tmp_path):
@@ -1434,6 +1565,94 @@ def test_function_calling_wrapper_astream_bypasses_tools_for_plain_text(monkeypa
     assert items == ["第一段", "第二段"]
 
 
+def test_plain_chat_wrapper_astream_filters_think_tags(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    test_history_cls = _history_cls_for_db(db_path)
+
+    class FakeLLM:
+        async def astream(self, payload):
+            yield types.SimpleNamespace(content="答案前缀")
+            yield types.SimpleNamespace(content="<thi")
+            yield types.SimpleNamespace(content="nk>内部思考</thi")
+            yield types.SimpleNamespace(content="nk>答案后缀")
+            yield types.SimpleNamespace(content="<think>未闭合思考")
+
+        async def ainvoke(self, payload):
+            raise AssertionError("plain chat streaming should not fall back to ainvoke")
+
+    async def fake_build_runtime_tools(*args, **kwargs):
+        return []
+
+    monkeypatch.setattr(agent_core, "SQLiteChatMessageHistory", test_history_cls)
+    monkeypatch.setattr(agent_core, "get_llm", lambda *args, **kwargs: FakeLLM())
+    monkeypatch.setattr(agent_core, "DocPipeline", lambda *args, **kwargs: object())
+    monkeypatch.setattr(agent_core, "build_runtime_tools", fake_build_runtime_tools)
+
+    agent = asyncio.run(
+        agent_core.build_agent(
+            provider="cloud",
+            agent_mode="auto",
+            knowledge_base_enabled=False,
+            web_search_enabled=False,
+        )
+    )
+
+    async def collect():
+        return [
+            item
+            async for item in agent.astream_answer(
+                "测试过滤 think 标签",
+                config={"configurable": {"session_id": "native-stream-think", "persist_history": True}},
+            )
+        ]
+
+    items = asyncio.run(collect())
+
+    assert items == ["答案前缀", "答案后缀"]
+    persisted_messages = test_history_cls("native-stream-think").get_all_messages()
+    assert [message.content for message in persisted_messages] == ["测试过滤 think 标签", "答案前缀答案后缀"]
+
+
+def test_function_calling_wrapper_ainvoke_filters_think_tags(monkeypatch):
+    class FakeLLM:
+        async def ainvoke(self, payload):
+            return types.SimpleNamespace(content="<think>内部推理</think>最终答案")
+
+    class FakeExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def ainvoke(self, payload):
+            raise AssertionError("tool executor should not run for plain-text bypass")
+
+    async def fake_build_runtime_tools(*args, **kwargs):
+        return [types.SimpleNamespace(name="query_knowledge")]
+
+    monkeypatch.setattr(agent_core, "get_llm", lambda *args, **kwargs: FakeLLM())
+    monkeypatch.setattr(agent_core, "DocPipeline", lambda *args, **kwargs: object())
+    monkeypatch.setattr(agent_core, "build_runtime_tools", fake_build_runtime_tools)
+    monkeypatch.setattr(agent_core, "create_tool_calling_agent", lambda *args, **kwargs: object())
+    monkeypatch.setattr(agent_core, "AgentExecutor", FakeExecutor)
+
+    agent = asyncio.run(
+        agent_core.build_agent(
+            provider="cloud",
+            agent_mode="function_calling",
+            knowledge_base_enabled=True,
+            web_search_enabled=True,
+        )
+    )
+
+    result = asyncio.run(
+        agent.ainvoke(
+            {"input": "plain-text bypass"},
+            config={"configurable": {"session_id": "fc-think-filter", "persist_history": False}},
+        )
+    )
+
+    assert result["output"] == "最终答案"
+
+
 def test_query_knowledge_uses_current_default_topk_and_fetch_k(monkeypatch):
     class FakePipeline:
         def __init__(self):
@@ -1852,7 +2071,7 @@ def test_effective_vector_store_path_prefers_active_prompt_binding(monkeypatch, 
 
 
 def test_analyze_knowledge_base_task_loads_store_before_stats(monkeypatch, tmp_path):
-    import doc_pipeline
+    import backend.doc_pipeline as doc_pipeline
 
     project_root = tmp_path / "project"
     project_root.mkdir()
@@ -1895,7 +2114,7 @@ def test_analyze_knowledge_base_task_loads_store_before_stats(monkeypatch, tmp_p
 
 
 def test_promote_attachment_to_kb_task_ingests_attachment(monkeypatch, tmp_path):
-    import doc_pipeline
+    import backend.doc_pipeline as doc_pipeline
 
     events: list[tuple[str, object]] = []
 
@@ -2032,6 +2251,56 @@ def test_create_task_persists_record_before_background_execution(monkeypatch, tm
     assert stored.session_id == "session-xyz"
     assert payload["params"] == {"mode": "demo"}
     assert payload["session_id"] == "session-xyz"
+
+
+def test_deep_research_task_waits_for_concurrency_slot(monkeypatch):
+    record = api_server.TaskRecord(
+        task_id="task-deep-queued",
+        task_type="web_research",
+        status=api_server.TaskStatus.PENDING,
+        params={"query": "AI", "research_mode": "deep", "panel_config": {"provider": "ollama"}},
+        session_id="session-1",
+        created_at=time.time(),
+        updated_at=time.time(),
+        progress=0,
+    )
+    persisted_statuses: list[tuple[str, int]] = []
+
+    async def fake_run_web_research_task(*args, **kwargs):
+        await kwargs["set_progress"](15)
+        await kwargs["set_progress"](55)
+        record.result = "deep done"
+
+    async def fake_drop_suppressed_task(_record):
+        return False
+
+    monkeypatch.setattr(
+        api_server,
+        "_persist_task_record",
+        lambda current: persisted_statuses.append((current.status.value, current.progress)),
+    )
+    monkeypatch.setattr(api_server, "_prune_persisted_tasks", lambda: None)
+    monkeypatch.setattr(api_server, "_prune_task_records_locked", lambda now=None: None)
+    monkeypatch.setattr(api_server, "_drop_suppressed_task", fake_drop_suppressed_task)
+    monkeypatch.setattr(api_server, "run_web_research_task", fake_run_web_research_task)
+
+    async def exercise() -> None:
+        gate = asyncio.Semaphore(1)
+        await gate.acquire()
+        monkeypatch.setattr(api_server, "_get_deep_research_semaphore", lambda: gate)
+        task = asyncio.create_task(api_server._run_task(record))
+        await asyncio.sleep(0.05)
+        assert record.status == api_server.TaskStatus.PENDING
+        assert record.progress == 0
+        gate.release()
+        await task
+
+    asyncio.run(exercise())
+
+    assert record.status == api_server.TaskStatus.COMPLETED
+    assert record.progress == 100
+    assert ("running", 10) in persisted_statuses
+    assert ("completed", 100) in persisted_statuses
 
 
 def test_get_task_includes_retry_context(monkeypatch, tmp_path):

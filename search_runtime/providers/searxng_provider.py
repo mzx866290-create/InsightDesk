@@ -9,6 +9,7 @@ from .base import SearchProvider
 from ..types import (
     SearchConfigError,
     SearchDocument,
+    SearchProviderCapabilities,
     SearchProviderHTTPError,
     SearchResponse,
     SearchTimeoutError,
@@ -17,6 +18,14 @@ from ..types import (
 
 class SearxngSearchProvider(SearchProvider):
     name = "searxng"
+    capabilities = SearchProviderCapabilities(
+        name="searxng",
+        supports_time_range=True,
+        supports_news_topic=True,
+        supports_answer=False,
+        supports_raw_content=False,
+        supports_domain_filter_native=False,
+    )
 
     async def search(
         self,
@@ -100,4 +109,5 @@ class SearxngSearchProvider(SearchProvider):
             results=documents,
             answer="",
             search_depth=search_depth or "basic",
+            provider_capabilities=[self.get_capabilities()],
         )

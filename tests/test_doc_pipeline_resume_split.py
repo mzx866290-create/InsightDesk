@@ -1,6 +1,6 @@
 from langchain_core.documents import Document
 
-from doc_pipeline import DocPipeline
+from backend.doc_pipeline import DocPipeline
 
 
 def test_is_resume_doc_detects_extended_keywords():

@@ -4,9 +4,9 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-import agent_core
-import api_server
-import chat_store
+import backend.agent_core as agent_core
+import backend.api_server as api_server
+import backend.chat_store as chat_store
 
 
 def _history_cls_for_db(db_path: Path):

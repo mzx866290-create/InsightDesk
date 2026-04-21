@@ -1,18 +1,15 @@
 from __future__ import annotations
 
 import os
-
 from collections.abc import Sequence
 
-from .providers import SearchProvider, SearxngSearchProvider, TavilySearchProvider
-from .types import UnsupportedSearchProviderError
-
-DEFAULT_SEARCH_PROVIDER = (
-    str(os.getenv("SEARCH_PROVIDER") or os.getenv("DEFAULT_SEARCH_PROVIDER") or "tavily")
-    .strip()
-    .lower()
-    or "tavily"
+from .providers import (
+    DuckDuckGoSearchProvider,
+    SearchProvider,
+    SearxngSearchProvider,
+    TavilySearchProvider,
 )
+from .types import SearchProviderCapabilities, UnsupportedSearchProviderError
 
 
 def _parse_provider_sequence(raw_value: str | None) -> list[str]:
@@ -30,32 +27,65 @@ def _parse_provider_sequence(raw_value: str | None) -> list[str]:
     return sequence
 
 
-DEFAULT_SEARCH_PROVIDER_SEQUENCE = _parse_provider_sequence(
-    os.getenv("SEARCH_PROVIDER_SEQUENCE") or os.getenv("DEFAULT_SEARCH_PROVIDER_SEQUENCE")
-)
+def _dedupe_provider_sequence(sequence: Sequence[str]) -> list[str]:
+    deduped: list[str] = []
+    for item in sequence:
+        normalized = str(item or "").strip().lower()
+        if normalized and normalized not in deduped:
+            deduped.append(normalized)
+    return deduped
+
+
+def _env_provider_sequence() -> list[str]:
+    explicit_sequence = _parse_provider_sequence(
+        os.getenv("SEARCH_PROVIDER_SEQUENCE") or os.getenv("DEFAULT_SEARCH_PROVIDER_SEQUENCE")
+    )
+    if explicit_sequence:
+        return explicit_sequence
+
+    explicit_default = _parse_provider_sequence(
+        os.getenv("SEARCH_PROVIDER") or os.getenv("DEFAULT_SEARCH_PROVIDER")
+    )
+    if explicit_default:
+        return explicit_default
+
+    sequence: list[str] = []
+    if str(os.getenv("TAVILY_API_KEY") or "").strip():
+        sequence.append("tavily")
+    if str(os.getenv("SEARXNG_URL") or "").strip():
+        sequence.append("searxng")
+    sequence.append("duckduckgo")
+    return sequence
+
+
+def _default_provider_sequence() -> list[str]:
+    sequence = _env_provider_sequence()
+    if "searxng" not in sequence and str(os.getenv("SEARXNG_URL") or "").strip():
+        sequence.append("searxng")
+    if "duckduckgo" not in sequence:
+        sequence.append("duckduckgo")
+    return _dedupe_provider_sequence(sequence) or ["duckduckgo"]
 
 
 def normalize_provider_name(provider: str | None) -> str:
-    normalized = str(provider or DEFAULT_SEARCH_PROVIDER).strip().lower()
-    return normalized or "tavily"
+    if provider is not None and str(provider).strip():
+        return str(provider).strip().lower()
+    return _default_provider_sequence()[0]
 
 
 def normalize_provider_list(providers: Sequence[str] | str | None = None) -> list[str]:
     if providers is None:
-        normalized = DEFAULT_SEARCH_PROVIDER_SEQUENCE[:] or [DEFAULT_SEARCH_PROVIDER]
-    elif isinstance(providers, str):
-        normalized = _parse_provider_sequence(providers) or [normalize_provider_name(providers)]
-    else:
-        normalized = []
-        for provider in providers:
-            item = normalize_provider_name(provider)
-            if item not in normalized:
-                normalized.append(item)
+        return _default_provider_sequence()
+    if isinstance(providers, str):
+        parsed = _parse_provider_sequence(providers) or [normalize_provider_name(providers)]
+        normalized = _dedupe_provider_sequence(parsed)
+        if normalized == ["tavily"] and str(os.getenv("SEARXNG_URL") or "").strip():
+            normalized.append("searxng")
+        if normalized and normalized[0] == "tavily":
+            normalized.append("duckduckgo")
+        return _dedupe_provider_sequence(normalized)
 
-    if "searxng" not in normalized and os.getenv("SEARXNG_URL") and normalized == ["tavily"]:
-        normalized.append("searxng")
-
-    return normalized or ["tavily"]
+    return _dedupe_provider_sequence(str(provider or "") for provider in providers)
 
 
 def get_default_provider_sequence() -> list[str]:
@@ -68,4 +98,10 @@ def get_search_provider(provider: str | None = None) -> SearchProvider:
         return TavilySearchProvider()
     if normalized == "searxng":
         return SearxngSearchProvider()
+    if normalized == "duckduckgo":
+        return DuckDuckGoSearchProvider()
     raise UnsupportedSearchProviderError(f"不支持的搜索 provider: {normalized}")
+
+
+def get_search_provider_capabilities(provider: str | None = None) -> SearchProviderCapabilities:
+    return get_search_provider(provider).get_capabilities()

@@ -4,7 +4,7 @@ import tempfile
 from dataclasses import asdict
 from typing import Any, Awaitable, Callable
 
-from api_task_store import TaskRecord
+from backend.api_task_store import TaskRecord
 from search_runtime import run_deep_research
 from search_runtime.service import describe_runtime_error, run_web_research
 
@@ -28,7 +28,7 @@ def persist_web_research_task_placeholder(
     *,
     db_path: str = "./chat_history.db",
 ) -> None:
-    from chat_store import SQLiteChatMessageHistory
+    from backend.chat_store import SQLiteChatMessageHistory
 
     session_id = str(record.session_id or "").strip()
     if not session_id:
@@ -63,7 +63,7 @@ def persist_web_research_task_result(
     workflow_nodes: list[dict[str, Any]] | None = None,
     db_path: str = "./chat_history.db",
 ) -> None:
-    from chat_store import SQLiteChatMessageHistory
+    from backend.chat_store import SQLiteChatMessageHistory
 
     session_id = str(record.session_id or "").strip()
     if not session_id:
@@ -110,7 +110,7 @@ def _build_research_knowledge_search(
         return None
 
     def _search(query: str) -> list[Any]:
-        from doc_pipeline import DocPipeline
+        from backend.doc_pipeline import DocPipeline
 
         pipeline = DocPipeline(vector_store_path=normalized_path)
         try:
@@ -131,7 +131,7 @@ async def run_analyze_knowledge_base_task(
     set_progress: Callable[[int], Awaitable[None]],
     effective_vector_store_path: Callable[[str | None], str],
 ) -> None:
-    from doc_pipeline import DocPipeline
+    from backend.doc_pipeline import DocPipeline
 
     vector_store_path = effective_vector_store_path(
         str(record.params.get("vector_store_path") or "").strip() or None
@@ -160,7 +160,7 @@ async def run_generate_report_task(
     build_report_artifact: Callable[..., Any],
     save_artifact: Callable[[Any], Any],
 ) -> None:
-    from chat_store import SQLiteChatMessageHistory
+    from backend.chat_store import SQLiteChatMessageHistory
 
     session_id = record.session_id or "default"
     history = SQLiteChatMessageHistory(session_id=session_id)
@@ -221,7 +221,7 @@ async def run_generate_deck_task(
     build_deck_artifact: Callable[[Any], Any],
     save_artifact: Callable[[Any], Any],
 ) -> None:
-    from chat_store import SQLiteChatMessageHistory
+    from backend.chat_store import SQLiteChatMessageHistory
 
     session_id = str(record.session_id or "").strip()
     if not session_id:
@@ -303,7 +303,7 @@ async def run_upload_documents_task(
     clear_agent_cache: Callable[[], Awaitable[None]],
     logger: Any,
 ) -> None:
-    from doc_pipeline import DocPipeline
+    from backend.doc_pipeline import DocPipeline
 
     file_paths = [str(path) for path in record.params.get("temp_paths", []) if path]
     original_names = [str(name) for name in record.params.get("file_names", []) if name]
@@ -347,8 +347,8 @@ async def run_promote_attachment_to_kb_task(
     clear_agent_cache: Callable[[], Awaitable[None]],
     logger: Any,
 ) -> None:
-    from doc_pipeline import DocPipeline
-    from chat_store import DEFAULT_WORKSPACE_ID, get_session
+    from backend.doc_pipeline import DocPipeline
+    from backend.chat_store import DEFAULT_WORKSPACE_ID, get_session
 
     attachment_name = str(record.params.get("attachment_name") or "").strip()
     attachment_data_url = str(record.params.get("attachment_data_url") or "").strip()
@@ -487,7 +487,7 @@ async def run_web_research_task(
                     temperature,
                 )
             else:
-                from agent_core import get_llm
+                from backend.agent_core import get_llm
 
                 llm = get_llm(
                     provider_name,
@@ -545,6 +545,11 @@ async def run_web_research_task(
     record.params["research_findings"] = [asdict(item) for item in research.findings]
     record.params["research_contradictions"] = [asdict(item) for item in research.contradictions]
     record.params["research_rounds"] = [asdict(item) for item in research.rounds]
+    record.params["research_caveats"] = list(research.caveats or [])
+    if research.research_intent is not None:
+        record.params["research_intent"] = asdict(research.research_intent)
+    if research.research_plan is not None:
+        record.params["research_plan"] = asdict(research.research_plan)
     record.params["research_workflow_nodes"] = workflow_nodes
     record.result = research.to_text()
     persist_web_research_task_result(

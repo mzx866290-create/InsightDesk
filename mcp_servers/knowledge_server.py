@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from mcp.server.fastmcp import FastMCP
-from doc_pipeline import DocPipeline
+from backend.doc_pipeline import DocPipeline
 
 mcp = FastMCP("knowledge-base")
 DEFAULT_KB_TOP_K = int(os.getenv("KB_TOP_K", "3"))

@@ -108,6 +108,34 @@ function Resolve-PythonCommand {
     return $null
 }
 
+function Resolve-Python312Command {
+    $python = Get-CommandPath @("python")
+    if ($python) {
+        $candidate = @{
+            FilePath = $python
+            Arguments = @()
+        }
+        $version = Get-PythonVersion -PythonCommand $candidate
+        if ($version -ge [Version]::new(3, 12, 0) -and $version -lt [Version]::new(3, 13, 0)) {
+            return $candidate
+        }
+    }
+
+    $py = Get-CommandPath @("py")
+    if ($py) {
+        $candidate = @{
+            FilePath = $py
+            Arguments = @("-3.12")
+        }
+        $version = Get-PythonVersion -PythonCommand $candidate
+        if ($version -ge [Version]::new(3, 12, 0) -and $version -lt [Version]::new(3, 13, 0)) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
 function Get-PythonVersion {
     param($PythonCommand)
 
@@ -117,6 +145,21 @@ function Get-PythonVersion {
         return [Version]::new([int]$Matches[1], [int]$Matches[2], 0)
     }
     return [Version]::new(0, 0, 0)
+}
+
+function Get-NodeMajorVersion {
+    param([string]$NodePath)
+
+    try {
+        $output = & $NodePath --version 2>&1
+        $text = ($output | Out-String).Trim()
+        if ($text -match "^v(\d+)") {
+            return [int]$Matches[1]
+        }
+    } catch {
+    }
+
+    return 0
 }
 
 function Ensure-Winget {
@@ -301,23 +344,33 @@ function Start-ServiceWindow {
 
 Write-Section "Check environment"
 
-$pythonCommand = Resolve-PythonCommand
+$pythonCommand = Resolve-Python312Command
 if (-not $pythonCommand) {
     Ensure-WingetPackage -CommandNames @("python", "py") -DisplayName "Python 3" -WingetId "Python.Python.3.12" | Out-Null
-    $pythonCommand = Resolve-PythonCommand
+    Refresh-Path
+    $pythonCommand = Resolve-Python312Command
+}
+
+if (-not $pythonCommand) {
+    Stop-WithError "Python 3.12.x is required for this project." @(
+        "Install Python 3.12, then run the launcher again.",
+        "The repo is validated against Python 3.12 and may fail on newer runtimes such as Python 3.14."
+    )
 }
 
 $pythonVersion = Get-PythonVersion -PythonCommand $pythonCommand
-if ($pythonVersion -lt [Version]::new(3, 9, 0)) {
-    Stop-WithError "Python 3.9 or newer is required." @(
-        "Current detected version: $pythonVersion",
-        "Please upgrade Python, then run the launcher again."
-    )
-}
 Write-Ok "Python version is $pythonVersion."
 
-$null = Ensure-WingetPackage -CommandNames @("node") -DisplayName "Node.js LTS" -WingetId "OpenJS.NodeJS.LTS"
+$nodeCmd = Ensure-WingetPackage -CommandNames @("node") -DisplayName "Node.js LTS" -WingetId "OpenJS.NodeJS.LTS"
 $npmCmd = Ensure-WingetPackage -CommandNames @("npm.cmd", "npm") -DisplayName "npm" -WingetId "OpenJS.NodeJS.LTS"
+$nodeMajorVersion = Get-NodeMajorVersion -NodePath $nodeCmd
+if ($nodeMajorVersion -lt 18) {
+    Stop-WithError "Node.js 18 or newer is required." @(
+        "Current detected major version: $nodeMajorVersion",
+        "Recommended version: Node.js 20 LTS."
+    )
+}
+Write-Ok "Node.js major version is $nodeMajorVersion."
 
 $envPath = Join-Path $script:ProjectRoot ".env"
 $envExamplePath = Join-Path $script:ProjectRoot ".env.example"
@@ -420,12 +473,12 @@ switch ($provider) {
 
 Write-Section "Check existing services"
 
-$backendPort = 8080
+$backendPort = 8000
 if ($env:BACKEND_PORT) {
     $backendPort = [int]$env:BACKEND_PORT
 }
 
-$frontendPort = 3000
+$frontendPort = 5173
 if ($env:FRONTEND_PORT) {
     $frontendPort = [int]$env:FRONTEND_PORT
 }
@@ -450,7 +503,7 @@ if ($backendReady -and $frontendReady) {
 
     Write-Section "Start services"
 
-    $backendCommand = "chcp 65001 > nul && cd /d `"$script:ProjectRoot`" && set BACKEND_PORT=$backendPort && set FRONTEND_PORT=$frontendPort && set ALLOW_REMOTE_CLIENTS=true && set CORS_ALLOW_ORIGINS=* && `"$venvPython`" -m uvicorn api_server:app --host 0.0.0.0 --port $backendPort"
+    $backendCommand = "chcp 65001 > nul && cd /d `"$script:ProjectRoot`" && set BACKEND_PORT=$backendPort && set FRONTEND_PORT=$frontendPort && set ALLOW_REMOTE_CLIENTS=true && set CORS_ALLOW_ORIGINS=* && `"$venvPython`" -m uvicorn backend.api_server:app --host 0.0.0.0 --port $backendPort"
     $frontendCommand = "chcp 65001 > nul && cd /d `"$($script:ProjectRoot)\frontend`" && set BACKEND_PORT=$backendPort && set FRONTEND_PORT=$frontendPort && `"$npmCmd`" run dev -- --host 0.0.0.0 --port $frontendPort"
 
     $null = Start-ServiceWindow -Title "AI Backend" -Command $backendCommand

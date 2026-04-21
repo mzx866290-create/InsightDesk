@@ -4,10 +4,13 @@
 
 1. Copy `.env.example` to `.env`
 2. Configure either `OpenRouter` or `Ollama`
-3. Run `start.bat`
-4. Open `http://localhost:3000`
+3. Use Python `3.12.x`
+4. Run `start.bat`
+5. Open `http://localhost:5173`
 
-If you access the app remotely and have enabled protected admin routes, open Settings and save the `ADMIN_API_TOKEN` in the "远程管理员令牌" section before using knowledge-base or prompt-management features.
+The Windows launcher creates and uses `venv312` automatically.
+
+If you access the app remotely and have enabled protected routes, open Settings and save a configured API token before using knowledge-base or prompt-management features. The backend accepts `Authorization: Bearer <token>`, `X-API-Token`, and the legacy `X-Admin-Token` header.
 
 ## Full Guide
 

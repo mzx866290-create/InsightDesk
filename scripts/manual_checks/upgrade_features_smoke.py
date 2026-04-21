@@ -2,8 +2,8 @@ import argparse
 import asyncio
 import sys
 
-from agent_core import build_agent, clear_session_history
-from doc_pipeline import DocPipeline
+from backend.agent_core import build_agent, clear_session_history
+from backend.doc_pipeline import DocPipeline
 
 
 async def test_rerank() -> bool:

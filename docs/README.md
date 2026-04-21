@@ -22,6 +22,9 @@ The goal is to keep the repository documentation maintainable by reducing duplic
 - [AGENT_AND_WORKFLOW.md](/f:/项目/AI智能体/docs/AGENT_AND_WORKFLOW.md)
   Agent modes, LangGraph integration, workflow visualization, and implementation notes.
 
+- [RESEARCH_LOGIC_V2.md](/f:/项目/AI智能体/docs/RESEARCH_LOGIC_V2.md)
+  Research pipeline v2 design, evidence model, provider caveats, and phased implementation plan.
+
 - [PRODUCT_ROADMAP.md](/f:/项目/AI智能体/docs/PRODUCT_ROADMAP.md)
   Consolidated product roadmap, migration priorities, retention direction, and execution order.
 

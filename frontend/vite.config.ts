@@ -1,8 +1,8 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-const frontendPort = Number(process.env.FRONTEND_PORT || '3000')
-const backendPort = Number(process.env.BACKEND_PORT || '8080')
+const frontendPort = Number(process.env.FRONTEND_PORT || '5173')
+const backendPort = Number(process.env.BACKEND_PORT || process.env.SERVER_PORT || '8000')
 
 export default defineConfig({
   plugins: [react()],

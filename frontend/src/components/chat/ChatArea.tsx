@@ -59,7 +59,7 @@ const WelcomeGuide: React.FC<WelcomeGuideProps> = ({
             第一次使用时，你只需要决定一件事
           </h2>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-text-secondary">
-            直接开聊、带资料提问，或者先整理交付物。复杂的工作台能力还在，但先不用一上来全理解。
+            直接开聊、带资料提问，或者先整理交付件。复杂能力都还在，但不需要一上来就全部理解。
           </p>
 
           <div className="mt-5 grid gap-3 md:grid-cols-3">
@@ -74,7 +74,7 @@ const WelcomeGuide: React.FC<WelcomeGuideProps> = ({
               </div>
               <h3 className="mt-4 text-sm font-semibold text-text-primary">直接开聊</h3>
               <p className="mt-2 text-xs leading-5 text-text-secondary">
-                插入一个结构化提问模板，先把问题聊明白。
+                插入一个结构化提问模板，先把问题聊清楚。
               </p>
             </button>
 
@@ -104,7 +104,7 @@ const WelcomeGuide: React.FC<WelcomeGuideProps> = ({
               </div>
               <h3 className="mt-4 text-sm font-semibold text-text-primary">先做成果</h3>
               <p className="mt-2 text-xs leading-5 text-text-secondary">
-                生成演示稿、汇报 PPT 或结构化报告——对话后点工具栏「更多」→「生成演示稿」即可一键导出。
+                生成演示稿、汇报 PPT 或结构化报告。对话后点工具栏“更多”→“生成演示稿”即可一键导出。
               </p>
             </button>
           </div>
@@ -119,11 +119,11 @@ const WelcomeGuide: React.FC<WelcomeGuideProps> = ({
             </div>
             <div className="rounded-2xl bg-bg-secondary/70 px-3 py-3">
               <div className="font-medium text-text-primary">2. 要带文件时，点输入框右侧回形针</div>
-              <div className="mt-1">上传文档后再提问，系统会把附件一起带进本轮回答。</div>
+              <div className="mt-1">上传文档后再提问，系统会把附件一起带入本轮回答。</div>
             </div>
             <div className="rounded-2xl bg-bg-secondary/70 px-3 py-3">
               <div className="font-medium text-text-primary">3. 只有需要实时信息时再开联网</div>
-              <div className="mt-1">平时保留简单模式，等你熟了再用多面板、记忆、任务中心这些进阶能力。</div>
+              <div className="mt-1">平时保持简单模式，熟悉后再用多面板、记忆、任务中心这些进阶能力。</div>
             </div>
           </div>
 
@@ -388,7 +388,6 @@ export const ChatArea: React.FC = () => {
           </div>
         )}
 
-        {/* Panels */}
         <div className="flex flex-1 min-h-0 flex-col gap-2 overflow-y-auto p-2 pt-1 lg:flex-row lg:overflow-hidden">
           {showWelcomeGuide ? (
             <WelcomeGuide
@@ -468,7 +467,6 @@ export const ChatArea: React.FC = () => {
           </div>
         )}
 
-        {/* Shared input */}
         <MessageInput
           onStreamingChange={handleStreamingChange}
           isInteractionLocked={isAnyStreaming}

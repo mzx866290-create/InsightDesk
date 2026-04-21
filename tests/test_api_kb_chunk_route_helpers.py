@@ -4,7 +4,7 @@ import pytest
 from fastapi import HTTPException
 from langchain_core.documents import Document
 
-from api_kb_chunk_route_helpers import (
+from backend.api_kb_chunk_route_helpers import (
     delete_kb_chunk_payload,
     list_kb_chunks_payload,
     update_kb_chunk_payload,

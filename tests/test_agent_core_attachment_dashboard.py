@@ -3,7 +3,7 @@ import json
 import re
 from types import SimpleNamespace
 
-import agent_core
+import backend.agent_core as agent_core
 
 
 def _extract_card_payload(output: str) -> dict:

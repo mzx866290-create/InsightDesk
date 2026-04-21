@@ -12,7 +12,7 @@ import time
 import logging
 from dataclasses import dataclass
 from typing import Any, Optional, Dict, TypedDict, Literal, Callable
-from agent_mcp_helpers import load_mcp_tool_overrides
+from backend.agent_mcp_helpers import load_mcp_tool_overrides
 from dotenv import load_dotenv
 try:
     from langchain_classic.agents import create_tool_calling_agent, AgentExecutor
@@ -25,11 +25,12 @@ from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, System
 from langchain_core.documents import Document
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
-from doc_pipeline import DocPipeline
-from chat_store import SQLiteChatMessageHistory, list_session_memory
+from backend.doc_pipeline import DocPipeline
+from backend.chat_store import SQLiteChatMessageHistory, list_session_memory
 from search_runtime.service import (
     fetch_webpage_text,
     quick_answer_text,
+    rewrite_search_query_for_web,
     search_web_text,
 )
 
@@ -2238,8 +2239,8 @@ async def _direct_multimodal_answer(
     response = await _ainvoke_llm_with_timeout(llm, messages)
     content = response.content
     if isinstance(content, str):
-        return content.strip()
-    return _stringify_user_input(content)
+        return _strip_think_tags(content)
+    return _strip_think_tags(_stringify_user_input(content))
 
 
 def _build_plain_text_chat_messages(
@@ -2366,8 +2367,8 @@ async def _direct_plain_text_answer(
     )
     content = response.content
     if isinstance(content, str):
-        return content.strip()
-    return _stringify_user_input(content)
+        return _strip_think_tags(content)
+    return _strip_think_tags(_stringify_user_input(content))
 
 
 async def _astream_plain_text_answer(
@@ -2382,12 +2383,19 @@ async def _astream_plain_text_answer(
         chat_history,
         system_prompt=system_prompt,
     )
+    stream_filter = _ThinkTagStreamFilter()
     async for chunk in _astream_llm_with_timeout(
         llm,
         messages,
         timeout_seconds=_plain_text_chat_timeout_seconds(user_input, chat_history),
     ):
-        yield chunk
+        visible = stream_filter.feed(chunk)
+        if visible:
+            yield visible
+
+    tail = stream_filter.flush()
+    if tail:
+        yield tail
 
 
 
@@ -2737,8 +2745,9 @@ async def _rewrite_search_query(llm, user_input: str, chat_history: list[BaseMes
     Returns:
         优化后的搜索查询
     """
+    fallback_query = rewrite_search_query_for_web(user_input)
     if not chat_history:
-        return user_input
+        return fallback_query
     
     history_text = ""
     recent_history = chat_history[-4:]
@@ -2749,10 +2758,11 @@ async def _rewrite_search_query(llm, user_input: str, chat_history: list[BaseMes
             history_text += f"助手: {msg.content}\n"
     
     if not history_text.strip():
-        return user_input
+        return fallback_query
     
     rewrite_prompt = f"""你是搜索查询优化器。根据对话上下文，将用户的问题改写为最优的搜索引擎查询词。
 只输出改写后的查询词，不要解释。
+保留用户原始问题中的产品名、版本号、组织名、日期和域名约束，不要凭空新增事实。
 
 对话上下文:
 {history_text}
@@ -2764,11 +2774,12 @@ async def _rewrite_search_query(llm, user_input: str, chat_history: list[BaseMes
     try:
         response = await _ainvoke_llm_with_timeout(llm, rewrite_prompt, timeout_seconds=20)
         rewritten = response.content.strip()
-        logger.info("[QueryRewrite] original=%s -> rewritten=%s", user_input[:50], rewritten[:50])
-        return rewritten if rewritten else user_input
+        normalized = rewrite_search_query_for_web(rewritten or user_input)
+        logger.info("[QueryRewrite] original=%s -> rewritten=%s", user_input[:50], normalized[:80])
+        return normalized if normalized else fallback_query
     except Exception:
         logger.exception("[QueryRewrite] 查询重写失败")
-        return user_input
+        return fallback_query
 
 
 class AgentState(TypedDict):
@@ -3548,6 +3559,7 @@ async def build_agent(
         history = SQLiteChatMessageHistory(session_id=session_id)
         summarized_input = _summarize_user_input_for_history(user_input)
         display_input = str(raw_user_message or "").strip()
+        cleaned_output = _strip_think_tags(output)
         if answer_group_id and (persist_user_history or persist_ai_history):
             history.add_user_message_once(
                 display_input or summarized_input,
@@ -3561,11 +3573,11 @@ async def build_agent(
                 images=raw_images or [],
                 files=raw_files or [],
             )
-        if persist_ai_history and output.strip():
+        if persist_ai_history and cleaned_output.strip():
             if replace_ai_history and answer_group_id and panel_id:
                 history.delete_ai_messages_for_answer_group(panel_id, answer_group_id)
             history.add_ai_message(
-                output,
+                cleaned_output,
                 model_id=model_id,
                 panel_id=panel_id,
                 answer_group_id=answer_group_id,

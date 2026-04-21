@@ -967,7 +967,7 @@ class DocPipeline:
         source_type: str = "doc",
     ) -> dict[tuple[str, str, str], dict[str, Any]]:
         try:
-            from chat_store import aggregate_retrieval_feedback_by_source
+            from backend.chat_store import aggregate_retrieval_feedback_by_source
 
             summary = aggregate_retrieval_feedback_by_source(source_type=source_type)
         except Exception:

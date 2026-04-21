@@ -152,6 +152,10 @@ export const CitationPanel: React.FC<CitationPanelProps> = ({
       bits.push(source.search_channel)
     }
     if (typeof source.score === 'number') bits.push(`score ${source.score.toFixed(3)}`)
+    if (typeof source.confidence === 'number') bits.push(`confidence ${source.confidence.toFixed(2)}`)
+    if (source.source_quality) bits.push(source.source_quality)
+    if (source.domain) bits.push(source.domain)
+    if (source.published_at) bits.push(source.published_at)
     if (hasFeedbackSignal) {
       bits.push(`反馈 +${positiveCount}/-${negativeCount}`)
       bits.push(`净值 ${netFeedback >= 0 ? '+' : ''}${netFeedback}`)

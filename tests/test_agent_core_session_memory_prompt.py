@@ -1,6 +1,6 @@
 from langchain_core.messages import SystemMessage
 
-from agent_core import _build_session_memory_message
+from backend.agent_core import _build_session_memory_message
 
 
 def test_session_memory_prompt_distinguishes_auto_summary_and_manual_items():

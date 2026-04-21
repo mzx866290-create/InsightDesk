@@ -50,8 +50,8 @@ cd frontend && npm run build
 
 Validate:
 
-- remote admin routes require `ADMIN_API_TOKEN`
-- frontend admin flows automatically send the browser-saved `ADMIN_API_TOKEN`
+- remote protected routes require a configured API token
+- frontend protected flows automatically send the browser-saved API token
 - weak remote share secret is rejected
 - response security headers are present
 

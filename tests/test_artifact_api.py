@@ -4,10 +4,10 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from pptx import Presentation
 
-import api_server
-import artifact_service
-import chat_store
-import deck_service
+import backend.api_server as api_server
+import backend.artifact_service as artifact_service
+import backend.chat_store as chat_store
+import backend.deck_service as deck_service
 
 
 def _history_cls_for_db(db_path: Path):

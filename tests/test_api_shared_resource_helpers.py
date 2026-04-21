@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from api_shared_resource_helpers import open_shared_resource_payload
+from backend.api_shared_resource_helpers import open_shared_resource_payload
 
 
 def test_open_shared_resource_payload_renders_session_html():

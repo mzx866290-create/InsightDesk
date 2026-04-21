@@ -668,7 +668,6 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         'web_research',
         {
           query,
-          providers: ['tavily'],
           research_mode: 'deep',
           search_depth: 'advanced',
           max_results: 8,

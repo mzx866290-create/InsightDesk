@@ -2,7 +2,7 @@ import io
 from types import SimpleNamespace
 
 from pptx import Presentation
-from deck_service import (
+from backend.deck_service import (
     DeckBlock,
     DraftedContentSlide,
     DraftedSlideBundle,

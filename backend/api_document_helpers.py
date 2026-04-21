@@ -4,7 +4,7 @@ import time
 import uuid
 from typing import Any, Callable, Iterable
 
-from api_task_store import TaskRecord, TaskStatus
+from backend.api_task_store import TaskRecord, TaskStatus
 
 
 DEFAULT_UPLOAD_ALLOWED_SUFFIXES = {
@@ -38,8 +38,21 @@ def cleanup_temp_paths(paths: Iterable[str]) -> None:
             continue
 
 
-async def stage_upload_files(files: list[Any]) -> tuple[list[str], list[str]]:
-    return await stage_upload_files_with_limits(files)
+async def stage_upload_files(
+    files: list[Any],
+    *,
+    allowed_suffixes: set[str] | None = None,
+    max_file_count: int = DEFAULT_UPLOAD_MAX_FILE_COUNT,
+    max_file_bytes: int = DEFAULT_UPLOAD_MAX_FILE_BYTES,
+    max_total_bytes: int = DEFAULT_UPLOAD_MAX_TOTAL_BYTES,
+) -> tuple[list[str], list[str]]:
+    return await stage_upload_files_with_limits(
+        files,
+        allowed_suffixes=allowed_suffixes,
+        max_file_count=max_file_count,
+        max_file_bytes=max_file_bytes,
+        max_total_bytes=max_total_bytes,
+    )
 
 
 async def stage_upload_files_with_limits(

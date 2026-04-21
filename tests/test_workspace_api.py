@@ -4,9 +4,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-import api_server
-import chat_store
-import deck_service
+import backend.api_server as api_server
+import backend.chat_store as chat_store
+import backend.deck_service as deck_service
 
 
 def _history_cls_for_db(db_path: Path):
@@ -100,6 +100,7 @@ def test_workspace_preset_roundtrip(monkeypatch, tmp_path):
                         "model": "openai/gpt-4o-mini",
                         "base_url": "https://openrouter.ai/api/v1",
                         "api_key": "",
+                        "api_key_ref": "cmk-workspace-test",
                         "temperature": 0.6,
                         "agent_mode": "langgraph",
                     },
@@ -118,6 +119,7 @@ def test_workspace_preset_roundtrip(monkeypatch, tmp_path):
     )
 
     assert created.status_code == 200
+
     workspace = created.json()["workspace"]
     assert workspace["preset"]["tool_config"] == {
         "web_search_enabled": True,
@@ -132,6 +134,7 @@ def test_workspace_preset_roundtrip(monkeypatch, tmp_path):
         "panel-main",
         "panel-compare",
     ]
+    assert workspace["preset"]["default_panels"][1]["api_key_ref"] == "cmk-workspace-test"
 
     updated = client.patch(
         f"/api/workspaces/{workspace['workspace_id']}",
@@ -189,6 +192,26 @@ def test_workspace_preset_roundtrip(monkeypatch, tmp_path):
         "knowledge-base",
         "custom-crm",
     ]
+
+
+def test_normalize_model_config_accepts_plain_dict():
+    normalized = api_server._normalize_model_config(
+        {
+            "panel_id": "panel-main",
+            "provider": "ollama",
+            "connection_type": "ollama",
+            "model": "qwen3.5-2B:latest",
+            "base_url": "http://localhost:11434",
+            "api_key": "",
+            "temperature": 0.3,
+            "agent_mode": "auto",
+        }
+    )
+
+    assert normalized.panel_id == "panel-main"
+    assert normalized.connection_type == "ollama"
+    assert normalized.provider == "ollama"
+    assert normalized.model == "qwen3.5-2B:latest"
 
 
 def test_mcp_connector_catalog_endpoint(monkeypatch, tmp_path):

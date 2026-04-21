@@ -223,6 +223,14 @@ function defaultModelConfig(panelId: string): ModelConfig {
   })
 }
 
+function sanitizePersistedModelConfig(modelConfig: ModelConfig): ModelConfig {
+  return {
+    ...modelConfig,
+    // Avoid persisting provider credentials in browser storage.
+    api_key: '',
+  }
+}
+
 function newPanel(): Panel {
   const id = `panel-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
   return { id, modelConfig: defaultModelConfig(id), messages: [] }
@@ -924,7 +932,7 @@ export const useChatStore = create<ChatState>()(
     }),
     {
       name: 'ai-kb-chat-store',
-      version: 10,
+      version: 11,
       migrate: (persistedState) => {
         const state = (persistedState ?? {}) as Partial<ChatState>
         return {
@@ -974,12 +982,14 @@ export const useChatStore = create<ChatState>()(
             return {
               id: preset.id || `preset-migrated-${index}`,
               name: preset.name || `Preset ${index + 1}`,
-              modelConfig: normalizeModelConfig({
-                ...preset.modelConfig,
-                panel_id:
-                  preset.modelConfig?.panel_id ??
-                  `preset-migrated-${index}`,
-              }),
+              modelConfig: sanitizePersistedModelConfig(
+                normalizeModelConfig({
+                  ...preset.modelConfig,
+                  panel_id:
+                    preset.modelConfig?.panel_id ??
+                    `preset-migrated-${index}`,
+                }),
+              ),
               createdAt,
               updatedAt,
             }
@@ -992,12 +1002,14 @@ export const useChatStore = create<ChatState>()(
             return {
               id: profile.id || `cloud-profile-migrated-${index}`,
               name: profile.name || `云端模型 ${index + 1}`,
-              modelConfig: normalizeModelConfig({
-                ...profile.modelConfig,
-                panel_id: profile.modelConfig?.panel_id ?? `cloud-profile-migrated-${index}`,
-                connection_type: 'openai_compatible',
-                provider: 'openai_compatible',
-              }),
+              modelConfig: sanitizePersistedModelConfig(
+                normalizeModelConfig({
+                  ...profile.modelConfig,
+                  panel_id: profile.modelConfig?.panel_id ?? `cloud-profile-migrated-${index}`,
+                  connection_type: 'openai_compatible',
+                  provider: 'openai_compatible',
+                }),
+              ),
               createdAt,
               updatedAt,
             }
@@ -1014,12 +1026,12 @@ export const useChatStore = create<ChatState>()(
                 normalized.connection_type === 'ollama' &&
                 normalized.model === 'qwen3.5:4b'
               ) {
-                return {
+                return sanitizePersistedModelConfig({
                   ...normalized,
                   model: 'qwen3.5-2B:latest',
-                }
+                })
               }
-              return normalized
+              return sanitizePersistedModelConfig(normalized)
             })(),
           })),
         }
@@ -1035,9 +1047,19 @@ export const useChatStore = create<ChatState>()(
         theme: s.theme,
         bookmarks: s.bookmarks,
         memoryWorkspaceOpen: false,
-        modelPresets: s.modelPresets,
-        cloudModelProfiles: s.cloudModelProfiles,
-        panels: s.panels.map((p) => ({ ...p, messages: [] })),
+        modelPresets: s.modelPresets.map((preset) => ({
+          ...preset,
+          modelConfig: sanitizePersistedModelConfig(preset.modelConfig),
+        })),
+        cloudModelProfiles: s.cloudModelProfiles.map((profile) => ({
+          ...profile,
+          modelConfig: sanitizePersistedModelConfig(profile.modelConfig),
+        })),
+        panels: s.panels.map((p) => ({
+          ...p,
+          messages: [],
+          modelConfig: sanitizePersistedModelConfig(p.modelConfig),
+        })),
       }),
     },
   ),

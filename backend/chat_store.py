@@ -389,6 +389,7 @@ def _init_session_panels_table(conn: sqlite3.Connection) -> None:
             connection_type TEXT DEFAULT '',
             model TEXT DEFAULT '',
             base_url TEXT DEFAULT '',
+            api_key_ref TEXT DEFAULT '',
             temperature REAL DEFAULT 0.3,
             agent_mode TEXT DEFAULT 'auto',
             display_order INTEGER DEFAULT 0,
@@ -398,6 +399,10 @@ def _init_session_panels_table(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (session_id, panel_id)
         )
     """)
+    existing_columns = {row[1] for row in cursor.execute("PRAGMA table_info(session_panels)")}
+    if "api_key_ref" not in existing_columns:
+        cursor.execute("ALTER TABLE session_panels ADD COLUMN api_key_ref TEXT DEFAULT ''")
+        logger.info("Migrated session_panels table: added 'api_key_ref' column")
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_session_panels_session
         ON session_panels(session_id, display_order)
@@ -660,6 +665,7 @@ def _normalize_workspace_panel_configs(value: Any = None) -> List[Dict[str, Any]
                 "model": str(item.get("model") or "").strip(),
                 "base_url": str(item.get("base_url") or "").strip(),
                 "api_key": "",
+                "api_key_ref": str(item.get("api_key_ref") or "").strip(),
                 "temperature": temperature,
                 "agent_mode": agent_mode,
             }
@@ -777,14 +783,14 @@ def _build_message_search_match_query(query: str) -> str:
 def _normalize_session_memory_kind(kind: Optional[str] = None) -> str:
     normalized = str(kind or "fact").strip().lower() or "fact"
     if normalized not in {"summary", "fact", "decision", "todo"}:
-        raise ValueError("涓嶆敮鎸佺殑浼氳瘽璁板繂绫诲瀷")
+        raise ValueError("不支持的会话记忆类型")
     return normalized
 
 
 def _normalize_session_memory_content(content: Any) -> str:
     normalized = _normalize_content(content).strip()
     if not normalized:
-        raise ValueError("浼氳瘽璁板繂鍐呭涓嶈兘涓虹┖")
+        raise ValueError("会话记忆内容不能为空")
     if len(normalized) <= 2000:
         return normalized
     return normalized[:1997].rstrip() + "..."
@@ -3364,10 +3370,10 @@ def replace_session_panels(
             cursor.execute(
                 """
                 INSERT INTO session_panels (
-                    session_id, panel_id, provider, connection_type, model, base_url,
+                    session_id, panel_id, provider, connection_type, model, base_url, api_key_ref,
                     temperature, agent_mode, display_order, is_primary, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -3376,6 +3382,7 @@ def replace_session_panels(
                     str(panel.get("connection_type") or panel.get("provider") or ""),
                     str(panel.get("model") or ""),
                     str(panel.get("base_url") or ""),
+                    str(panel.get("api_key_ref") or ""),
                     float(panel.get("temperature") or 0.3),
                     str(panel.get("agent_mode") or "auto"),
                     index,
@@ -3426,15 +3433,16 @@ def upsert_session_panel(
         cursor.execute(
             """
             INSERT INTO session_panels (
-                session_id, panel_id, provider, connection_type, model, base_url,
+                session_id, panel_id, provider, connection_type, model, base_url, api_key_ref,
                 temperature, agent_mode, display_order, is_primary, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(session_id, panel_id) DO UPDATE SET
                 provider = excluded.provider,
                 connection_type = excluded.connection_type,
                 model = excluded.model,
                 base_url = excluded.base_url,
+                api_key_ref = excluded.api_key_ref,
                 temperature = excluded.temperature,
                 agent_mode = excluded.agent_mode,
                 updated_at = excluded.updated_at
@@ -3446,6 +3454,7 @@ def upsert_session_panel(
                 str(panel_config.get("connection_type") or panel_config.get("provider") or ""),
                 str(panel_config.get("model") or ""),
                 str(panel_config.get("base_url") or ""),
+                str(panel_config.get("api_key_ref") or ""),
                 float(panel_config.get("temperature") or 0.3),
                 str(panel_config.get("agent_mode") or "auto"),
                 display_order,
@@ -3469,6 +3478,7 @@ def get_session_panels(session_id: str, db_path: str = DB_PATH) -> List[Dict[str
                 connection_type,
                 model,
                 base_url,
+                api_key_ref,
                 temperature,
                 agent_mode,
                 is_primary,
@@ -3485,8 +3495,8 @@ def get_session_panels(session_id: str, db_path: str = DB_PATH) -> List[Dict[str
             panels.append(
                 {
                     "panel_id": row[0],
-                    "is_primary": bool(row[7]),
-                    "display_order": int(row[8] or 0),
+                    "is_primary": bool(row[8]),
+                    "display_order": int(row[9] or 0),
                     "model_config": {
                         "panel_id": row[0],
                         "provider": row[1] or row[2] or "ollama",
@@ -3494,8 +3504,9 @@ def get_session_panels(session_id: str, db_path: str = DB_PATH) -> List[Dict[str
                         "model": row[3] or "",
                         "base_url": row[4] or "",
                         "api_key": "",
-                        "temperature": float(row[5] or 0.3),
-                        "agent_mode": row[6] or "auto",
+                        "api_key_ref": row[5] or "",
+                        "temperature": float(row[6] or 0.3),
+                        "agent_mode": row[7] or "auto",
                     },
                 }
             )

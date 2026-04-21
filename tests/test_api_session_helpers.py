@@ -1,11 +1,11 @@
-from api_session_helpers import (
+from backend.api_session_helpers import (
     build_answer_group_review_payload,
     collect_session_attachments,
     message_payload,
     render_shared_deck_html,
     render_shared_session_html,
 )
-from deck_service import DeckBlock, DeckGeneration, DeckMeta, DeckSlide, DeckSpec
+from backend.deck_service import DeckBlock, DeckGeneration, DeckMeta, DeckSlide, DeckSpec
 
 
 def test_message_payload_restores_role_and_metadata():
@@ -176,7 +176,7 @@ def test_render_shared_pages_include_expected_content():
 
 
 def test_build_answer_group_review_payload_prefers_better_supported_panel(monkeypatch, tmp_path):
-    import chat_store
+    import backend.chat_store as chat_store
 
     db_path = tmp_path / "chat_history.db"
 

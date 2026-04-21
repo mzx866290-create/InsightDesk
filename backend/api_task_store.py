@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
-from chat_store import connect_sqlite
+from backend.chat_store import connect_sqlite
 
 logger = logging.getLogger(__name__)
 

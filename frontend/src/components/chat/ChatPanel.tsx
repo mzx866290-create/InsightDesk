@@ -174,6 +174,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const panelBodyRef = useRef<HTMLDivElement>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
   const rerunAbortControllerRef = useRef<AbortController | null>(null)
+  const lastAutoCollapsedWorkflowRef = useRef<string>('')
   const canRemove = panels.length > 1
   const [confirmClear, setConfirmClear] = useState(false)
   const [clearing, setClearing] = useState(false)
@@ -230,9 +231,30 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     ),
   )
 
+  const workflowCompletionKey = workflow
+    ? workflow.nodes
+        .map((node) => `${node.id}:${node.status}:${node.duration ?? ''}:${node.error ?? ''}`)
+        .join('|')
+    : ''
+  const isWorkflowSettled = Boolean(
+    workflow &&
+      hasWorkflowActivity &&
+      workflow.nodes.length > 0 &&
+      workflow.nodes.every((node) => node.status !== 'running'),
+  )
+
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [panel.messages])
+
+  useEffect(() => {
+    if (!workflowVisible || !isWorkflowSettled || !workflowCompletionKey) return
+    if (lastAutoCollapsedWorkflowRef.current === workflowCompletionKey) return
+
+    lastAutoCollapsedWorkflowRef.current = workflowCompletionKey
+    setWorkflowVisibleLocal(false)
+    setWorkflowVisible(panel.id, false)
+  }, [isWorkflowSettled, panel.id, setWorkflowVisible, workflowCompletionKey, workflowVisible])
 
   useEffect(() => {
     if (!jumpTarget || jumpTarget.sessionId !== currentSessionId) return
@@ -1028,9 +1050,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     if (!matchedUserMessage) {
       addErrorMessage(
         panel.id,
-        '鏃犳硶閲嶆柊鐢熸垚杩欐潯鍥炵瓟锛屽洜涓烘病鏈夋壘鍒板搴旂殑鐢ㄦ埛鎻愰棶銆?,
+        '无法重新生成这条回答，因为没有找到对应的用户提问。',
         'RERUN_CONTEXT_MISSING',
-        '璇烽噸鏂板彂閫佽繖鏉￠棶棰樺悗鍐嶈瘯銆?,
+        '请重新发送这条问题后再试。',
       )
       return
     }
@@ -1038,9 +1060,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     if (!hasRunnableInput(matchedUserMessage)) {
       addErrorMessage(
         panel.id,
-        '杩欐潯鍥炵瓟鏆傛椂鏃犳硶閲嶈窇锛屽洜涓哄師濮嬭緭鍏ユ病鏈夊畬鏁翠繚瀛樺湪褰撳墠浼氳瘽閲屻€?,
+        '这条回答暂时无法重跑，因为原始输入没有完整保存到当前会话里。',
         'RERUN_INPUT_UNAVAILABLE',
-        '濡傛灉杩欐槸鍒锋柊鍚庣殑绾檮浠舵秷鎭紝璇烽噸鏂板彂閫佷竴娆″啀璇曘€?,
+        '如果这是刷新后的纯附件消息，请重新发送一次再试。',
       )
       return
     }
@@ -1382,8 +1404,14 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
       {/* Workflow Visualizer */}
       {workflowVisible && hasWorkflowActivity && (
-        <div className="px-4 py-3 border-b border-bg-border/50 bg-bg-secondary/30 shrink-0">
-          <WorkflowVisualizer panelId={panel.id} />
+        <div className="shrink-0 border-b border-bg-border/50 bg-bg-secondary/30 px-4 py-3">
+          <WorkflowVisualizer
+            panelId={panel.id}
+            onCollapse={() => {
+              setWorkflowVisibleLocal(false)
+              setWorkflowVisible(panel.id, false)
+            }}
+          />
         </div>
       )}
 

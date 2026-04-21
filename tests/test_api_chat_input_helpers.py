@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from api_chat_input_helpers import (
+from backend.api_chat_input_helpers import (
     build_message_with_files,
     build_user_input,
     chat_file_suffix,

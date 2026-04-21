@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from agent_core import (
+from backend.agent_core import (
     _heuristic_langgraph_tool_choice,
     _looks_like_reasoning_only_output,
     _strip_think_tags,

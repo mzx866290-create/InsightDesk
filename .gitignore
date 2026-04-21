@@ -30,6 +30,7 @@ ENV/
 # Environment Variables
 .env
 .env.local
+.app_config.key
 
 # Python tooling caches
 .pytest_cache/
@@ -70,6 +71,7 @@ tmp_export_test.pptx
 # Frontend build/dependency artifacts
 frontend/node_modules/
 frontend/dist/
+frontend/test-results/
 
 # Model cache
 .cache/
@@ -86,5 +88,6 @@ PRODUCT_MIGRATION_TASKS.md
 test_doc.md
 docs/archive/
 docs/SEARCH_MAX_UPGRADE_PLAN.md
+f02632b6-f59a-4e49-b810-4870b5025de3.png
 项目介绍.md
 项目模块技术栈总结.md

@@ -8,8 +8,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pptx import Presentation
 from pptx.util import Pt
 
-import api_document_helpers
-from api_task_store import TaskStatus
+import backend.api_document_helpers as api_document_helpers
+from backend.api_task_store import TaskStatus
 
 
 class FakeUpload:

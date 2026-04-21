@@ -2,7 +2,7 @@ import asyncio
 import json
 import sys
 
-from agent_mcp_helpers import (
+from backend.agent_mcp_helpers import (
     default_mcp_connections,
     list_mcp_server_catalog,
     load_mcp_connection_config,

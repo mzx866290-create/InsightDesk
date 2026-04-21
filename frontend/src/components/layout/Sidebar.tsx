@@ -5,7 +5,6 @@ import {
   Trash2,
   Settings,
   ChevronLeft,
-  Brain,
   Search,
   Star,
   GripVertical,
@@ -41,9 +40,9 @@ import type { Bookmark as StoredBookmark, McpConnector, Message, Session, Worksp
 import { Button } from '../ui/Button'
 
 const WORKSPACE_DECK_THEME_LABELS: Record<NonNullable<Workspace['preset']>['output_preset']['deck_theme'], string> = {
-  default: '缁忓吀钃濆浘',
+  default: '经典蓝图',
   midnight: 'Midnight Brief',
-  sunrise: '鏅ㄦ洣鍥為【',
+  sunrise: '晨曦回顾',
 }
 
 function mapMessages(messages: Message[]) {
@@ -86,11 +85,11 @@ const WORKSPACE_COLOR_TONES: Record<Workspace['color'], string> = {
 }
 
 const WORKSPACE_COLOR_LABELS: Record<Workspace['color'], string> = {
-  blue: '钃濊壊',
-  green: '缁胯壊',
-  amber: '鐞ョ弨',
-  rose: '鐜懓',
-  slate: '鐭虫澘',
+  blue: '蓝色',
+  green: '绿色',
+  amber: '琥珀',
+  rose: '玫瑰',
+  slate: '石板',
 }
 
 function toggleConnectorSelection(current: string[], connectorName: string, enabled: boolean): string[] {
@@ -400,7 +399,7 @@ export const Sidebar: React.FC = () => {
     setLoadingNew(true)
     setMovingSessionId(null)
     try {
-      const s = await createSession('鏂板缓瀵硅瘽', {
+      const s = await createSession('新建对话', {
         workspace_id: currentWorkspaceId ?? undefined,
       })
       addSession({
@@ -766,12 +765,12 @@ export const Sidebar: React.FC = () => {
     setExportingId(session.session_id)
     try {
       const { messages } = await getSessionMessages(session.session_id)
-      const lines: string[] = [`# ${session.title || '瀵硅瘽璁板綍'}`, '']
+      const lines: string[] = [`# ${session.title || '对话记录'}`, '']
       const dateStr = new Date(session.updated_at * 1000).toLocaleString('zh-CN')
-      lines.push(`> 瀵煎嚭鏃堕棿锛?{dateStr}`, '')
+      lines.push(`> 导出时间：${dateStr}`, '')
       for (const msg of messages) {
         if (msg.role === 'user') {
-          lines.push(`**鐢ㄦ埛**`, '', msg.content, '')
+          lines.push(`**用户**`, '', msg.content, '')
         } else if (msg.role === 'assistant') {
           const model = msg.model_id ? ` (${msg.model_id})` : ''
           lines.push(`**AI${model}**`, '', msg.content, '')
@@ -781,11 +780,11 @@ export const Sidebar: React.FC = () => {
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `${(session.title || '瀵硅瘽璁板綍').replace(/[/\\?%*:|"<>]/g, '-')}.md`
+      a.download = `${(session.title || '对话记录').replace(/[/\\?%*:|"<>]/g, '-')}.md`
       a.click()
       URL.revokeObjectURL(url)
     } catch (e) {
-      console.error('瀵煎嚭澶辫触', e)
+      console.error('导出失败', e)
     } finally {
       setExportingId(null)
     }
@@ -874,7 +873,7 @@ export const Sidebar: React.FC = () => {
   const startEditing = (e: React.MouseEvent, session: Session) => {
     e.stopPropagation()
     setEditingSessionId(session.session_id)
-    setEditingTitle(session.title || '鏂板缓瀵硅瘽')
+    setEditingTitle(session.title || '新建对话')
     setEditingTags(session.tags.join(', '))
     setMovingSessionId(null)
     setError('')
@@ -1038,7 +1037,7 @@ export const Sidebar: React.FC = () => {
     if (search.trim()) return 'No matching cross-session results.'
     if (viewMode === 'favorite') return 'No favorite sessions yet.'
     if (viewMode === 'archived') return 'No archived sessions.'
-    return '鏆傛棤瀵硅瘽璁板綍'
+    return '暂无对话记录'
   })()
 
   const handleSessionDrop = async (targetSessionId: string) => {
@@ -1094,10 +1093,14 @@ export const Sidebar: React.FC = () => {
 
   const sidebarContent = (
     <>
-        <div className="flex items-center justify-between border-b border-bg-border px-4 py-4">
+      <div className="flex items-center justify-between border-b border-bg-border px-4 py-4">
         <div className="flex min-w-0 items-center gap-2.5">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-blue/20">
-            <Brain size={18} className="text-accent-blue" />
+          <div className="h-9 w-9 shrink-0 overflow-hidden rounded-xl bg-white/6 ring-1 ring-white/8">
+            <img
+              src="/sidebar-logo.png"
+              alt="InsightDesk logo"
+              className="h-full w-full scale-[1.9] object-cover object-[center_18%]"
+            />
           </div>
           <span className="truncate text-sm font-semibold text-text-primary">InsightDesk</span>
         </div>
@@ -1115,7 +1118,8 @@ export const Sidebar: React.FC = () => {
           <div className="mb-2 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-[11px] font-medium text-text-primary">
               <FolderOpen size={13} className="text-accent-blue" />
-              宸ヤ綔鍖?            </div>
+              工作区
+            </div>
             <div className="flex items-center gap-1">
               <button
                 type="button"
@@ -1191,7 +1195,8 @@ export const Sidebar: React.FC = () => {
                   </div>
                 </div>
                 <span className="shrink-0 text-[10px] text-text-secondary">
-                  {currentWorkspace.session_count} 涓璇?                </span>
+                  {currentWorkspace.session_count} 个对话
+                </span>
               </div>
               {currentWorkspace.description && (
                 <div className="mt-1.5 text-[11px] leading-relaxed text-text-secondary">
@@ -1214,7 +1219,8 @@ export const Sidebar: React.FC = () => {
               </div>
               {currentWorkspace.workspace_id === DEFAULT_WORKSPACE_ID && (
                 <div className="mt-1.5 text-[10px] text-text-secondary">
-                  榛樿宸ヤ綔鍖哄彈淇濇姢锛屼笉鑳借鍒犻櫎銆?                </div>
+                  默认工作区受保护，不能被删除。
+                </div>
               )}
             </div>
           )}
@@ -1231,18 +1237,18 @@ export const Sidebar: React.FC = () => {
                 onChange={(event) => setWorkspaceColor(event.target.value as Workspace['color'])}
                 className="w-full rounded-lg border border-bg-border bg-bg-secondary px-2.5 py-2 text-xs text-text-primary outline-none"
               >
-                <option value="blue">钃濊壊</option>
-                <option value="green">缁胯壊</option>
-                <option value="amber">鐞ョ弨</option>
-                <option value="rose">鐜懓</option>
-                <option value="slate">鐭虫澘</option>
+                <option value="blue">蓝色</option>
+                <option value="green">绿色</option>
+                <option value="amber">琥珀</option>
+                <option value="rose">玫瑰</option>
+                <option value="slate">石板</option>
               </select>
               <div className="rounded-lg border border-bg-border bg-bg-secondary/60 p-2.5 text-[11px] text-text-secondary">
                 <div className="font-medium text-text-primary">Workspace preset</div>
                 <div className="mt-1">Save the current workbench snapshot: panels, tool toggles, and deck defaults.</div>
                 <div className="mt-2 grid gap-2">
                   <label className="flex items-center justify-between gap-3">
-                    <span>鑱旂綉鎼滅储</span>
+                    <span>联网搜索</span>
                     <input
                       type="checkbox"
                       checked={workspacePresetWebSearch}
@@ -1291,7 +1297,7 @@ export const Sidebar: React.FC = () => {
                     )}
                   </div>
                   <label className="grid gap-1">
-                    <span>Deck 涓婚</span>
+                    <span>Deck 主题</span>
                     <select
                       value={workspacePresetDeckTheme}
                       onChange={(event) => setWorkspacePresetDeckTheme(event.target.value as 'default' | 'midnight' | 'sunrise')}
@@ -1303,7 +1309,7 @@ export const Sidebar: React.FC = () => {
                     </select>
                   </label>
                   <label className="grid gap-1">
-                    <span>Deck 椤垫暟</span>
+                    <span>Deck 页数</span>
                     <input
                       type="number"
                       min={4}
@@ -1335,7 +1341,7 @@ export const Sidebar: React.FC = () => {
                   }}
                   className="rounded-lg px-2 py-1 text-[11px] text-text-secondary transition-colors hover:text-text-primary"
                 >
-                  鍙栨秷
+                  取消
                 </button>
                 <button
                   type="button"
@@ -1369,18 +1375,18 @@ export const Sidebar: React.FC = () => {
                 onChange={(event) => setWorkspaceEditColor(event.target.value as Workspace['color'])}
                 className="w-full rounded-lg border border-bg-border bg-bg-secondary px-2.5 py-2 text-xs text-text-primary outline-none"
               >
-                <option value="blue">钃濊壊</option>
-                <option value="green">缁胯壊</option>
-                <option value="amber">鐞ョ弨</option>
-                <option value="rose">鐜懓</option>
-                <option value="slate">鐭虫澘</option>
+                <option value="blue">蓝色</option>
+                <option value="green">绿色</option>
+                <option value="amber">琥珀</option>
+                <option value="rose">玫瑰</option>
+                <option value="slate">石板</option>
               </select>
               <div className="rounded-lg border border-bg-border bg-bg-secondary/60 p-2.5 text-[11px] text-text-secondary">
                 <div className="font-medium text-text-primary">Workspace preset</div>
                 <div className="mt-1">Saving here overwrites the workspace default panels with the current workbench snapshot.</div>
                 <div className="mt-2 grid gap-2">
                   <label className="flex items-center justify-between gap-3">
-                    <span>鑱旂綉鎼滅储</span>
+                    <span>联网搜索</span>
                     <input
                       type="checkbox"
                       checked={workspaceEditPresetWebSearch}
@@ -1429,7 +1435,7 @@ export const Sidebar: React.FC = () => {
                     )}
                   </div>
                   <label className="grid gap-1">
-                    <span>Deck 涓婚</span>
+                    <span>Deck 主题</span>
                     <select
                       value={workspaceEditPresetDeckTheme}
                       onChange={(event) => setWorkspaceEditPresetDeckTheme(event.target.value as 'default' | 'midnight' | 'sunrise')}
@@ -1441,7 +1447,7 @@ export const Sidebar: React.FC = () => {
                     </select>
                   </label>
                   <label className="grid gap-1">
-                    <span>Deck 椤垫暟</span>
+                    <span>Deck 页数</span>
                     <input
                       type="number"
                       min={4}
@@ -1464,7 +1470,7 @@ export const Sidebar: React.FC = () => {
                   onClick={cancelWorkspaceEditor}
                   className="rounded-lg px-2 py-1 text-[11px] text-text-secondary transition-colors hover:text-text-primary"
                 >
-                  鍙栨秷
+                  取消
                 </button>
                 <button
                   type="button"
@@ -1485,7 +1491,8 @@ export const Sidebar: React.FC = () => {
               <div className="mt-3 space-y-2 rounded-xl border border-accent-red/20 bg-accent-red/5 p-2.5">
                 <div className="text-xs font-medium text-text-primary">Delete workspace</div>
                 <div className="text-[11px] leading-relaxed text-text-secondary">
-                  鍒犻櫎鍓嶄細鍏堟妸褰撳墠宸ヤ綔鍖哄唴鐨勫叏閮ㄥ璇濊縼绉诲埌鍏朵粬宸ヤ綔鍖恒€?                </div>
+                  删除前会先把当前工作区内的全部对话迁移到其他工作区。
+                </div>
                 <select
                   value={workspaceDeleteTargetId}
                   onChange={(event) => setWorkspaceDeleteTargetId(event.target.value)}
@@ -1493,7 +1500,7 @@ export const Sidebar: React.FC = () => {
                 >
                   {workspaceDeleteTargets.map((workspace) => (
                     <option key={workspace.workspace_id} value={workspace.workspace_id}>
-                      杩佺Щ鍒?{workspace.name}
+                      迁移到 {workspace.name}
                     </option>
                   ))}
                 </select>
@@ -1503,7 +1510,7 @@ export const Sidebar: React.FC = () => {
                     onClick={cancelWorkspaceDelete}
                     className="rounded-lg px-2 py-1 text-[11px] text-text-secondary transition-colors hover:text-text-primary"
                   >
-                    鍙栨秷
+                    取消
                   </button>
                   <button
                     type="button"
@@ -1526,7 +1533,7 @@ export const Sidebar: React.FC = () => {
           loading={loadingNew}
         >
           <Plus size={15} />
-          鏂板缓瀵硅瘽
+          新建对话
         </Button>
       </div>
 
@@ -1536,7 +1543,7 @@ export const Sidebar: React.FC = () => {
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="鎼滅储鏍囬銆佹爣绛炬垨娑堟伅鍐呭"
+            placeholder="搜索标题、标签或消息内容"
             className="w-full bg-transparent text-xs text-text-primary outline-none placeholder:text-text-secondary"
           />
         </label>
@@ -1559,12 +1566,12 @@ export const Sidebar: React.FC = () => {
             }`}
           >
             <Bookmark size={10} />
-            涔︾ {bookmarks.length > 0 ? bookmarks.length : ''}
+            书签 {bookmarks.length > 0 ? bookmarks.length : ''}
           </button>
           {([
-            ['all', `鍏ㄩ儴 ${counts.all}`],
-            ['favorite', `鏀惰棌 ${counts.favorite}`],
-            ['archived', `褰掓。 ${counts.archived}`],
+            ['all', `全部 ${counts.all}`],
+            ['favorite', `收藏 ${counts.favorite}`],
+            ['archived', `归档 ${counts.archived}`],
           ] as Array<[SessionViewMode, string]>).map(([value, label]) => {
             const active = viewMode === value
             return (
@@ -1615,7 +1622,7 @@ export const Sidebar: React.FC = () => {
         )}
         {canDragSort && filteredSessions.length > 1 && (
           <p className="mt-2 text-[10px] text-text-secondary/65">
-            鎻愮ず锛氬彲鎷栨嫿浼氳瘽璋冩暣椤哄簭
+            提示：可拖拽会话调整顺序
           </p>
         )}
 
@@ -1627,14 +1634,15 @@ export const Sidebar: React.FC = () => {
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 pb-2">
-        {/* 涔︾瑙嗗浘 */}
+        {/* 书签视图 */}
         {showBookmarks && (
           <div className="mb-2">
             {bookmarks.length === 0 ? (
-              <div className="py-6 text-center text-xs text-text-secondary">鏆傛棤涔︾娑堟伅</div>
+              <div className="py-6 text-center text-xs text-text-secondary">暂无书签消息</div>
             ) : bookmarkGroups.length === 0 ? (
               <div className="py-6 text-center text-xs text-text-secondary">
-                娌℃湁鎵惧埌鍖归厤鐨勪功绛俱€?              </div>
+                没有找到匹配的书签。
+              </div>
             ) : (
               <div className="space-y-3">
                 {bookmarkGroups.map((group) => (
@@ -1648,7 +1656,8 @@ export const Sidebar: React.FC = () => {
                           {group.title}
                         </div>
                         <div className="mt-0.5 text-[10px] text-text-secondary/60">
-                          {group.items.length} 鏉′功绛?                        </div>
+                          {group.items.length} 条书签
+                        </div>
                       </div>
                       <div className="shrink-0 text-[10px] text-text-secondary/55">
                         {formatTime(group.updatedAt)}
@@ -1674,7 +1683,7 @@ export const Sidebar: React.FC = () => {
                           <div className="mb-1.5 flex items-start justify-between gap-2">
                             <div className="min-w-0 flex-1">
                               <div className="truncate text-[10px] text-text-secondary/60">
-                                {bm.modelId ? `${bm.modelId} 路 ` : ''}
+                                {bm.modelId ? `${bm.modelId} · ` : ''}
                                 {formatTime(bm.updatedAt || bm.createdAt)}
                               </div>
                             </div>
@@ -1698,7 +1707,7 @@ export const Sidebar: React.FC = () => {
                                 }}
                                 disabled={removingBookmarkId === bm.id}
                                 className="rounded p-0.5 text-text-secondary/50 transition-colors hover:text-accent-red"
-                                title="绉婚櫎涔︾"
+                                title="移除书签"
                               >
                                 <X size={10} />
                               </button>
@@ -1708,7 +1717,8 @@ export const Sidebar: React.FC = () => {
                             {bm.content}
                           </p>
                           <div className="mt-2 text-[10px] text-text-secondary/55">
-                            鐐瑰嚮鍙烦杞埌鍘熸秷鎭?                          </div>
+                            点击可跳转到原消息
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -1804,7 +1814,7 @@ export const Sidebar: React.FC = () => {
                             onChange={(event) => setEditingTitle(event.target.value)}
                             onKeyDown={handleEditKeyDown}
                             className="w-full rounded-lg border border-bg-border bg-bg-primary px-2.5 py-1.5 text-xs text-text-primary outline-none"
-                            placeholder="瀵硅瘽鏍囬"
+                            placeholder="对话标题"
                             autoFocus
                           />
                           <div className="flex items-start gap-2 rounded-lg border border-bg-border bg-bg-primary px-2.5 py-1.5">
@@ -1814,7 +1824,7 @@ export const Sidebar: React.FC = () => {
                               onChange={(event) => setEditingTags(event.target.value)}
                               onKeyDown={handleEditKeyDown}
                               className="w-full bg-transparent text-[11px] text-text-primary outline-none placeholder:text-text-secondary"
-                              placeholder="鏍囩锛岀敤閫楀彿鍒嗛殧"
+                              placeholder="标签，用逗号分隔"
                             />
                           </div>
                           <div className="flex items-center justify-end gap-1.5">
@@ -1825,7 +1835,7 @@ export const Sidebar: React.FC = () => {
                                 cancelEditing()
                               }}
                               className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-                              title="鍙栨秷"
+                              title="取消"
                             >
                               <X size={13} />
                             </button>
@@ -1836,7 +1846,7 @@ export const Sidebar: React.FC = () => {
                                 void saveEditing()
                               }}
                               className="rounded-lg p-1.5 text-accent-blue transition-colors hover:bg-accent-blue/10"
-                              title="淇濆瓨"
+                              title="保存"
                             >
                               <Check size={13} />
                             </button>
@@ -1852,7 +1862,7 @@ export const Sidebar: React.FC = () => {
                               />
                             )}
                             <div className="truncate text-xs font-medium">
-                              {session.title || '鏂板缓瀵硅瘽'}
+                              {session.title || '新建对话'}
                             </div>
                             {session.is_pinned && (
                               <Pin size={11} className="shrink-0 fill-current text-accent-blue" />
@@ -1862,11 +1872,13 @@ export const Sidebar: React.FC = () => {
                             )}
                             {session.is_archived && (
                               <span className="rounded-full border border-bg-border px-1.5 py-0.5 text-[9px] text-text-secondary">
-                                宸插綊妗?                              </span>
+                                已归档
+                              </span>
                             )}
                           </div>
                           <div className="mt-0.5 text-[10px] text-text-secondary/70">
-                            {formatTime(session.updated_at)} 路 {session.message_count} 鏉℃秷鎭?                          </div>
+                            {formatTime(session.updated_at)} · {session.message_count} 条消息
+                          </div>
                           {search.trim() && (
                             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
                               <span className="rounded-full bg-bg-secondary px-2 py-0.5 text-[10px] text-text-secondary">
@@ -1916,7 +1928,7 @@ export const Sidebar: React.FC = () => {
                             : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
                         }`}
                         disabled={savingId === session.session_id}
-                        title={session.is_pinned ? '鍙栨秷缃《' : '缃《浼氳瘽'}
+                        title={session.is_pinned ? '取消置顶' : '置顶会话'}
                       >
                         <Pin size={12} className={session.is_pinned ? 'fill-current' : ''} />
                       </button>
@@ -1933,7 +1945,7 @@ export const Sidebar: React.FC = () => {
                             : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
                         }`}
                         disabled={savingId === session.session_id}
-                        title={session.is_favorite ? '鍙栨秷鏀惰棌' : '鏀惰棌瀵硅瘽'}
+                        title={session.is_favorite ? '取消收藏' : '收藏对话'}
                       >
                         <Star size={12} className={session.is_favorite ? 'fill-current' : ''} />
                       </button>
@@ -1949,7 +1961,7 @@ export const Sidebar: React.FC = () => {
                         }}
                         className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
                         disabled={savingId === session.session_id}
-                        title="绉诲姩鍒板伐浣滃尯"
+                        title="移动到工作区"
                       >
                         <FolderOpen size={12} />
                       </button>
@@ -1958,7 +1970,7 @@ export const Sidebar: React.FC = () => {
                         onClick={(event) => startEditing(event, session)}
                         className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
                         disabled={savingId === session.session_id}
-                        title="閲嶅懡鍚嶄笌缂栬緫鏍囩"
+                        title="重命名与编辑标签"
                       >
                         <Pencil size={12} />
                       </button>
@@ -1971,7 +1983,7 @@ export const Sidebar: React.FC = () => {
                         }}
                         className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
                         disabled={savingId === session.session_id}
-                        title={session.is_archived ? '鎭㈠瀵硅瘽' : '褰掓。瀵硅瘽'}
+                        title={session.is_archived ? '恢复对话' : '归档对话'}
                       >
                         {session.is_archived ? (
                           <ArchiveRestore size={12} />
@@ -1984,7 +1996,7 @@ export const Sidebar: React.FC = () => {
                         onClick={(event) => void handleExport(event, session)}
                         className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
                         disabled={exportingId === session.session_id}
-                        title="瀵煎嚭涓?Markdown"
+                        title="导出为 Markdown"
                       >
                         {exportingId === session.session_id ? (
                           <span className="block h-3 w-3 rounded-full border border-current border-t-transparent animate-spin" />
@@ -1996,7 +2008,7 @@ export const Sidebar: React.FC = () => {
                         onClick={(event) => handleDelete(event, session)}
                         className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-accent-red/10 hover:text-accent-red"
                         disabled={deletingId === session.session_id}
-                        title="鍒犻櫎瀵硅瘽"
+                        title="删除对话"
                       >
                         {deletingId === session.session_id ? (
                           <span className="block h-3 w-3 rounded-full border border-current border-t-transparent animate-spin" />
@@ -2012,7 +2024,7 @@ export const Sidebar: React.FC = () => {
                       onClick={(event) => event.stopPropagation()}
                     >
                       <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-text-secondary">
-                        绉诲姩鍒板伐浣滃尯
+                        移动到工作区
                       </div>
                       <select
                         value={session.workspace_id}
@@ -2043,7 +2055,8 @@ export const Sidebar: React.FC = () => {
           className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 pb-[calc(env(safe-area-inset-bottom)+0.625rem)] text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
         >
           <Settings size={15} />
-          璁剧疆涓庝笂浼?        </button>
+          设置与上传
+        </button>
       </div>
     </>
   )
@@ -2060,12 +2073,18 @@ export const Sidebar: React.FC = () => {
           className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
           title="Expand sidebar"
         >
-          <Brain size={20} />
+          <div className="h-6 w-6 overflow-hidden rounded-lg bg-white/6 ring-1 ring-white/8">
+            <img
+              src="/sidebar-logo.png"
+              alt="InsightDesk logo"
+              className="h-full w-full scale-[2.05] object-cover object-[center_18%]"
+            />
+          </div>
         </button>
         <button
           onClick={handleNewChat}
           className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-          title="鏂板缓瀵硅瘽"
+          title="新建对话"
         >
           <Plus size={20} />
         </button>

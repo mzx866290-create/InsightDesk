@@ -115,22 +115,22 @@ flowchart TD
 - `frontend/`
   React 前端，负责工作区、会话、聊天面板、引用查看、附件工作区、记忆工作区、任务中心、Deck 预览与编辑等交互。
 
-- `api_server.py`
+- `backend/api_server.py`
   FastAPI 服务入口，提供 REST API、SSE 流式输出、分享、报告、知识库管理、任务调度等能力。
 
-- `agent_core.py`
+- `backend/agent_core.py`
   智能体核心编排层，负责模型接入、工具路由、Agent 模式切换、引用组装、会话记忆注入等。
 
-- `doc_pipeline.py`
+- `backend/doc_pipeline.py`
   文档处理与检索链路，负责加载文档、切块、向量化、FAISS 持久化、召回与重排。
 
-- `chat_store.py`
+- `backend/chat_store.py`
   SQLite 持久层，负责会话、消息、工作区、收藏、Prompt、会话记忆等数据管理。
 
-- `deck_service.py`
+- `backend/deck_service.py`
   演示稿生成与导出模块，负责 Deck 结构生成、主题管理、页面重生成、`PPTX` 导出与持久化。
 
-- `artifact_service.py`
+- `backend/artifact_service.py`
   交付物持久化模块，负责 `report / deck` artifact 的统一存储、列表、读取与导出元数据同步。
 
 - `mcp_servers/`
@@ -215,9 +215,43 @@ flowchart TD
 - [x] share link audit v1：后端提供 `GET /api/share-links`，可按管理员视角审计分享链接的资源类型、有效期、访问计数与访问痕迹
 - [x] share token hygiene v1：分享链接创建/打开统一使用运行时 `SHARE_LINK_SECRET`，避免常量与环境变量漂移
 - [x] request / audit log hardening v1：分享 token 不再以原文出现在安全审计日志和通用请求日志中
+- [x] basic rate limit v1：远程管理接口新增轻量固定窗口限流，本地请求与主聊天链路默认不受影响
 - [x] 已补充 security hardening 与 share flow 的目标回归测试
 
-说明：当前体验加固 v1 先覆盖分享边界、管理员可见性和日志脱敏；完整鉴权、RBAC、组织级审计与监控告警仍在后续范围内。
+## Sprint 6 鉴权与 RBAC Lite 实施清单
+
+- [x] token catalog v1：后端支持 `APP_AUTH_TOKENS_JSON`，并兼容 `ADMIN_API_TOKEN / EDITOR_API_TOKEN / VIEWER_API_TOKEN`
+- [x] auth headers v1：远程访问同时支持 `Authorization: Bearer <token>`、`X-API-Token` 和兼容头 `X-Admin-Token`
+- [x] RBAC lite v1：按 `viewer / editor / admin` 三档角色保护 `security / prompts / documents / knowledge-base / share-links` 管理接口
+- [x] auth observability v1：新增 `GET /api/auth/whoami`，并让安全审计日志优先记录 token 派生的 `user_id / role / auth_source`
+- [x] auth token catalog visibility v1：新增 `GET /api/auth/tokens`，管理员可查看当前生效 token 的脱敏预览、指纹、角色与来源
+- [x] auth token hygiene visibility v1：`GET /api/security/status` 与 `GET /api/auth/tokens` 可识别过短 token 与 legacy token 配置
+- [x] 已补充 authentication + RBAC lite 的目标回归测试
+
+说明：当前体验加固已覆盖分享边界、管理员可见性、日志脱敏以及 token-based authentication / RBAC lite；完整用户目录、凭据托管、组织级审计与监控告警仍在后续范围内。
+
+## Sprint 6 运行可观测性实施清单
+
+- [x] runtime status v1：新增 `GET /api/operations/runtime`，聚合服务启动时间、运行时长、请求计数与任务摘要
+- [x] request/error counters v1：基于现有中间件补充请求总量、状态码分布、最近请求时间与异常计数
+- [x] recent error visibility v1：全局异常处理器写入最近错误窗口，返回 `request_id / path / method / error_code`
+- [x] task summary v1：运行态总览可查看内存任务池中的 `pending / running / completed / failed`
+- [x] 已补充 observability v1 的目标回归测试
+
+说明：当前监控能力先提供轻量运行状态与错误可见性，不含完整指标上报、外部监控系统集成、告警和链路追踪。
+
+## Sprint 6 安全审计可见性实施清单
+
+- [x] recent security audit events v1：新增 `GET /api/security/audit-events`，按管理员视角读取最近安全审计事件
+- [x] audit identity visibility v1：审计事件保留 `request_id / action / result / auth_source / user_id / user_role`
+- [x] audit filtering v1：支持按 `action / result / limit` 读取审计窗口，便于快速排查远程访问与权限问题
+- [x] persisted audit window v1：最近安全审计事件同步写入 SQLite，服务重启后仍可读取近期审计轨迹
+- [x] audit retention visibility v1：`GET /api/security/status` 可查看当前审计存储类型、留存上限、已持久化事件数与内存窗口上限
+- [x] audit retention config hardening v1：`SECURITY_AUDIT_HISTORY_LIMIT` 非法时自动回退，`GET /api/security/status` 同步暴露当前配置来源
+- [x] audit cleanup control v1：管理员可通过 `POST /api/security/audit-events/cleanup` 裁剪持久化与内存审计窗口
+- [x] 已补充 security audit visibility v1 的目标回归测试
+
+说明：当前安全审计可见性 v1 已覆盖进程内窗口与 SQLite 持久化最近事件，但仍不含跨实例聚合、长期留存策略和外部 SIEM 对接。
 
 ## 适用场景
 
@@ -233,10 +267,10 @@ flowchart TD
 这个项目已经具备较完整的产品骨架，但当前定位更适合“团队内部可用的单机/轻量部署系统”，而不是开箱即用的企业级多租户 SaaS。现阶段边界主要包括：
 
 - 默认以 `SQLite + 本地文件 + 本地 FAISS` 为主，适合单机部署
-- 尚未形成完整的用户体系、鉴权体系、RBAC 权限模型与审计日志
+- 已具备 token-based authentication、RBAC lite 与安全审计日志；但完整用户体系、组织级权限和凭据托管仍未完成
 - 检索与任务运行仍以单服务进程为中心，未做分布式拆分
-- 联网搜索依赖外部 API Key，例如 `TAVILY_API_KEY`
-- 生产化监控、限流、告警、链路追踪能力仍有继续增强空间
+- 联网搜索可使用外部 API Key（如 `TAVILY_API_KEY`），Docker Compose 也内置了本地 `SearXNG` 作为默认备用搜索源
+- 已具备 runtime status 与 recent error visibility v1；但生产化监控、限流、告警、链路追踪能力仍有继续增强空间
 
 ## 推荐演进方向
 
@@ -283,14 +317,14 @@ copy .env.example .env
 启动后端：
 
 ```bash
-python -m uvicorn api_server:app --host 0.0.0.0 --port 8000
+python -m uvicorn backend.api_server:app --host 0.0.0.0 --port 8000
 ```
 
 启动前端：
 
 ```bash
 cd frontend
-npm run dev -- --host 0.0.0.0 --port 3000
+npm run dev -- --host 0.0.0.0 --port 5173
 ```
 
 ### Windows 一键启动
@@ -304,7 +338,13 @@ copy .env.example .env
 docker compose up --build -d
 ```
 
+说明：
+
+- `docker compose` 默认会同时启动 `app / ollama / searxng`
+- 容器内后端默认使用 `SEARXNG_URL=http://searxng:8080`，因此在 Docker 环境里会优先走本地 `SearXNG`
+- 如果你已经有可用的 `TAVILY_API_KEY`，运行时仍会优先使用 `tavily`，再回退到 `searxng`
+
 ## 总结
 
 这个项目的价值不在于“又做了一个聊天机器人”，而在于它已经把企业知识问答、附件分析、会话沉淀、任务执行和结果交付整合到了一个统一工作台里。  
-如果后续补齐鉴权、监控、存储和部署能力，它完全可以继续演进为一个更稳定的企业内部 AI 应用底座。
+如果后续继续补齐用户目录、监控、存储和部署能力，它完全可以继续演进为一个更稳定的企业内部 AI 应用底座。

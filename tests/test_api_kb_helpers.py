@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 from langchain_core.documents import Document
 
-from api_kb_helpers import (
+from backend.api_kb_helpers import (
     filter_kb_chunks,
     kb_collect_chunks,
     kb_docstore_dict,

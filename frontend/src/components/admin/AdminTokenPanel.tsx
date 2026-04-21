@@ -10,6 +10,9 @@ interface AdminTokenPanelProps {
   onTokenChange: (value: string) => void
   onSave: () => void
   onClear: () => void
+  title?: string
+  placeholder?: string
+  statusText?: string | null
 }
 
 export const AdminTokenPanel: React.FC<AdminTokenPanelProps> = ({
@@ -20,6 +23,9 @@ export const AdminTokenPanel: React.FC<AdminTokenPanelProps> = ({
   onTokenChange,
   onSave,
   onClear,
+  title = 'Remote API Token',
+  placeholder = 'Enter API token',
+  statusText = null,
 }) => {
   const configured = token.trim().length > 0
 
@@ -27,7 +33,7 @@ export const AdminTokenPanel: React.FC<AdminTokenPanelProps> = ({
     <div className="rounded-xl border border-bg-border bg-bg-tertiary/30 p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold text-text-primary">远程管理员令牌</h3>
+          <h3 className="text-sm font-semibold text-text-primary">{title}</h3>
           <p className="mt-1 text-xs leading-5 text-text-secondary">{description}</p>
         </div>
         <span className={`rounded-full px-2 py-1 text-[11px] ${
@@ -35,7 +41,7 @@ export const AdminTokenPanel: React.FC<AdminTokenPanelProps> = ({
             ? 'bg-accent-green/10 text-accent-green'
             : 'bg-bg-secondary text-text-secondary'
         }`}>
-          {configured ? '已保存' : '未配置'}
+          {configured ? 'Configured' : 'Not Set'}
         </span>
       </div>
 
@@ -43,21 +49,28 @@ export const AdminTokenPanel: React.FC<AdminTokenPanelProps> = ({
         <input
           className="input-base flex-1 text-sm"
           type="password"
-          placeholder="输入 ADMIN_API_TOKEN"
+          placeholder={placeholder}
           value={token}
           onChange={(e) => onTokenChange(e.target.value)}
         />
         <Button variant="primary" onClick={onSave}>
-          {saved ? '已保存' : '保存令牌'}
+          {saved ? 'Saved' : 'Save Token'}
         </Button>
         <Button variant="ghost" onClick={onClear}>
-          清除
+          Clear
         </Button>
       </div>
 
-      <p className="mt-2 text-[11px] text-text-secondary">
-        令牌只保存在当前浏览器的本地存储中，不会回写到服务器配置。
-      </p>
+      <div className="mt-2 space-y-1">
+        <p className="text-[11px] text-text-secondary">
+          The token stays only in this browser's local storage and is not written back to server-side config.
+        </p>
+        {statusText && (
+          <p className="text-[11px] text-accent-blue">
+            Current identity: {statusText}
+          </p>
+        )}
+      </div>
 
       {error && (
         <div className="mt-3 rounded-lg border border-accent-red/30 bg-accent-red/10 px-3 py-2 text-xs text-accent-red">

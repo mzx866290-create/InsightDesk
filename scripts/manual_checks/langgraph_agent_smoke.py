@@ -2,7 +2,7 @@ import argparse
 import asyncio
 import time
 
-from agent_core import build_agent
+from backend.agent_core import build_agent
 
 
 async def run_smoke_test(model_name: str, base_url: str) -> bool:

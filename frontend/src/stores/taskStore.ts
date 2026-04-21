@@ -158,10 +158,27 @@ export async function createAndTrackTask(
   params: Record<string, unknown> = {},
   sessionId?: string,
 ): Promise<TaskRecord> {
+  const normalizedParams = { ...params }
+  if (taskType === 'web_research') {
+    const providers = Array.isArray(normalizedParams.providers)
+      ? normalizedParams.providers
+          .map((item) => String(item).trim().toLowerCase())
+          .filter(Boolean)
+      : null
+
+    // Let the backend choose the default provider sequence unless the caller
+    // explicitly requests a non-default search stack.
+    if (!providers?.length || (providers.length === 1 && providers[0] === 'tavily')) {
+      delete normalizedParams.providers
+    } else {
+      normalizedParams.providers = providers
+    }
+  }
+
   const res = await fetch('/api/tasks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ task_type: taskType, params, session_id: sessionId }),
+    body: JSON.stringify({ task_type: taskType, params: normalizedParams, session_id: sessionId }),
   })
 
   if (!res.ok) {

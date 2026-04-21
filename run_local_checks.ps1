@@ -9,7 +9,14 @@ if (-not (Test-Path $Python)) {
 
 Push-Location $ProjectRoot
 try {
-    & $Python -m py_compile api_server.py agent_core.py chat_store.py deck_service.py
+    $BackendFiles = @(
+        "backend\api_server.py"
+        "backend\agent_core.py"
+        "backend\chat_store.py"
+        "backend\deck_service.py"
+    )
+
+    & $Python -m py_compile @BackendFiles
     & $Python -m pytest -q
 
     Push-Location (Join-Path $ProjectRoot "frontend")

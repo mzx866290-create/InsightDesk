@@ -8,14 +8,15 @@ import { AdminTokenPanel } from '../admin/AdminTokenPanel'
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import {
-  getConfig, saveConfig, uploadDocuments, getDocStats, resetAgents,
+  getConfig, saveConfig, saveCloudModelApiKey, deleteCloudModelApiKey, uploadDocuments, getDocStats, resetAgents,
   getSystemPrompts, createSystemPromptWithKB, updateSystemPromptWithKB,
   deleteSystemPrompt, activateSystemPrompt,
   getKnowledgeBases, getKBHealth, getKnowledgeBaseChunks, updateKnowledgeBaseChunk,
   deleteKnowledgeBaseChunk, testKBRetrieval, deleteKnowledgeBase,
-  getAdminApiToken, saveAdminApiToken,
+  getAdminApiToken, getAuthWhoAmI, saveAdminApiToken,
 } from '../../api/client'
 import type {
+  AuthWhoAmI,
   DocStats,
   SystemPrompt,
   KnowledgeBase,
@@ -38,7 +39,7 @@ type Tab = 'general' | 'documents' | 'roles' | 'kb_monitor'
 
 const BUILTIN_TEMPLATES = [
   {
-    name: 'Enterprise KB Assistant',
+    name: '企业知识库助手',
     content: 'You are an enterprise knowledge base assistant. Use available tools to answer accurately and cite sources when possible.',
   },
   {
@@ -93,7 +94,7 @@ function normalizeDashboardTemplate(
 
 function StatusDot({ status }: { status: 'healthy' | 'empty' | 'not_found' | 'error' }) {
   const color = status === 'healthy' ? 'bg-accent-green' : status === 'empty' ? 'bg-yellow-400' : 'bg-accent-red'
-  const label = status === 'healthy' ? '正常' : status === 'empty' ? '空库' : status === 'not_found' ? '未找到' : '错误'
+  const label = status === 'healthy' ? '健康' : status === 'empty' ? '空库' : status === 'not_found' ? '未找到' : '异常'
   return (
     <span className="flex items-center gap-1.5">
       <span className={`w-2 h-2 rounded-full ${color}`} />
@@ -107,10 +108,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
   const [adminToken, setAdminToken] = useState('')
   const [adminTokenSaved, setAdminTokenSaved] = useState(false)
   const [adminAccessError, setAdminAccessError] = useState<string | null>(null)
+  const [authProfile, setAuthProfile] = useState<AuthWhoAmI | null>(null)
+  const [loadingAuthProfile, setLoadingAuthProfile] = useState(false)
   const [tavilyKey, setTavilyKey] = useState('')
   const [tavilyKeySet, setTavilyKeySet] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saveOk, setSaveOk] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   const [dragOver, setDragOver] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -126,6 +130,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
   const [cloudProfileBaseUrl, setCloudProfileBaseUrl] = useState('https://openrouter.ai/api/v1')
   const [cloudProfileApiKey, setCloudProfileApiKey] = useState('')
   const [cloudProfileTemperature, setCloudProfileTemperature] = useState(0.3)
+  const [cloudProfileSaving, setCloudProfileSaving] = useState(false)
+  const [cloudProfileApiKeyDeletingId, setCloudProfileApiKeyDeletingId] = useState<string | null>(null)
+  const [cloudProfileSaveError, setCloudProfileSaveError] = useState<string | null>(null)
 
   // Roles tab state
   const [prompts, setPrompts] = useState<SystemPrompt[]>([])
@@ -189,6 +196,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
     saveCloudModelProfile,
     deleteCloudModelProfile,
   } = useChatStore()
+  const editingCloudProfile = editingCloudProfileId
+    ? cloudModelProfiles.find((profile) => profile.id === editingCloudProfileId) ?? null
+    : null
   const addTask = useTaskStore((s) => s.addTask)
   const startPolling = useTaskStore((s) => s.startPolling)
   const tasks = useTaskStore((s) => s.tasks)
@@ -197,11 +207,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
     try {
       const cfg = await getConfig()
       setTavilyKeySet(cfg.tavily_api_key_set)
+      setSaveError(null)
       setAdminAccessError(null)
     } catch (e) {
       if (isAdminAccessError(e)) {
         setAdminAccessError((e as Error).message)
       }
+    }
+  }, [])
+
+  const loadAuthProfile = useCallback(async () => {
+    setLoadingAuthProfile(true)
+    try {
+      const profile = await getAuthWhoAmI()
+      setAuthProfile(profile)
+    } catch (e) {
+      setAuthProfile(null)
+      if (isAdminAccessError(e)) {
+        setAdminAccessError((e as Error).message)
+      }
+    } finally {
+      setLoadingAuthProfile(false)
     }
   }, [])
 
@@ -282,10 +308,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
       setAdminToken(getAdminApiToken())
       setAdminTokenSaved(false)
       setAdminAccessError(null)
+      setAuthProfile(null)
+      void loadAuthProfile()
       loadConfig()
       loadPrompts()
     }
-  }, [open, loadConfig, loadPrompts])
+  }, [open, loadAuthProfile, loadConfig, loadPrompts])
 
   useEffect(() => {
     if (open && tab === 'roles') {
@@ -304,11 +332,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
 
   const handleSaveGeneral = async () => {
     setSaving(true)
+    setSaveError(null)
     try {
       await saveConfig({ tavily_api_key: tavilyKey || undefined })
+      setTavilyKey('')
       setSaveOk(true)
       setTimeout(() => setSaveOk(false), 2500)
       await loadConfig()
+    } catch (e) {
+      setSaveError((e as Error).message || '保存设置失败')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleClearTavilyKey = async () => {
+    setSaving(true)
+    setSaveError(null)
+    try {
+      await saveConfig({ tavily_api_key: '' })
+      setTavilyKey('')
+      setSaveOk(true)
+      setTimeout(() => setSaveOk(false), 2500)
+      await loadConfig()
+    } catch (e) {
+      setSaveError((e as Error).message || '清空 Tavily Key 失败')
     } finally {
       setSaving(false)
     }
@@ -322,6 +370,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
     setAdminAccessError(null)
     setTimeout(() => setAdminTokenSaved(false), 2500)
 
+    await loadAuthProfile()
     await loadConfig()
     await loadPrompts()
     if (tab === 'roles') {
@@ -354,7 +403,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
       })
       startPolling(result.task_id)
       setUploadTaskId(result.task_id)
-      setUploadResult({ ok: true, message: `${result.message}，任务 ID: ${result.task_id}` })
+      setUploadResult({ ok: true, message: `${result.message}锛屼换鍔?ID: ${result.task_id}` })
     } catch (e) {
       setUploadResult({ ok: false, message: (e as Error).message })
     } finally {
@@ -368,7 +417,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
       const s = await getDocStats()
       setStats(s)
     } catch (e) {
-      setStats({ status: '获取失败: ' + (e as Error).message })
+      setStats({ status: '获取失败：' + (e as Error).message })
     } finally {
       setLoadingStats(false)
     }
@@ -381,6 +430,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
     setCloudProfileBaseUrl('https://openrouter.ai/api/v1')
     setCloudProfileApiKey('')
     setCloudProfileTemperature(0.3)
+    setCloudProfileSaveError(null)
   }, [])
 
   const handleEditCloudProfile = useCallback((profile: CloudModelProfile) => {
@@ -388,39 +438,115 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
     setCloudProfileName(profile.name)
     setCloudProfileModel(profile.modelConfig.model)
     setCloudProfileBaseUrl(profile.modelConfig.base_url)
-    setCloudProfileApiKey(profile.modelConfig.api_key)
+    setCloudProfileApiKey('')
     setCloudProfileTemperature(profile.modelConfig.temperature)
+    setCloudProfileSaveError(null)
   }, [])
 
-  const handleSaveCloudProfile = useCallback(() => {
+  const handleSaveCloudProfile = useCallback(async () => {
     if (!cloudProfileName.trim() || !cloudProfileModel.trim() || !cloudProfileBaseUrl.trim()) {
       return
     }
 
-    saveCloudModelProfile({
-      id: editingCloudProfileId ?? undefined,
-      name: cloudProfileName.trim(),
-      modelConfig: {
-        panel_id: editingCloudProfileId ?? 'cloud-profile-editor',
-        connection_type: 'openai_compatible',
-        provider: 'openai_compatible',
-        model: cloudProfileModel.trim(),
-        base_url: cloudProfileBaseUrl.trim(),
-        api_key: cloudProfileApiKey,
-        temperature: cloudProfileTemperature,
-        agent_mode: 'auto',
-      },
-    })
+    setCloudProfileSaving(true)
+    setCloudProfileSaveError(null)
+    try {
+      const existingProfile = editingCloudProfileId
+        ? cloudModelProfiles.find((profile) => profile.id === editingCloudProfileId)
+        : undefined
 
-    resetCloudProfileForm()
+      let apiKeyRef = existingProfile?.modelConfig.api_key_ref ?? ''
+      const normalizedApiKey = cloudProfileApiKey.trim()
+      if (normalizedApiKey) {
+        const result = await saveCloudModelApiKey({
+          api_key: normalizedApiKey,
+          api_key_ref: apiKeyRef || undefined,
+        })
+        apiKeyRef = result.api_key_ref
+      }
+
+      saveCloudModelProfile({
+        id: editingCloudProfileId ?? undefined,
+        name: cloudProfileName.trim(),
+        modelConfig: {
+          panel_id: editingCloudProfileId ?? 'cloud-profile-editor',
+          connection_type: 'openai_compatible',
+          provider: 'openai_compatible',
+          model: cloudProfileModel.trim(),
+          base_url: cloudProfileBaseUrl.trim(),
+          api_key: '',
+          api_key_ref: apiKeyRef,
+          temperature: cloudProfileTemperature,
+          agent_mode: 'auto',
+        },
+      })
+
+      resetCloudProfileForm()
+    } catch (error) {
+      setCloudProfileSaveError((error as Error).message)
+    } finally {
+      setCloudProfileSaving(false)
+    }
   }, [
     cloudProfileApiKey,
     cloudProfileBaseUrl,
     cloudProfileModel,
     cloudProfileName,
     cloudProfileTemperature,
+    cloudModelProfiles,
     editingCloudProfileId,
     resetCloudProfileForm,
+    saveCloudModelProfile,
+  ])
+
+  const handleDeleteCloudProfile = useCallback(async (profile: CloudModelProfile) => {
+    setCloudProfileSaveError(null)
+    try {
+      if (profile.modelConfig.api_key_ref) {
+        await deleteCloudModelApiKey(profile.modelConfig.api_key_ref)
+      }
+      if (editingCloudProfileId === profile.id) {
+        resetCloudProfileForm()
+      }
+      deleteCloudModelProfile(profile.id)
+    } catch (error) {
+      setCloudProfileSaveError((error as Error).message)
+    }
+  }, [
+    deleteCloudModelProfile,
+    editingCloudProfileId,
+    resetCloudProfileForm,
+  ])
+
+  const handleClearCloudProfileApiKey = useCallback(async (profile: CloudModelProfile) => {
+    const apiKeyRef = profile.modelConfig.api_key_ref?.trim()
+    if (!apiKeyRef) {
+      return
+    }
+
+    setCloudProfileApiKeyDeletingId(profile.id)
+    setCloudProfileSaveError(null)
+    try {
+      await deleteCloudModelApiKey(apiKeyRef)
+      saveCloudModelProfile({
+        id: profile.id,
+        name: profile.name,
+        modelConfig: {
+          ...profile.modelConfig,
+          api_key: '',
+          api_key_ref: '',
+        },
+      })
+      if (editingCloudProfileId === profile.id) {
+        setCloudProfileApiKey('')
+      }
+    } catch (error) {
+      setCloudProfileSaveError((error as Error).message)
+    } finally {
+      setCloudProfileApiKeyDeletingId(null)
+    }
+  }, [
+    editingCloudProfileId,
     saveCloudModelProfile,
   ])
 
@@ -589,7 +715,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                 <p className="text-[11px] font-medium text-accent-blue/80 truncate">{item.source}</p>
               </div>
               <span className="text-[10px] text-text-secondary/70 whitespace-nowrap">
-                score {Number(item.score ?? 0).toFixed(3)}
+                分数 {Number(item.score ?? 0).toFixed(3)}
               </span>
             </div>
             {renderFeedbackSummary(item)}
@@ -625,10 +751,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
     return (
       <div className="flex flex-wrap gap-1">
         <span className="rounded-full bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-secondary">
-          反馈 +{positiveCount}/-{negativeCount}
+          鍙嶉 +{positiveCount}/-{negativeCount}
         </span>
         <span className="rounded-full bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-secondary">
-          净值 {netFeedback >= 0 ? '+' : ''}{netFeedback}
+          鍑€鍊?{netFeedback >= 0 ? '+' : ''}{netFeedback}
         </span>
         <span className="rounded-full bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-secondary">
           boost {feedbackBoost >= 0 ? '+' : ''}{feedbackBoost.toFixed(3)}
@@ -690,7 +816,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
   }
 
   const handleDeleteChunk = async (chunkId: string) => {
-    if (!window.confirm('Confirm deleting this knowledge-base chunk? This action cannot be undone.')) return
+    if (!window.confirm('确认删除这个知识库切片吗？此操作无法撤销。')) return
     setDeletingChunkId(chunkId)
     setKbActionError(null)
     try {
@@ -737,7 +863,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
       await loadKBHealth()
       await loadKBChunks({ offset: 0, query: '', source: '' })
     } catch (e) {
-      alert('删除失败: ' + (e as Error).message)
+      alert('删除失败：' + (e as Error).message)
     } finally {
       setDeletingKB(false)
     }
@@ -753,6 +879,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
   const uploadProgress = Math.max(0, Math.min(100, uploadTask?.progress ?? 0))
   const kbChunkTotalPages = Math.max(1, Math.ceil(kbChunkTotal / KB_CHUNK_PAGE_SIZE))
   const kbChunkCurrentPage = Math.floor(kbChunkOffset / KB_CHUNK_PAGE_SIZE) + 1
+  const authStatusText = loadingAuthProfile
+    ? '正在检查令牌...'
+    : authProfile
+      ? `${authProfile.role}${authProfile.user_id ? ` · ${authProfile.user_id}` : ''}${authProfile.is_local ? ' · 本地' : ''}`
+      : null
 
   return (
     <Modal
@@ -791,7 +922,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
             token={adminToken}
             saved={adminTokenSaved}
             error={adminAccessError}
-            description="仅在远程访问受保护的管理接口时需要。本地通过 `127.0.0.1` 或 `localhost` 打开时通常不需要填写。"
+            title="远程 API 令牌"
+            placeholder="输入 API 令牌"
+            statusText={authStatusText}
+            description="仅在远程访问受保护的管理接口时需要。通过 127.0.0.1 或 localhost 本地访问通常不需要令牌。"
             onTokenChange={setAdminToken}
             onSave={handleSaveAdminToken}
             onClear={() => {
@@ -799,6 +933,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
               saveAdminApiToken('')
               setAdminTokenSaved(false)
               setAdminAccessError(null)
+              setAuthProfile(null)
             }}
           />
 
@@ -810,17 +945,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
               <input
                 className="input-base flex-1 text-sm"
                 type="password"
-                placeholder={tavilyKeySet ? '已配置（留空则保持当前值）' : 'tvly-xxxxxxxxxxxxxxxx'}
+                placeholder={tavilyKeySet ? '已配置（留空则保留当前值）' : 'tvly-xxxxxxxxxxxxxxxx'}
                 value={tavilyKey}
                 onChange={(e) => setTavilyKey(e.target.value)}
               />
             </div>
             <p className="text-[11px] text-text-secondary mt-1.5">
-              获取地址：<a href="https://app.tavily.com" target="_blank" rel="noopener noreferrer" className="text-accent-blue hover:underline">
+              获取地址：
+              <a href="https://app.tavily.com" target="_blank" rel="noopener noreferrer" className="text-accent-blue hover:underline">
                 app.tavily.com
               </a>
               {tavilyKeySet && <span className="ml-2 text-accent-green">已配置</span>}
             </p>
+            <p className="text-[11px] text-text-secondary mt-1">
+              留空可保留当前 Key，或使用清空操作将其移除。
+            </p>
+            {saveError && (
+              <div className="mt-2 rounded-lg border border-accent-red/30 bg-accent-red/10 px-3 py-2 text-xs text-accent-red">
+                {saveError}
+              </div>
+            )}
           </div>
 
           <div className="pt-2 flex items-center gap-3">
@@ -828,9 +972,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
               {saveOk ? <CheckCircle size={14} /> : null}
               {saveOk ? '已保存' : '保存设置'}
             </Button>
-            <Button variant="ghost" onClick={handleResetAgents} loading={resetting} title="Clear agent cache and rebuild on next request">
+            {tavilyKeySet && (
+              <Button variant="ghost" onClick={handleClearTavilyKey} loading={saving}>
+                清空 Tavily Key
+              </Button>
+            )}
+            <Button variant="ghost" onClick={handleResetAgents} loading={resetting} title="清空智能体缓存，并在下次请求时重建">
               <RefreshCw size={13} />
-              重置 Agent 缓存
+              重置智能体缓存
             </Button>
           </div>
 
@@ -839,10 +988,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
               <div>
                 <h3 className="text-sm font-semibold text-text-primary">云端模型配置</h3>
                 <p className="mt-1 text-xs leading-5 text-text-secondary">
-                  常用的云端模型配置可以保存在这里，方便不同面板快速复用。</p>
+                  已保存的云端模型配置可在多个面板间复用。
+                </p>
               </div>
               <Button variant="outline" size="sm" onClick={resetCloudProfileForm}>
-                新建
+                新建配置
               </Button>
             </div>
 
@@ -852,6 +1002,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                   配置名称
                 </label>
                 <input
+                  data-testid="settings-cloud-profile-name-input"
                   className="input-base w-full text-sm"
                   value={cloudProfileName}
                   onChange={(e) => setCloudProfileName(e.target.value)}
@@ -864,6 +1015,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                   模型 ID
                 </label>
                 <input
+                  data-testid="settings-cloud-profile-model-input"
                   className="input-base w-full text-sm"
                   value={cloudProfileModel}
                   onChange={(e) => setCloudProfileModel(e.target.value)}
@@ -873,9 +1025,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
 
               <div className="md:col-span-2">
                 <label className="mb-1 block text-[11px] uppercase tracking-wide text-text-secondary">
-                  服务地址
+                  基础 URL
                 </label>
                 <input
+                  data-testid="settings-cloud-profile-base-url-input"
                   className="input-base w-full text-sm"
                   value={cloudProfileBaseUrl}
                   onChange={(e) => setCloudProfileBaseUrl(e.target.value)}
@@ -888,12 +1041,40 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                   API Key
                 </label>
                 <input
+                  data-testid="settings-cloud-profile-api-key-input"
                   className="input-base w-full text-sm"
                   type="password"
                   value={cloudProfileApiKey}
                   onChange={(e) => setCloudProfileApiKey(e.target.value)}
                   placeholder="sk-..."
                 />
+                <p className="mt-1 text-[11px] text-text-secondary">
+                  编辑时留空可保留当前托管密钥。
+                </p>
+                {editingCloudProfile ? (
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-text-secondary">
+                    <span>
+                      {editingCloudProfile.modelConfig.api_key_ref
+                        ? '当前配置已关联托管密钥。'
+                        : '当前配置未关联托管密钥。'}
+                    </span>
+                    {editingCloudProfile.modelConfig.api_key_ref ? (
+                      <Button
+                        data-testid="settings-cloud-profile-clear-editor"
+                        variant="ghost"
+                        size="sm"
+                        disabled={cloudProfileSaving || cloudProfileApiKeyDeletingId === editingCloudProfile.id}
+                        onClick={() => {
+                          void handleClearCloudProfileApiKey(editingCloudProfile)
+                        }}
+                      >
+                        {cloudProfileApiKeyDeletingId === editingCloudProfile.id
+                          ? '正在清除密钥...'
+                          : '清除托管密钥'}
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
 
               <div>
@@ -920,31 +1101,41 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
 
             <div className="mt-4 flex flex-wrap items-center gap-2">
               <Button
+                data-testid="settings-cloud-profile-save"
                 variant="primary"
                 onClick={handleSaveCloudProfile}
                 disabled={
+                  cloudProfileSaving ||
                   !cloudProfileName.trim() ||
                   !cloudProfileModel.trim() ||
                   !cloudProfileBaseUrl.trim()
                 }
               >
-                {editingCloudProfileId ? '更新云端模型' : '保存到配置库'}
+                {cloudProfileSaving
+                  ? '保存中...'
+                  : editingCloudProfileId
+                    ? '更新配置'
+                    : '保存配置'}
               </Button>
               <Button variant="ghost" onClick={resetCloudProfileForm}>
-                清空表单
+                重置表单
               </Button>
               <span className="text-[11px] text-text-secondary">
-                这些配置仅保存在当前浏览器本地。</span>
+                云端模型 API Key 会加密存储在后端配置中。
+              </span>
             </div>
-
+            {cloudProfileSaveError ? (
+              <p className="mt-2 text-xs text-accent-red">{cloudProfileSaveError}</p>
+            ) : null}
             <div className="mt-4 border-t border-bg-border pt-4">
               <div className="mb-2 text-[11px] uppercase tracking-wide text-text-secondary">
                 已保存配置</div>
               {cloudModelProfiles.length > 0 ? (
-                <div className="space-y-2">
+                <div className="space-y-2" data-testid="settings-cloud-profile-list">
                   {cloudModelProfiles.map((profile) => (
                     <div
                       key={profile.id}
+                      data-testid={`settings-cloud-profile-card-${profile.id}`}
                       className="rounded-lg border border-bg-border bg-bg-primary/40 px-3 py-3"
                     >
                       <div className="flex items-start justify-between gap-3">
@@ -958,9 +1149,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                           <div className="mt-1 truncate text-[11px] text-text-secondary/70">
                             {profile.modelConfig.base_url}
                           </div>
+                          <div className="mt-2 text-[11px] text-text-secondary">
+                            {profile.modelConfig.api_key_ref
+                              ? '已关联托管密钥'
+                              : '未关联托管密钥'}
+                          </div>
                         </div>
                         <div className="flex shrink-0 gap-2">
+                          {profile.modelConfig.api_key_ref ? (
+                            <Button
+                              data-testid={`settings-cloud-profile-clear-${profile.id}`}
+                              variant="ghost"
+                              size="sm"
+                              disabled={cloudProfileSaving || cloudProfileApiKeyDeletingId === profile.id}
+                              onClick={() => {
+                                void handleClearCloudProfileApiKey(profile)
+                              }}
+                            >
+                              {cloudProfileApiKeyDeletingId === profile.id
+                                ? '清除中...'
+                                : '清除密钥'}
+                            </Button>
+                          ) : null}
                           <Button
+                            data-testid={`settings-cloud-profile-edit-${profile.id}`}
                             variant="outline"
                             size="sm"
                             onClick={() => handleEditCloudProfile(profile)}
@@ -968,14 +1180,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                             编辑
                           </Button>
                           <Button
+                            data-testid={`settings-cloud-profile-delete-${profile.id}`}
                             variant="ghost"
                             size="sm"
                             className="text-accent-red hover:text-accent-red"
                             onClick={() => {
-                              if (editingCloudProfileId === profile.id) {
-                                resetCloudProfileForm()
-                              }
-                              deleteCloudModelProfile(profile.id)
+                              void handleDeleteCloudProfile(profile)
                             }}
                           >
                             删除
@@ -987,14 +1197,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                 </div>
               ) : (
                 <p className="text-xs text-text-secondary">
-                  还没有保存的云端模型配置。保存后，可在聊天面板顶部的模型选择器里直接使用。</p>
+                  还没有已保存的云端模型配置。可先在这里保存，再到聊天模型选择器中复用。</p>
               )}
             </div>
           </div>
 
           <div className="pt-3 border-t border-bg-border">
             <p className="text-xs text-text-secondary">
-              模型配置（提供方 / 模型 / 服务地址 / API Key / 温度）也可以通过各聊天面板顶部的模型选择器分别设置。</p>
+              也可以在聊天面板的模型选择器中按面板单独配置服务商、模型、基础 URL、API Key 和温度。</p>
           </div>
         </div>
       )}
@@ -1028,8 +1238,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
             ) : (
               <div className="flex flex-col items-center gap-2">
                 <Upload size={28} className="text-text-secondary/50" />
-                <p className="text-sm text-text-primary">拖拽文件到此处，或点击选择</p>
-                <p className="text-xs text-text-secondary">支持 PDF、Word、Markdown、CSV、TXT、Excel（单文件不超过 10 MB，大文件会自动分批处理）</p>
+                <p className="text-sm text-text-primary">将文件拖到此处，或点击选择</p>
+                <p className="text-xs text-text-secondary">支持 PDF、Word、Markdown、CSV、TXT、Excel（单个文件不超过 10 MB，大文件会自动分批处理）</p>
                 <p className="text-xs text-text-secondary/60 mt-0.5">结构化文档会按章节智能切块，检索结果更完整</p>
               </div>
             )}
@@ -1052,7 +1262,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                 <span>
                   上传任务进度
                   {uploadTask
-                    ? `(status: ${uploadTask.status === 'completed' ? 'done' : uploadTask.status === 'failed' ? 'failed' : 'running'})`
+                    ? `(状态：${uploadTask.status === 'completed' ? '已完成' : uploadTask.status === 'failed' ? '失败' : '处理中'})`
                     : '（等待任务状态）'}
                 </span>
                 <span className="text-text-primary">{uploadProgress}%</span>
@@ -1070,7 +1280,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                 />
               </div>
               <p className="mt-1.5 text-[11px] text-text-secondary/80">
-                任务 ID: {uploadTaskId}
+                任务 ID：{uploadTaskId}
               </p>
             </div>
           )}
@@ -1144,7 +1354,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
               {/* Knowledge base binding */}
               <div>
                 <label className="block text-xs font-medium text-text-secondary mb-1.5">
-                  知识库绑定 <span className="ml-1.5 text-text-secondary/50 font-normal">（可选，切换角色时自动加载）</span>
+                  知识库绑定<span className="ml-1.5 text-text-secondary/50 font-normal">（可选，切换角色时自动加载）</span>
                 </label>
                 {loadingKBs ? (
                   <span className="text-xs text-text-secondary">正在加载知识库列表...</span>
@@ -1157,7 +1367,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                     <option value="">不绑定（使用默认知识库）</option>
                     {knowledgeBases.map((kb) => (
                       <option key={kb.id} value={kb.id}>
-                        {kb.name} ({kb.doc_count} chunks){!kb.has_index ? ' [no index]' : ''}
+                        {kb.name}（{kb.doc_count} 个切片）{!kb.has_index ? ' [无索引]' : ''}
                       </option>
                     ))}
                   </select>
@@ -1167,9 +1377,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
               <div className="rounded-lg border border-bg-border bg-bg-primary/30 p-3 space-y-3 lg:row-span-3">
                 <div className="flex items-center justify-between gap-3 rounded-lg border border-bg-border bg-bg-secondary/40 px-3 py-2.5">
                   <div>
-                    <p className="text-xs font-medium text-text-primary">Dashboard</p>
+                    <p className="text-xs font-medium text-text-primary">看板卡片</p>
                     <p className="mt-1 text-[11px] text-text-secondary/65">
-                      如果这个角色不需要生成仪表盘卡片，可以在这里关闭。
+                      如果这个角色不需要生成看板卡片，可以在这里关闭。
                     </p>
                   </div>
                   <button
@@ -1181,17 +1391,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                         : 'border-bg-border bg-bg-primary text-text-secondary'
                     }`}
                     aria-pressed={promptDashboardEnabled}
-                    title={promptDashboardEnabled ? '关闭仪表盘' : '启用仪表盘'}
+                    title={promptDashboardEnabled ? '禁用看板卡片' : '启用看板卡片'}
                   >
                     {promptDashboardEnabled ? <ToggleRight size={16} /> : <ToggleLeft size={16} />}
-                    {promptDashboardEnabled ? '已启用' : '已关闭'}
+                    {promptDashboardEnabled ? '已启用' : '已禁用'}
                   </button>
                 </div>
 
                 <div className={`space-y-3 ${promptDashboardEnabled ? '' : 'opacity-55'}`}>
                   <div>
                     <label className="block text-xs font-medium text-text-secondary mb-1.5">
-                      仪表盘标题提示
+                      看板标题提示
                     </label>
                     <input
                       className="input-base w-full text-sm"
@@ -1268,7 +1478,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                   <div>
                     <label className="block text-xs font-medium text-text-secondary mb-1.5">
                       展示顺序
-                      <span className="ml-1.5 text-text-secondary/50 font-normal">（每行一个 section）</span>
+                      <span className="ml-1.5 text-text-secondary/50 font-normal">（每行一个部分）</span>
                     </label>
                     <textarea
                       className="input-base w-full text-sm resize-none leading-relaxed"
@@ -1345,7 +1555,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                               : 'bg-bg-secondary text-text-secondary'
                           }`}>
                             <Zap size={9} />
-                            {normalizeDashboardTemplate(p.dashboard_template).enabled ? '仪表盘已启用' : '仪表盘已关闭'}
+                            {normalizeDashboardTemplate(p.dashboard_template).enabled ? '看板已启用' : '看板已关闭'}
                           </span>
                         )}
                         {activateStatus[p.id] && (
@@ -1432,7 +1642,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-medium text-text-primary flex items-center gap-2">
               <Activity size={14} className="text-accent-blue" />
-              知识库健康监控</h3>
+              知识库监控</h3>
             <Button variant="ghost" onClick={loadKBHealth} loading={loadingKBHealth} className="gap-1.5 text-xs">
               <RefreshCw size={12} />
               刷新
@@ -1473,7 +1683,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                 </div>
                 {kbHealth.last_updated && (
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-text-secondary">最近更新</span>
+                    <span className="text-xs text-text-secondary">最后更新</span>
                     <span className="text-[11px] text-text-primary/70">
                       {new Date(kbHealth.last_updated * 1000).toLocaleString('zh-CN')}
                     </span>
@@ -1493,12 +1703,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                     className="flex items-center gap-1.5 text-xs text-accent-blue/80 hover:text-accent-blue transition-colors mb-2"
                   >
                     {showDocList ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                    文档列表（{kbHealth.documents.length} 个文件）
+                    文档（{kbHealth.documents.length}）
                   </button>
                   {showDocList && (
                     <div className="rounded-lg border border-bg-border overflow-hidden text-xs">
                       <div className="bg-bg-tertiary/60 px-3 py-1.5 grid grid-cols-2 border-b border-bg-border">
-                        <span className="text-text-secondary/70 font-medium">文件名</span>
+                        <span className="text-text-secondary/70 font-medium">文件</span>
                         <span className="text-text-secondary/70 font-medium text-right">切片数</span>
                       </div>
                       {kbHealth.documents.map((doc, i) => (
@@ -1575,7 +1785,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
 
                 {!loadingKBChunks && kbChunks.length === 0 && (
                   <div className="rounded-lg border border-bg-border bg-bg-tertiary/40 px-3 py-5 text-center text-xs text-text-secondary">
-                    当前条件下没有切片数据</div>
+                    当前筛选条件下没有切片数据。</div>
                 )}
 
                 {!loadingKBChunks && kbChunks.length > 0 && (
@@ -1659,7 +1869,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
 
                 <div className="mt-3 flex items-center justify-between text-xs text-text-secondary">
                   <span>
-                    第 {Math.min(kbChunkCurrentPage, kbChunkTotalPages)} / {kbChunkTotalPages} 页 · 共 {kbChunkTotal} 条</span>
+                    第 {Math.min(kbChunkCurrentPage, kbChunkTotalPages)} / {kbChunkTotalPages} 页，共 {kbChunkTotal} 条</span>
                   <div className="flex items-center gap-2">
                     <Button
                       variant="ghost"
@@ -1705,9 +1915,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                       onChange={(e) => setRetrievalMode(e.target.value as 'semantic' | 'keyword' | 'hybrid')}
                       className="input-base py-0.5 text-xs"
                     >
-                      <option value="semantic">仅向量</option>
+                      <option value="semantic">仅语义</option>
                       <option value="keyword">仅关键词</option>
-                      <option value="hybrid">混合检索</option>
+                      <option value="hybrid">混合</option>
                     </select>
                   </label>
                   <label className="flex items-center gap-1.5 text-text-secondary">
@@ -1720,7 +1930,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                     向量 + 重排
                   </label>
                   <label className="flex items-center gap-1.5 text-text-secondary">
-                    Top K
+                    检索 K
                     <input
                       type="number"
                       min={1}
@@ -1732,7 +1942,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                   </label>
                   {retrievalUseRerank && (
                     <label className="flex items-center gap-1.5 text-text-secondary">
-                      Fetch K
+                      召回 K
                       <input
                         type="number"
                         min={retrievalSearchK}
@@ -1765,7 +1975,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                       <>
                         <div className="flex flex-wrap gap-3 text-xs">
                           <span className="text-text-secondary">命中数：<span className="text-text-primary font-medium">{testResult.results_count}</span></span>
-                          <span className="text-text-secondary">耗时：<span className="text-text-primary font-medium">{testResult.latency_ms} ms</span></span>
+                          <span className="text-text-secondary">延迟：<span className="text-text-primary font-medium">{testResult.latency_ms} ms</span></span>
                           {testResult.search_mode && (
                             <span className={`rounded-full px-2 py-0.5 font-medium ${
                               testResult.search_mode.includes('rerank')
@@ -1781,22 +1991,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                         {testResult.coverage && (
                           <div className="grid grid-cols-2 gap-2 text-[11px]">
                             <div className="rounded-md bg-bg-secondary/60 p-2 text-text-secondary/80">
-                              去重来源：<span className="font-medium text-text-primary">{testResult.coverage.unique_sources}</span>
+                              唯一来源数：<span className="font-medium text-text-primary">{testResult.coverage.unique_sources}</span>
                             </div>
                             <div className="rounded-md bg-bg-secondary/60 p-2 text-text-secondary/80">
-                              命中词：<span className="font-medium text-text-primary">{testResult.coverage.matched_term_count}</span>
+                              命中词数：<span className="font-medium text-text-primary">{testResult.coverage.matched_term_count}</span>
                             </div>
                           </div>
                         )}
                         {testResult.rewrite_query && (
                           <div className="rounded-md bg-bg-secondary/60 p-2 text-[11px] text-text-secondary/80">
-                            Effective Query：<span className="text-text-primary">{testResult.rewrite_query}</span>
+                            实际查询：<span className="text-text-primary">{testResult.rewrite_query}</span>
                           </div>
                         )}
                         {testResult.top_results && testResult.top_results.length > 0 && (
                           <>
-                            {renderRetrievalDebugList('Top 命中片段', testResult.top_results, 'bg-accent-blue/15 text-accent-blue')}
-                            {renderRetrievalDebugList('向量候选', testResult.semantic_candidates, 'bg-accent-green/15 text-accent-green')}
+                            {renderRetrievalDebugList('Top 命中切片', testResult.top_results, 'bg-accent-blue/15 text-accent-blue')}
+                            {renderRetrievalDebugList('语义候选', testResult.semantic_candidates, 'bg-accent-green/15 text-accent-green')}
                             {renderRetrievalDebugList('关键词候选', testResult.keyword_candidates, 'bg-amber-300/15 text-amber-300')}
                             {renderRetrievalDebugList('融合候选', testResult.fused_candidates, 'bg-accent-blue/15 text-accent-blue')}
                           </>
@@ -1819,8 +2029,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
                   {deleteKBConfirm && deleteKBPath === null ? '再次点击确认删除' : '删除当前知识库'}
                 </Button>
                 <p className="text-[11px] text-text-secondary/50 text-center mt-1">
-                  此操作不可撤销，并会删除全部向量索引文件。
-                </p>
+                  此操作无法撤销，并会删除所有向量索引文件。</p>
               </div>
             </>
           )}
@@ -1837,5 +2046,3 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
     </Modal>
   )
 }
-
-

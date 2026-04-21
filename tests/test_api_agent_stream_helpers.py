@@ -2,7 +2,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from api_agent_stream_helpers import (
+from backend.api_agent_stream_helpers import (
     MAX_ITERATIONS_DASHBOARD_ERROR,
     dashboard_prompt_excerpt,
     fail_dashboard_task,
@@ -11,7 +11,7 @@ from api_agent_stream_helpers import (
     stream_agent_item,
     task_created_event,
 )
-from api_task_store import TaskStatus
+from backend.api_task_store import TaskStatus
 
 
 def test_dashboard_prompt_excerpt_compacts_whitespace_and_limits_length():

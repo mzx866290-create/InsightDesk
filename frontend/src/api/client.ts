@@ -1,56 +1,112 @@
 import type { WorkflowNode } from '../stores/workflowStore'
 
 const BASE = '/api'
+const API_TOKEN_STORAGE_KEY = 'api_token'
 const ADMIN_API_TOKEN_STORAGE_KEY = 'admin_api_token'
 
-function getBrowserStorage(): Storage | null {
+function getBrowserStorage(kind: 'session' | 'local'): Storage | null {
   if (typeof window === 'undefined') return null
   try {
-    return window.localStorage
+    return kind === 'session' ? window.sessionStorage : window.localStorage
   } catch {
     return null
   }
 }
 
-export function getAdminApiToken(): string {
-  const storage = getBrowserStorage()
+function cleanupLegacyApiTokenStorage(): void {
+  const legacyStorage = getBrowserStorage('local')
+  if (!legacyStorage) return
+  try {
+    legacyStorage.removeItem(API_TOKEN_STORAGE_KEY)
+    legacyStorage.removeItem(ADMIN_API_TOKEN_STORAGE_KEY)
+  } catch {
+    // Ignore legacy storage cleanup failures.
+  }
+}
+
+function readStoredApiToken(storage: Storage | null): string {
   if (!storage) return ''
   try {
-    return (storage.getItem(ADMIN_API_TOKEN_STORAGE_KEY) ?? '').trim()
+    return (
+      storage.getItem(API_TOKEN_STORAGE_KEY) ??
+      storage.getItem(ADMIN_API_TOKEN_STORAGE_KEY) ??
+      ''
+    ).trim()
   } catch {
     return ''
   }
 }
 
-export function hasAdminApiToken(): boolean {
-  return getAdminApiToken().length > 0
+export function getApiToken(): string {
+  const sessionStorage = getBrowserStorage('session')
+  const sessionToken = readStoredApiToken(sessionStorage)
+  if (sessionToken) return sessionToken
+
+  const legacyToken = readStoredApiToken(getBrowserStorage('local'))
+  if (!legacyToken || !sessionStorage) {
+    cleanupLegacyApiTokenStorage()
+    return legacyToken
+  }
+
+  try {
+    sessionStorage.setItem(API_TOKEN_STORAGE_KEY, legacyToken)
+    sessionStorage.setItem(ADMIN_API_TOKEN_STORAGE_KEY, legacyToken)
+  } catch {
+    return legacyToken
+  }
+  cleanupLegacyApiTokenStorage()
+  return legacyToken
 }
 
-export function saveAdminApiToken(token: string): void {
-  const storage = getBrowserStorage()
-  if (!storage) return
+export function getAdminApiToken(): string {
+  return getApiToken()
+}
+
+export function hasApiToken(): boolean {
+  return getApiToken().length > 0
+}
+
+export function hasAdminApiToken(): boolean {
+  return hasApiToken()
+}
+
+export function saveApiToken(token: string): void {
+  const storage = getBrowserStorage('session')
   const normalized = token.trim()
   try {
-    if (normalized) storage.setItem(ADMIN_API_TOKEN_STORAGE_KEY, normalized)
-    else storage.removeItem(ADMIN_API_TOKEN_STORAGE_KEY)
+    if (normalized && storage) {
+      storage.setItem(API_TOKEN_STORAGE_KEY, normalized)
+      storage.setItem(ADMIN_API_TOKEN_STORAGE_KEY, normalized)
+    } else if (storage) {
+      storage.removeItem(API_TOKEN_STORAGE_KEY)
+      storage.removeItem(ADMIN_API_TOKEN_STORAGE_KEY)
+    }
   } catch {
     // Ignore storage failures and let requests fall back to local-mode access.
   }
+  cleanupLegacyApiTokenStorage()
 }
 
-function withAdminHeaders(headers?: HeadersInit): Headers {
+export function saveAdminApiToken(token: string): void {
+  saveApiToken(token)
+}
+
+function withApiTokenHeaders(headers?: HeadersInit): Headers {
   const next = new Headers(headers)
-  const token = getAdminApiToken()
-  if (token && !next.has('X-Admin-Token')) {
-    next.set('X-Admin-Token', token)
+  const token = getApiToken()
+  if (token && !next.has('Authorization')) {
+    next.set('Authorization', `Bearer ${token}`)
+  }
+  if (token && !next.has('X-API-Token')) {
+    next.set('X-API-Token', token)
   }
   return next
 }
 
-async function adminFetch(path: string, init?: RequestInit): Promise<Response> {
+async function authFetch(path: string, init?: RequestInit): Promise<Response> {
   return fetch(`${BASE}${path}`, {
     ...init,
-    headers: withAdminHeaders(init?.headers),
+    headers: withApiTokenHeaders(init?.headers),
   })
 }
 
@@ -83,8 +139,11 @@ function normalizeRequestPath(input: RequestInfo | URL): string {
   }
 }
 
-function requestNeedsAdminToken(path: string): boolean {
+function requestNeedsApiToken(path: string): boolean {
   return (
+    path.startsWith(`${BASE}/auth/`) ||
+    path.startsWith(`${BASE}/security/`) ||
+    path.startsWith(`${BASE}/operations/runtime`) ||
     path.startsWith(`${BASE}/config`) ||
     path.startsWith(`${BASE}/agents/reset`) ||
     path.startsWith(`${BASE}/documents/upload`) ||
@@ -102,12 +161,12 @@ function requestNeedsAdminToken(path: string): boolean {
 const nativeFetch: typeof globalThis.fetch = globalThis.fetch.bind(globalThis)
 const fetch: typeof globalThis.fetch = (input, init) => {
   const path = normalizeRequestPath(input)
-  if (!requestNeedsAdminToken(path)) {
+  if (!requestNeedsApiToken(path)) {
     return nativeFetch(input, init)
   }
   return nativeFetch(input, {
     ...init,
-    headers: withAdminHeaders(init?.headers),
+    headers: withApiTokenHeaders(init?.headers),
   })
 }
 
@@ -178,6 +237,15 @@ export interface SessionMemory {
   meta?: Record<string, unknown>
   created_at: number
   updated_at: number
+}
+
+export interface AuthWhoAmI {
+  user_id: string
+  role: 'viewer' | 'editor' | 'admin' | string
+  auth_mode: string
+  auth_source: string
+  is_local: boolean
+  capabilities: string[]
 }
 
 function normalizeSession(raw: Partial<Session> & Pick<Session, 'session_id' | 'title' | 'created_at' | 'updated_at' | 'message_count'>): Session {
@@ -357,6 +425,7 @@ export interface ModelConfig {
   model: string
   base_url: string
   api_key: string
+  api_key_ref?: string
   temperature: number
   agent_mode: 'auto' | 'langgraph' | 'function_calling' | 'plain_chat'
 }
@@ -404,6 +473,7 @@ export function normalizeModelConfig(config: Partial<ModelConfig> & { panel_id: 
     model: (config.model ?? defaultModelForConnectionType(connectionType)).trim(),
     base_url: (config.base_url ?? defaultBaseUrlForConnectionType(connectionType)).trim(),
     api_key: config.api_key ?? '',
+    api_key_ref: (config.api_key_ref ?? '').trim(),
     temperature: config.temperature ?? 0.3,
     agent_mode: config.agent_mode ?? 'auto',
   }
@@ -423,10 +493,19 @@ export interface SourceItem {
   url?: string
   snippet: string
   index?: number
+  provider?: string
+  domain?: string
+  published_at?: string
   retrieval_mode?: string
   search_channel?: string
   score?: number
+  provider_score?: number
+  confidence?: number
+  trust_score?: number
+  freshness_score?: number
+  source_quality?: string
   matched_terms?: string[]
+  evidence_tags?: string[]
   retrieval_query?: string
   feedback_boost?: number
   feedback_net?: number
@@ -1974,13 +2053,13 @@ export async function getOllamaModels(baseUrl = 'http://localhost:11434'): Promi
 // ── Config ───────────────────────────────────
 
 export async function getConfig() {
-  const res = await adminFetch('/config')
+  const res = await authFetch('/config')
   if (!res.ok) throw new Error(await readErrorDetail(res, 'Failed to load config'))
   return res.json()
 }
 
 export async function saveConfig(payload: { tavily_api_key?: string }): Promise<void> {
-  const res = await adminFetch('/config', {
+  const res = await authFetch('/config', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -1988,9 +2067,35 @@ export async function saveConfig(payload: { tavily_api_key?: string }): Promise<
   if (!res.ok) throw new Error(await readErrorDetail(res, 'Failed to save config'))
 }
 
+export async function saveCloudModelApiKey(payload: {
+  api_key: string
+  api_key_ref?: string
+}): Promise<{ api_key_ref: string; api_key_set: boolean }> {
+  const res = await authFetch('/config/cloud-model-api-key', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await readErrorDetail(res, 'Failed to save cloud model API key'))
+  return res.json()
+}
+
+export async function deleteCloudModelApiKey(apiKeyRef: string): Promise<void> {
+  const res = await authFetch(`/config/cloud-model-api-key/${encodeURIComponent(apiKeyRef)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) throw new Error(await readErrorDetail(res, 'Failed to delete cloud model API key'))
+}
+
 export async function resetAgents(): Promise<void> {
-  const res = await adminFetch('/agents/reset', { method: 'POST' })
+  const res = await authFetch('/agents/reset', { method: 'POST' })
   if (!res.ok) throw new Error(await readErrorDetail(res, 'Failed to reset agents'))
+}
+
+export async function getAuthWhoAmI(): Promise<AuthWhoAmI> {
+  const res = await authFetch('/auth/whoami')
+  if (!res.ok) throw new Error(await readErrorDetail(res, 'Failed to load auth profile'))
+  return res.json()
 }
 
 // ── Documents ────────────────────────────────
@@ -1998,7 +2103,7 @@ export async function resetAgents(): Promise<void> {
 export async function uploadDocuments(files: File[]): Promise<UploadDocumentsResponse> {
   const form = new FormData()
   for (const f of files) form.append('files', f)
-  const res = await adminFetch('/documents/upload', { method: 'POST', body: form })
+  const res = await authFetch('/documents/upload', { method: 'POST', body: form })
   if (!res.ok) {
     throw new Error(await readErrorDetail(res, res.statusText))
   }

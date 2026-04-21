@@ -5,8 +5,8 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pptx import Presentation
 from pptx.util import Pt
 
-import api_deck_report_helpers
-import deck_service
+import backend.api_deck_report_helpers as api_deck_report_helpers
+import backend.deck_service as deck_service
 
 
 def _deck() -> deck_service.DeckSpec:

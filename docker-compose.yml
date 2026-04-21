@@ -12,13 +12,17 @@ services:
       SERVER_PORT: 8000
       VECTOR_STORE_PATH: /app/runtime/vector_store
       OLLAMA_BASE_URL: ${DOCKER_OLLAMA_BASE_URL:-http://ollama:11434}
+      SEARXNG_URL: ${DOCKER_SEARXNG_URL:-http://searxng:8080}
     volumes:
       - ./runtime:/app/runtime
+    depends_on:
+      - ollama
+      - searxng
     command: >
       sh -lc "mkdir -p /app/runtime/vector_store
       && touch /app/runtime/chat_history.db
       && ln -sf /app/runtime/chat_history.db /app/chat_history.db
-      && uvicorn api_server:app --host 0.0.0.0 --port 8000"
+      && uvicorn backend.api_server:app --host 0.0.0.0 --port 8000"
     healthcheck:
       test:
         [
@@ -36,6 +40,14 @@ services:
       - "${OLLAMA_PORT:-11434}:11434"
     volumes:
       - ollama_data:/root/.ollama
+
+  searxng:
+    image: searxng/searxng:latest
+    ports:
+      - "${SEARXNG_PORT:-8080}:8080"
+    volumes:
+      - ./runtime/searxng/config:/etc/searxng
+      - ./runtime/searxng/data:/var/cache/searxng
 
   ollama-pull:
     image: ollama/ollama:latest

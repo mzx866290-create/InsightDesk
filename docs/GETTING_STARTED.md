@@ -12,6 +12,16 @@ If your goal is to run the project quickly:
 4. Upload `test_doc.md`
 5. Verify chat, retrieval, and report export
 
+## Verified Runtime Versions
+
+Use the same versions that the launcher validates:
+
+- Python `3.12.x`
+- Node.js `18+`
+- Recommended Node.js: `20 LTS`
+
+The Windows launcher creates and uses `venv312`. Avoid using Python `3.14+` for this repo.
+
 ## Setup Options
 
 ### Option A: Cloud Model Mode
@@ -49,8 +59,8 @@ ollama list
 ## Install
 
 ```bash
-python -m venv venv
-venv\Scripts\activate
+py -3.12 -m venv venv312
+venv312\Scripts\activate
 pip install -r requirements.txt
 
 cd frontend
@@ -62,14 +72,14 @@ npm install
 ### Backend
 
 ```bash
-python -m uvicorn api_server:app --host 0.0.0.0 --port 8000
+python -m uvicorn backend.api_server:app --host 0.0.0.0 --port 8000
 ```
 
 ### Frontend
 
 ```bash
 cd frontend
-npm run dev -- --host 0.0.0.0 --port 3000
+npm run dev -- --host 0.0.0.0 --port 5173
 ```
 
 ### Windows One-Click

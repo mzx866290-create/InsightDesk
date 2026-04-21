@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 DEFAULT_MCP_SERVER_NAMES = ["knowledge-base", "web-search"]
 MCP_SERVER_METADATA: dict[str, dict[str, Any]] = {
     "knowledge-base": {

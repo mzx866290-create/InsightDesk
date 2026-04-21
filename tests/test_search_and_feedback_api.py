@@ -2,8 +2,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-import api_server
-import chat_store
+import backend.api_server as api_server
+import backend.chat_store as chat_store
 
 
 def _history_cls_for_db(db_path: Path):

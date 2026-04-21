@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from chat_store import connect_sqlite
+from backend.chat_store import connect_sqlite
 
 
 def _now_timestamp() -> float:

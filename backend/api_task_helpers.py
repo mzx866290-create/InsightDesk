@@ -6,7 +6,7 @@ import time
 import uuid
 from typing import Any, Awaitable, Callable, MutableMapping, Optional
 
-from api_task_store import TaskRecord, TaskStatus
+from backend.api_task_store import TaskRecord, TaskStatus
 
 
 def should_start_dashboard_task(
@@ -18,7 +18,7 @@ def should_start_dashboard_task(
     if not knowledge_base_enabled:
         return False
     try:
-        from agent_core import _should_generate_dashboard
+        from backend.agent_core import _should_generate_dashboard
     except Exception:
         logger.exception("Failed to import dashboard detection helper")
         return False

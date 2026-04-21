@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from ..types import SearchResponse
+from ..types import SearchProviderCapabilities, SearchResponse
 
 
 class SearchProvider(ABC):
     name: str
+    capabilities = SearchProviderCapabilities(name="unknown")
+
+    def get_capabilities(self) -> SearchProviderCapabilities:
+        return self.capabilities
 
     @abstractmethod
     async def search(

@@ -2,8 +2,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from api_chat_stream_helpers import done_event, panel_event
-from api_task_store import TaskStatus
+from backend.api_chat_stream_helpers import done_event, panel_event
+from backend.api_task_store import TaskStatus
 
 MAX_ITERATIONS_ERROR_MESSAGE = "模型工具调用次数超限，无法完成任务"
 MAX_ITERATIONS_ERROR_SUGGESTION = "请尝试简化问题或切换至其他模型后重试"

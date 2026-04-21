@@ -1,7 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
-from api_chat_route_helpers import (
+from backend.api_chat_route_helpers import (
     ChatRouteRuntime,
     SSE_RESPONSE_HEADERS,
     build_parallel_agent_streams,

@@ -191,7 +191,7 @@ def _score_answer_candidate(
 
 
 def build_answer_group_review_payload(session_id: str, answer_group_id: str) -> dict[str, Any]:
-    from chat_store import SQLiteChatMessageHistory, get_session_panels
+    from backend.chat_store import SQLiteChatMessageHistory, get_session_panels
 
     history = SQLiteChatMessageHistory(session_id=session_id)
     panels = get_session_panels(session_id, db_path=history.db_path)
@@ -607,7 +607,7 @@ def _apply_answer_group_reviewer(
 
 
 def build_answer_group_review_payload(session_id: str, answer_group_id: str) -> dict[str, Any]:
-    from chat_store import SQLiteChatMessageHistory, get_session_panels
+    from backend.chat_store import SQLiteChatMessageHistory, get_session_panels
 
     history = SQLiteChatMessageHistory(session_id=session_id)
     panels = get_session_panels(session_id, db_path=history.db_path)
@@ -712,7 +712,7 @@ def build_answer_group_review_payload(session_id: str, answer_group_id: str) -> 
 
 
 def build_session_messages_payload(session_id: str) -> dict[str, Any]:
-    from chat_store import (
+    from backend.chat_store import (
         CONTEXT_HISTORY_MESSAGES,
         SQLiteChatMessageHistory,
         get_session,
@@ -1108,7 +1108,7 @@ def find_session_attachment(
     *,
     preview_char_limit: int,
 ) -> dict[str, Any] | None:
-    from chat_store import SQLiteChatMessageHistory
+    from backend.chat_store import SQLiteChatMessageHistory
 
     history = SQLiteChatMessageHistory(session_id=session_id)
     payload = collect_session_attachments(

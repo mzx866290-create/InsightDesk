@@ -8,7 +8,7 @@ from typing import Any, Callable, Iterable
 
 from fastapi import HTTPException
 
-from api_chat_input_helpers import (
+from backend.api_chat_input_helpers import (
     chat_file_suffix,
     clip_attachment_preview_text,
     decode_data_url,
@@ -73,7 +73,7 @@ def prepare_chat_files(
 
     active_logger = logger or logging.getLogger(__name__)
     if pipeline_factory is None:
-        from doc_pipeline import DocPipeline
+        from backend.doc_pipeline import DocPipeline
 
         pipeline = DocPipeline()
     else:

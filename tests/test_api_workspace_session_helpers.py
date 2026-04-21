@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from api_workspace_session_helpers import (
+from backend.api_workspace_session_helpers import (
     create_session_record,
     fallback_session_payload,
     normalize_workspace_id,

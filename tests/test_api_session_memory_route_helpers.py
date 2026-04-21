@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from api_session_memory_route_helpers import (
+from backend.api_session_memory_route_helpers import (
     delete_session_memory_payload,
     pin_session_memory_payload,
     session_memory_payload,

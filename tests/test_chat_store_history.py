@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import chat_store
+import backend.chat_store as chat_store
 
 
 def _history_cls_for_db(db_path: Path):

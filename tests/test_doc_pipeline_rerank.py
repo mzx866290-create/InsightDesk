@@ -1,7 +1,7 @@
 from langchain_core.documents import Document
 
-import doc_pipeline
-from doc_pipeline import DocPipeline
+import backend.doc_pipeline as doc_pipeline
+from backend.doc_pipeline import DocPipeline
 
 
 def test_reranker_load_falls_back_to_cpu_when_cuda_init_fails(monkeypatch):

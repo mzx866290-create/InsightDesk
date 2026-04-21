@@ -3,18 +3,18 @@ from pathlib import Path
 
 import pytest
 
-from api_task_execution_helpers import (
+from backend.api_task_execution_helpers import (
     run_analyze_knowledge_base_task,
     run_generate_deck_task,
     run_promote_attachment_to_kb_task,
     run_generate_report_task,
     run_placeholder_task,
 )
-from api_task_store import TaskRecord, TaskStatus
+from backend.api_task_store import TaskRecord, TaskStatus
 
 
 def test_run_analyze_knowledge_base_task_updates_progress_and_result(monkeypatch):
-    import doc_pipeline
+    import backend.doc_pipeline as doc_pipeline
 
     events: list[tuple[str, object]] = []
 
@@ -58,7 +58,7 @@ def test_run_analyze_knowledge_base_task_updates_progress_and_result(monkeypatch
 
 
 def test_run_generate_report_task_counts_session_messages(monkeypatch, tmp_path):
-    import chat_store
+    import backend.chat_store as chat_store
 
     db_path = tmp_path / "chat_history.db"
 
@@ -122,8 +122,8 @@ def test_run_generate_report_task_counts_session_messages(monkeypatch, tmp_path)
 
 
 def test_run_generate_report_task_supports_scoped_report(monkeypatch, tmp_path):
-    import chat_store
-    from api_deck_report_helpers import resolve_report_messages
+    import backend.chat_store as chat_store
+    from backend.api_deck_report_helpers import resolve_report_messages
     from langchain_core.messages import AIMessage, HumanMessage
 
     db_path = tmp_path / "chat_history.db"
@@ -196,8 +196,8 @@ def test_run_generate_report_task_supports_scoped_report(monkeypatch, tmp_path):
 
 
 def test_run_generate_deck_task_supports_scoped_deck(monkeypatch, tmp_path):
-    import chat_store
-    from api_deck_report_helpers import resolve_report_messages
+    import backend.chat_store as chat_store
+    from backend.api_deck_report_helpers import resolve_report_messages
     from langchain_core.messages import AIMessage, HumanMessage
     from types import SimpleNamespace
 
@@ -332,7 +332,7 @@ def test_run_placeholder_task_sets_progress_and_result():
 
 
 def test_run_promote_attachment_to_kb_task_rejects_workspace_mismatch(monkeypatch):
-    import chat_store
+    import backend.chat_store as chat_store
 
     events: list[tuple[str, object]] = []
 

@@ -289,11 +289,14 @@ async function fulfillSse(route: Route, body: string): Promise<void> {
 export async function installAppApiMocks(page: Page): Promise<void> {
   let sessionCounter = 1
   let taskCounter = 1
+  let cloudModelApiKeyCounter = 1
+  let tavilyApiKey = ''
   const sessions: MockSession[] = []
   const sessionMessages = new Map<string, MockMessagesPayload>()
   const tasks = new Map<string, MockTask>()
   const taskPollCounts = new Map<string, number>()
   const decks = new Map<string, MockDeck>([['deck-mock-1', createMockDeck()]])
+  const cloudModelApiKeys = new Map<string, string>()
 
   const ensureSessionMessages = (sessionId: string): MockMessagesPayload => {
     const existing = sessionMessages.get(sessionId)
@@ -451,6 +454,66 @@ export async function installAppApiMocks(page: Page): Promise<void> {
 
     if (method === 'GET' && path === '/api/prompts') {
       await fulfillJson(route, { prompts: [defaultPrompt] })
+      return
+    }
+
+    if (method === 'GET' && path === '/api/config') {
+      await fulfillJson(route, {
+        tavily_api_key_set: tavilyApiKey.trim().length > 0,
+      })
+      return
+    }
+
+    if (method === 'POST' && path === '/api/config') {
+      const body = (request.postDataJSON() ?? {}) as {
+        tavily_api_key?: string
+      }
+      if (typeof body.tavily_api_key === 'string') {
+        tavilyApiKey = body.tavily_api_key.trim()
+      }
+      await fulfillJson(route, { ok: true })
+      return
+    }
+
+    if (method === 'GET' && path === '/api/auth/whoami') {
+      await fulfillJson(route, {
+        role: 'admin',
+        user_id: 'playwright-local',
+        is_local: true,
+      })
+      return
+    }
+
+    if (method === 'POST' && path === '/api/config/cloud-model-api-key') {
+      const body = (request.postDataJSON() ?? {}) as {
+        api_key?: string
+        api_key_ref?: string
+      }
+      const apiKey = typeof body.api_key === 'string' ? body.api_key.trim() : ''
+      if (!apiKey) {
+        await fulfillJson(route, { detail: 'API key is required' }, 400)
+        return
+      }
+      const apiKeyRef =
+        typeof body.api_key_ref === 'string' && body.api_key_ref.trim()
+          ? body.api_key_ref.trim()
+          : `cloud-key-${cloudModelApiKeyCounter++}`
+      cloudModelApiKeys.set(apiKeyRef, apiKey)
+      await fulfillJson(route, {
+        api_key_ref: apiKeyRef,
+        api_key_set: true,
+      })
+      return
+    }
+
+    const cloudModelApiKeyMatch = path.match(/^\/api\/config\/cloud-model-api-key\/([^/]+)$/)
+    if (method === 'DELETE' && cloudModelApiKeyMatch) {
+      const apiKeyRef = decodeURIComponent(cloudModelApiKeyMatch[1])
+      cloudModelApiKeys.delete(apiKeyRef)
+      await route.fulfill({
+        status: 204,
+        body: '',
+      })
       return
     }
 

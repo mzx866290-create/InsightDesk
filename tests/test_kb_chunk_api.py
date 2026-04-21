@@ -3,11 +3,11 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from langchain_core.documents import Document
 
-import api_server
+import backend.api_server as api_server
 
 
 def _install_fake_kb_pipeline(monkeypatch, vectorstore, events):
-    import doc_pipeline
+    import backend.doc_pipeline as doc_pipeline
 
     class FakePipeline:
         def __init__(self, vector_store_path=None):

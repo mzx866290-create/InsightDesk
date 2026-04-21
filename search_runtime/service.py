@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import logging
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
@@ -16,6 +19,7 @@ from .registry import (
 from .types import (
     SearchConfigError,
     SearchDocument,
+    SearchProviderCapabilities,
     SearchProviderHTTPError,
     SearchResponse,
     SearchRuntimeError,
@@ -25,6 +29,171 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
+
+TIME_SENSITIVE_KEYWORDS = (
+    "latest",
+    "newest",
+    "today",
+    "yesterday",
+    "this week",
+    "recent",
+    "breaking",
+    "live",
+    "最新",
+    "今天",
+    "昨天",
+    "刚刚",
+    "最近",
+    "近期",
+    "本周",
+    "新闻",
+    "动态",
+)
+DOC_INTENT_KEYWORDS = (
+    "docs",
+    "documentation",
+    "api",
+    "sdk",
+    "reference",
+    "manual",
+    "guide",
+    "文档",
+    "接口",
+    "参考",
+    "手册",
+    "教程",
+)
+OFFICIAL_INTENT_KEYWORDS = (
+    "official",
+    "官网",
+    "官方",
+    "release note",
+    "release notes",
+    "changelog",
+    "公告",
+)
+NEWS_INTENT_KEYWORDS = (
+    "news",
+    "announcement",
+    "press",
+    "新闻",
+    "公告",
+    "快讯",
+    "发布",
+)
+LOW_SIGNAL_DOMAINS = (
+    "facebook.com",
+    "instagram.com",
+    "pinterest.com",
+    "tiktok.com",
+)
+LOW_TRUST_DOMAINS = (
+    "reddit.com",
+    "quora.com",
+    "zhihu.com",
+    "weibo.com",
+)
+DOWNLOAD_SUFFIXES = (
+    ".pdf",
+    ".doc",
+    ".docx",
+    ".ppt",
+    ".pptx",
+    ".xls",
+    ".xlsx",
+    ".csv",
+    ".zip",
+    ".rar",
+    ".7z",
+    ".tar",
+    ".gz",
+)
+DOC_HOST_HINTS = (
+    "docs.",
+    "developer.",
+    "developers.",
+    "help.",
+    "support.",
+    "platform.",
+    "api.",
+    "reference.",
+)
+STOP_TERMS = {
+    "the",
+    "and",
+    "for",
+    "with",
+    "that",
+    "this",
+    "from",
+    "into",
+    "what",
+    "when",
+    "where",
+    "which",
+    "how",
+    "why",
+    "latest",
+    "today",
+    "news",
+    "official",
+    "documentation",
+    "最新",
+    "今天",
+    "新闻",
+    "官方",
+    "文档",
+    "一下",
+    "请问",
+    "关于",
+    "怎么",
+    "如何",
+}
+
+
+@dataclass(frozen=True)
+class SearchQueryPlan:
+    original_query: str
+    effective_query: str
+    search_depth: str
+    topic: str | None
+    time_range: str | None
+    include_domains: tuple[str, ...]
+    exclude_domains: tuple[str, ...]
+    is_time_sensitive: bool
+    prefer_docs: bool
+    prefer_official: bool
+
+
+def _provider_caveats_for_plan(
+    plan: SearchQueryPlan,
+    capabilities: SearchProviderCapabilities,
+    *,
+    include_raw_content: bool,
+) -> list[str]:
+    caveats: list[str] = []
+    provider_name = capabilities.name or "provider"
+    if plan.time_range and not capabilities.supports_time_range:
+        caveats.append(
+            f"{provider_name} does not support strict time filtering; freshness is approximated by query hints and page dates."
+        )
+    if plan.topic == "news" and not capabilities.supports_news_topic:
+        caveats.append(
+            f"{provider_name} does not support a dedicated news topic filter; results may include general web pages."
+        )
+    if include_raw_content and not capabilities.supports_raw_content:
+        caveats.append(
+            f"{provider_name} does not provide raw content in search responses; downstream analysis relies on snippets or later page fetch."
+        )
+    if plan.include_domains and not capabilities.supports_domain_filter_native:
+        caveats.append(
+            f"{provider_name} does not support native domain filtering; domain constraints are applied after retrieval."
+        )
+    deduped: list[str] = []
+    for item in caveats:
+        if item not in deduped:
+            deduped.append(item)
+    return deduped
 
 
 def _source_marker(documents: list[SearchDocument]) -> str:
@@ -38,16 +207,49 @@ def _append_sources_marker(text: str, documents: list[SearchDocument]) -> str:
     return f"{text}\n\n__SOURCES__:{_source_marker(documents)}"
 
 
+def _error_prefix(code: str) -> str:
+    return f"❌ [{code}]"
+
+
 def _describe_search_error(exc: Exception, *, config_message: str) -> str:
     if isinstance(exc, SearchConfigError):
-        return config_message
+        return f"{_error_prefix('search_config')} {config_message}"
     if isinstance(exc, SearchProviderHTTPError):
-        return f"❌ 搜索 API 请求失败 (HTTP {exc.status_code}): {exc.response_text}"
+        if exc.status_code == 401:
+            return (
+                f"{_error_prefix('search_auth')} 联网搜索鉴权失败：当前搜索 provider 的 API Key 缺失或无效。"
+                " 若使用 Tavily，请更新设置中的 Tavily API Key；"
+                " 或配置其他搜索 provider 作为备用。"
+            )
+        return (
+            f"{_error_prefix('search_http_error')} 联网搜索服务返回异常 "
+            f"(HTTP {exc.status_code}): {exc.response_text}"
+        )
     if isinstance(exc, SearchTimeoutError):
-        return "❌ 搜索请求超时,请稍后重试"
+        return f"{_error_prefix('search_timeout')} 联网搜索超时，请稍后重试。"
     if isinstance(exc, UnsupportedSearchProviderError):
-        return f"❌ {exc}"
-    return f"❌ 搜索失败: {exc}"
+        return f"{_error_prefix('search_provider_unsupported')} {exc}"
+    return f"{_error_prefix('search_runtime_error')} 联网搜索失败: {exc}"
+
+
+def _exception_message_chain(exc: Exception, *, limit: int = 4) -> list[str]:
+    messages: list[str] = []
+    visited: set[int] = set()
+    current: BaseException | None = exc
+
+    while current is not None and len(messages) < limit:
+        marker = id(current)
+        if marker in visited:
+            break
+        visited.add(marker)
+
+        text = str(current or "").strip()
+        if text and text not in messages:
+            messages.append(text)
+
+        current = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+
+    return messages
 
 
 def _canonicalize_url(url: str) -> str:
@@ -75,8 +277,85 @@ def _canonicalize_url(url: str) -> str:
     return urlunparse((scheme, netloc, path, "", query, ""))
 
 
+def _normalize_domain(value: str | None) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    if "://" in raw:
+        raw = urlparse(raw).netloc.lower()
+    raw = raw.split("/", 1)[0].split("?", 1)[0]
+    if raw.startswith("www."):
+        raw = raw[4:]
+    return raw
+
+
 def _normalize_title(title: str) -> str:
     return re.sub(r"\s+", " ", re.sub(r"[^\w\u4e00-\u9fff]+", " ", str(title or "").lower())).strip()
+
+
+def _sanitize_text(text: str | None, *, max_chars: int, keep_newlines: bool = False) -> str:
+    cleaned = str(text or "").replace("\x00", " ").replace("\ufffd", " ")
+    cleaned = re.sub(r"[\u0000-\u0008\u000b\u000c\u000e-\u001f]+", " ", cleaned)
+    if keep_newlines:
+        cleaned = re.sub(r"\r\n?", "\n", cleaned)
+        cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    else:
+        cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = cleaned.strip(" \n\r\t|")
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return cleaned[:max_chars].rstrip()
+
+
+def _looks_like_download_url(url: str | None) -> bool:
+    parsed = urlparse(str(url or "").strip())
+    path = parsed.path.lower()
+    query = parsed.query.lower()
+    return path.endswith(DOWNLOAD_SUFFIXES) or any(
+        marker in query for marker in ("download=", "download&", "attachment=", "export=", "catalogpdf")
+    )
+
+
+def _looks_like_binary_excerpt(text: str | None) -> bool:
+    raw = str(text or "").strip()
+    if not raw:
+        return False
+
+    lowered = raw.lower()
+    if lowered.startswith("%pdf-"):
+        return True
+    if any(marker in lowered for marker in ("endobj", "endstream", "xref", "startxref", "/filter/flatedecode")):
+        return True
+    if raw.count("\ufffd") >= 3:
+        return True
+
+    sample = raw[:320]
+    if not sample:
+        return False
+    suspicious_tokens = len(
+        re.findall(r"(?:\b\d+\s+\d+\s+obj\b|/type\s*/page|/length\s+\d+|stream\b|endobj\b)", sample, flags=re.IGNORECASE)
+    )
+    weird_punctuation_ratio = sum(ch in "<>{}[]/%\\" for ch in sample) / max(1, len(sample))
+    return suspicious_tokens >= 2 or weird_punctuation_ratio >= 0.18
+
+
+def _content_readability_score(title: str, snippet: str) -> float:
+    text = _sanitize_text(f"{title} {snippet}", max_chars=600)
+    if not text:
+        return 0.0
+    if _looks_like_binary_excerpt(text):
+        return 0.0
+
+    chars = len(text)
+    word_like = len(re.findall(r"[A-Za-z0-9\u4e00-\u9fff]", text))
+    signal_ratio = word_like / max(1, chars)
+    punctuation_ratio = sum(ch in "<>{}[]/%\\" for ch in text) / max(1, chars)
+
+    score = 0.35 + 0.45 * signal_ratio + 0.2 * min(1.0, chars / 220)
+    if punctuation_ratio >= 0.15:
+        score -= 0.18
+    return min(1.0, max(0.0, score))
 
 
 def _titles_similar(left: str, right: str) -> bool:
@@ -94,20 +373,396 @@ def _titles_similar(left: str, right: str) -> bool:
     return overlap >= 0.8 and min(len(left_tokens), len(right_tokens)) >= 3
 
 
+def _contains_any(text: str, keywords: Sequence[str]) -> bool:
+    lowered = str(text or "").lower()
+    return any(keyword in lowered for keyword in keywords)
+
+
+def _contains_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", str(text or "")))
+
+
+def _extract_domain_filters(query: str) -> tuple[list[str], str]:
+    include_domains: list[str] = []
+
+    def _replace(match: re.Match[str]) -> str:
+        domain = _normalize_domain(match.group(1))
+        if domain and domain not in include_domains:
+            include_domains.append(domain)
+        return " "
+
+    cleaned = re.sub(
+        r"(?:site:|domain:|站点:|域名:)\s*([A-Za-z0-9.-]+\.[A-Za-z]{2,})",
+        _replace,
+        str(query or ""),
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return include_domains, cleaned
+
+
+def _append_search_hints(query: str, hints: Sequence[str]) -> str:
+    result = str(query or "").strip()
+    lowered = result.lower()
+    for hint in hints:
+        normalized = hint.strip()
+        if not normalized:
+            continue
+        if normalized.lower() in lowered:
+            continue
+        result = f"{result} {normalized}".strip()
+        lowered = result.lower()
+    return result
+
+
+def _infer_time_range(query: str) -> str | None:
+    lowered = str(query or "").lower()
+    if any(keyword in lowered for keyword in ("today", "breaking", "live", "today's", "今天", "刚刚")):
+        return "day"
+    if any(keyword in lowered for keyword in ("this week", "latest", "recent", "newest", "本周", "最新", "近期", "最近", "新闻")):
+        return "week"
+    if any(keyword in lowered for keyword in ("this month", "month", "本月")):
+        return "month"
+    return None
+
+
+def _extract_query_terms(text: str) -> list[str]:
+    candidates = re.findall(r"[A-Za-z][A-Za-z0-9_.:-]{1,}|[\u4e00-\u9fff]{2,}|\d{4}", str(text or ""))
+    normalized: list[str] = []
+    for item in candidates:
+        token = item.strip().lower()
+        if len(token) < 2 or token in STOP_TERMS:
+            continue
+        if token not in normalized:
+            normalized.append(token)
+    return normalized[:12]
+
+
+def _normalize_provider_score(raw_score: float | None) -> float:
+    if raw_score is None:
+        return 0.55
+    score = float(raw_score)
+    if 0.0 <= score <= 1.0:
+        return score
+    return max(0.0, min(1.0, score / 100.0 if score > 10 else score / 10.0))
+
+
+def _parse_datetime(value: str | None) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    candidate = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        parsed = None
+
+    if parsed is None:
+        match = re.search(r"(\d{4})[-/](\d{1,2})(?:[-/](\d{1,2}))?", raw)
+        if not match:
+            return None
+        year = int(match.group(1))
+        month = int(match.group(2))
+        day = int(match.group(3) or "1")
+        try:
+            parsed = datetime(year, month, day, tzinfo=UTC)
+        except ValueError:
+            return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _is_doc_like_domain(domain: str) -> bool:
+    lowered = _normalize_domain(domain)
+    return any(hint in lowered for hint in DOC_HOST_HINTS) or lowered.endswith((".gov", ".edu", ".ac.uk"))
+
+
+def _domain_matches(domain: str | None, patterns: Sequence[str]) -> bool:
+    normalized = _normalize_domain(domain)
+    if not normalized:
+        return False
+    for item in patterns:
+        pattern = _normalize_domain(item)
+        if not pattern:
+            continue
+        if normalized == pattern or normalized.endswith(f".{pattern}"):
+            return True
+    return False
+
+
+def _build_query_plan(
+    query: str,
+    *,
+    search_depth: str = "basic",
+    topic: str | None = None,
+    time_range: str | None = None,
+) -> SearchQueryPlan:
+    original_query = str(query or "").strip()
+    include_domains, stripped_query = _extract_domain_filters(original_query)
+    base_query = stripped_query or original_query
+
+    is_time_sensitive = _contains_any(base_query, TIME_SENSITIVE_KEYWORDS)
+    prefer_docs = _contains_any(base_query, DOC_INTENT_KEYWORDS)
+    prefer_official = prefer_docs or _contains_any(base_query, OFFICIAL_INTENT_KEYWORDS)
+    prefer_news = _contains_any(base_query, NEWS_INTENT_KEYWORDS) or is_time_sensitive
+
+    effective_query = base_query
+    if prefer_official and not include_domains:
+        hints = ("official documentation", "release notes") if not _contains_cjk(base_query) else ("官网", "官方文档")
+        effective_query = _append_search_hints(effective_query, hints)
+    elif prefer_news:
+        hints = ("latest news",) if not _contains_cjk(base_query) else ("最新", "新闻")
+        effective_query = _append_search_hints(effective_query, hints)
+
+    resolved_topic = str(topic or "").strip().lower() or None
+    if resolved_topic is None and prefer_news:
+        resolved_topic = "news"
+
+    resolved_time_range = str(time_range or "").strip().lower() or None
+    if resolved_time_range is None:
+        resolved_time_range = _infer_time_range(base_query)
+
+    resolved_search_depth = str(search_depth or "basic").strip().lower() or "basic"
+    if resolved_search_depth == "basic" and (is_time_sensitive or prefer_docs or include_domains):
+        resolved_search_depth = "advanced"
+
+    exclude_domains = tuple(domain for domain in LOW_SIGNAL_DOMAINS if domain not in include_domains)
+    return SearchQueryPlan(
+        original_query=original_query,
+        effective_query=effective_query,
+        search_depth=resolved_search_depth,
+        topic=resolved_topic,
+        time_range=resolved_time_range,
+        include_domains=tuple(include_domains),
+        exclude_domains=exclude_domains,
+        is_time_sensitive=is_time_sensitive,
+        prefer_docs=prefer_docs,
+        prefer_official=prefer_official,
+    )
+
+
+def rewrite_search_query_for_web(
+    query: str,
+    *,
+    search_depth: str = "basic",
+    topic: str | None = None,
+    time_range: str | None = None,
+) -> str:
+    return _build_query_plan(
+        query,
+        search_depth=search_depth,
+        topic=topic,
+        time_range=time_range,
+    ).effective_query
+
+
+def _compute_domain_trust(domain: str | None, plan: SearchQueryPlan) -> float:
+    normalized = _normalize_domain(domain)
+    if not normalized:
+        return 0.45 if plan.is_time_sensitive else 0.6
+    try:
+        ipaddress.ip_address(normalized)
+    except ValueError:
+        pass
+    else:
+        return 0.18
+    if _domain_matches(normalized, plan.include_domains):
+        return 1.0
+    if _domain_matches(normalized, LOW_SIGNAL_DOMAINS):
+        return 0.1
+    if _domain_matches(normalized, LOW_TRUST_DOMAINS):
+        return 0.4
+    if normalized.endswith((".gov", ".edu", ".ac.uk")):
+        return 0.95
+    if plan.prefer_official and _is_doc_like_domain(normalized):
+        return 0.92
+    if _is_doc_like_domain(normalized):
+        return 0.88
+    return 0.72
+
+
+def _compute_freshness_score(published_at: str | None, plan: SearchQueryPlan) -> float:
+    parsed = _parse_datetime(published_at)
+    if parsed is None:
+        return 0.35 if plan.is_time_sensitive else 0.65
+
+    age_days = max(0.0, (datetime.now(UTC) - parsed).total_seconds() / 86400.0)
+    if age_days <= 1:
+        return 1.0
+    if age_days <= 7:
+        return 0.95
+    if age_days <= 30:
+        return 0.88
+    if age_days <= 180:
+        return 0.72
+    if age_days <= 365:
+        return 0.58
+    return 0.32 if plan.is_time_sensitive else 0.48
+
+
+def _score_document(
+    document: SearchDocument,
+    *,
+    query_terms: Sequence[str],
+    plan: SearchQueryPlan,
+) -> SearchDocument:
+    sanitized_title = _sanitize_text(document.title, max_chars=240)
+    sanitized_snippet = _sanitize_text(document.snippet, max_chars=600)
+    sanitized_raw_text = _sanitize_text(document.raw_text, max_chars=8000, keep_newlines=True)
+    normalized_domain = _normalize_domain(document.domain or urlparse(document.url).netloc)
+    title_blob = _normalize_title(sanitized_title)
+    snippet_blob = _normalize_title(sanitized_raw_text or sanitized_snippet)
+
+    matched_terms: list[str] = []
+    title_hits = 0
+    snippet_hits = 0
+    for term in query_terms:
+        if term in title_blob:
+            title_hits += 1
+            matched_terms.append(term)
+        elif term in snippet_blob:
+            snippet_hits += 1
+            matched_terms.append(term)
+
+    match_score = min(1.0, 0.2 + 0.35 * min(1.0, title_hits / max(1, min(len(query_terms), 3))) + 0.2 * min(1.0, snippet_hits / max(1, min(len(query_terms), 4))))
+    if not query_terms:
+        match_score = 0.6
+
+    provider_score = _normalize_provider_score(document.score)
+    trust_score = _compute_domain_trust(normalized_domain, plan)
+    freshness_score = _compute_freshness_score(document.published_at, plan)
+    readability_score = _content_readability_score(sanitized_title, sanitized_raw_text or sanitized_snippet)
+    download_like = _looks_like_download_url(document.url)
+    binary_like = _looks_like_binary_excerpt(sanitized_raw_text or sanitized_snippet or sanitized_title)
+
+    confidence = (
+        0.4 * match_score
+        + 0.25 * trust_score
+        + 0.2 * freshness_score
+        + 0.15 * provider_score
+    )
+    if _domain_matches(normalized_domain, plan.include_domains):
+        confidence = min(1.0, confidence + 0.08)
+    if readability_score >= 0.8:
+        confidence = min(1.0, confidence + 0.05)
+    elif readability_score < 0.45:
+        confidence = max(0.0, confidence - 0.12)
+    if download_like:
+        confidence = max(0.0, confidence - 0.08)
+    if binary_like:
+        confidence = max(0.0, confidence - 0.45)
+
+    evidence_tags: list[str] = []
+    if _domain_matches(normalized_domain, plan.include_domains):
+        evidence_tags.append("explicit_domain_match")
+    if plan.prefer_official and _is_doc_like_domain(normalized_domain):
+        evidence_tags.append("official_domain")
+    if download_like:
+        evidence_tags.append("download_url")
+    if freshness_score >= 0.9:
+        evidence_tags.append("fresh_source")
+    if title_hits > 0:
+        evidence_tags.append("title_term_match")
+    if snippet_hits > 0:
+        evidence_tags.append("snippet_term_match")
+    if provider_score >= 0.8:
+        evidence_tags.append("provider_high_score")
+    if readability_score >= 0.8:
+        evidence_tags.append("high_readability")
+    elif readability_score < 0.45:
+        evidence_tags.append("low_readability")
+    if binary_like:
+        evidence_tags.append("binary_excerpt")
+
+    if confidence >= 0.75:
+        source_quality = "high"
+    elif confidence >= 0.55:
+        source_quality = "medium"
+    else:
+        source_quality = "low"
+
+    return SearchDocument(
+        doc_id=document.doc_id,
+        provider=document.provider,
+        source_type=document.source_type,
+        title=sanitized_title or document.title,
+        url=document.url,
+        snippet=sanitized_snippet,
+        raw_text=sanitized_raw_text,
+        published_at=document.published_at,
+        fetched_at=document.fetched_at,
+        domain=normalized_domain or document.domain,
+        author=document.author,
+        score=round(confidence, 4),
+        provider_score=round(provider_score, 4),
+        confidence=round(confidence, 4),
+        trust_score=round(trust_score, 4),
+        freshness_score=round(freshness_score, 4),
+        source_quality=source_quality,
+        retrieval_query=plan.effective_query,
+        matched_terms=list(dict.fromkeys(matched_terms)),
+        evidence_tags=list(dict.fromkeys([*document.evidence_tags, *evidence_tags])),
+    )
+
+
+def _prepare_search_documents(
+    documents: Sequence[SearchDocument],
+    *,
+    plan: SearchQueryPlan,
+) -> list[SearchDocument]:
+    query_terms = _extract_query_terms(plan.original_query)
+    prepared: list[SearchDocument] = []
+
+    for document in documents:
+        normalized_domain = _normalize_domain(document.domain or urlparse(document.url).netloc)
+        if plan.include_domains and not _domain_matches(normalized_domain, plan.include_domains):
+            continue
+        if plan.exclude_domains and _domain_matches(normalized_domain, plan.exclude_domains):
+            continue
+        scored = _score_document(document, query_terms=query_terms, plan=plan)
+        text_payload = (scored.raw_text or scored.snippet or scored.title).strip()
+        if "binary_excerpt" in scored.evidence_tags:
+            continue
+        if "download_url" in scored.evidence_tags and float(scored.confidence or 0.0) < 0.62:
+            continue
+        if not text_payload:
+            continue
+        if len(text_payload) < 8 and len((scored.title or "").strip()) < 10 and float(scored.confidence or 0.0) < 0.5:
+            continue
+        prepared.append(scored)
+
+    prepared.sort(
+        key=lambda item: (
+            float(item.confidence or 0.0),
+            float(item.trust_score or 0.0),
+            float(item.freshness_score or 0.0),
+            len(item.matched_terms or []),
+        ),
+        reverse=True,
+    )
+    return prepared
+
+
 def dedupe_search_documents(
     documents: Sequence[SearchDocument],
     *,
     limit: int | None = None,
+    max_per_domain: int | None = None,
 ) -> list[SearchDocument]:
     deduped: list[SearchDocument] = []
     seen_urls: set[str] = set()
     seen_titles: list[str] = []
     seen_title_snippets: set[tuple[str, str]] = set()
+    domain_counts: dict[str, int] = {}
 
     for document in documents:
         canonical_url = _canonicalize_url(document.url)
         normalized_title = _normalize_title(document.title)
         normalized_snippet = re.sub(r"\s+", " ", (document.raw_text or document.snippet or "").lower()).strip()[:180]
+        normalized_domain = _normalize_domain(document.domain) or _normalize_domain(canonical_url)
 
         if canonical_url and canonical_url in seen_urls:
             continue
@@ -118,6 +773,9 @@ def dedupe_search_documents(
             if title_signature in seen_title_snippets:
                 continue
             seen_title_snippets.add(title_signature)
+        if max_per_domain is not None and normalized_domain:
+            if domain_counts.get(normalized_domain, 0) >= max_per_domain:
+                continue
 
         normalized_document = SearchDocument(
             doc_id=document.doc_id,
@@ -129,11 +787,16 @@ def dedupe_search_documents(
             raw_text=document.raw_text,
             published_at=document.published_at,
             fetched_at=document.fetched_at,
-            domain=document.domain,
+            domain=normalized_domain,
             author=document.author,
             score=document.score,
+            provider_score=document.provider_score,
+            confidence=document.confidence,
             trust_score=document.trust_score,
             freshness_score=document.freshness_score,
+            source_quality=document.source_quality,
+            retrieval_query=document.retrieval_query,
+            matched_terms=list(document.matched_terms or []),
             evidence_tags=list(document.evidence_tags or []),
         )
 
@@ -143,6 +806,8 @@ def dedupe_search_documents(
             seen_titles.append(normalized_title)
         if normalized_title and normalized_snippet:
             seen_title_snippets.add((normalized_title, normalized_snippet))
+        if normalized_domain:
+            domain_counts[normalized_domain] = domain_counts.get(normalized_domain, 0) + 1
 
         deduped.append(normalized_document)
         if limit is not None and len(deduped) >= limit:
@@ -163,20 +828,34 @@ async def search_web(
     include_answer: bool = True,
     include_raw_content: bool = False,
 ) -> SearchResponse:
+    plan = _build_query_plan(
+        query,
+        search_depth=search_depth,
+        topic=topic,
+        time_range=time_range,
+    )
     explicit_provider_list = providers is not None
     provider_names = normalize_provider_list(providers if explicit_provider_list else provider)
     responses: list[SearchResponse] = []
     errors: list[Exception] = []
+    provider_capabilities: list[SearchProviderCapabilities] = []
+    provider_caveats: list[str] = []
 
     for provider_name in provider_names:
         try:
-            response = await get_search_provider(provider_name).search(
-                query,
+            provider_instance = get_search_provider(provider_name)
+            capability = (
+                provider_instance.get_capabilities()
+                if hasattr(provider_instance, "get_capabilities")
+                else SearchProviderCapabilities(name=provider_name)
+            )
+            response = await provider_instance.search(
+                plan.effective_query,
                 max_results=max_results,
-                search_depth=search_depth,
+                search_depth=plan.search_depth,
                 include_answer=include_answer,
-                topic=topic,
-                time_range=time_range,
+                topic=plan.topic,
+                time_range=plan.time_range,
                 include_raw_content=include_raw_content,
             )
         except SearchRuntimeError as exc:
@@ -188,6 +867,14 @@ async def search_web(
             errors.append(exc)
             continue
 
+        provider_capabilities.append(capability)
+        for caveat in _provider_caveats_for_plan(
+            plan,
+            capability,
+            include_raw_content=include_raw_content,
+        ):
+            if caveat not in provider_caveats:
+                provider_caveats.append(caveat)
         responses.append(response)
         if response.results and not explicit_provider_list:
             break
@@ -198,7 +885,19 @@ async def search_web(
             if isinstance(first_error, SearchRuntimeError):
                 raise first_error
             raise SearchRuntimeError(str(first_error)) from first_error
-        return SearchResponse(query=query, provider="+".join(provider_names), results=[], search_depth=search_depth)
+        return SearchResponse(
+            query=query,
+            provider="+".join(provider_names),
+            results=[],
+            search_depth=plan.search_depth,
+            rewritten_query=plan.effective_query,
+            topic=plan.topic,
+            time_range=plan.time_range,
+            include_domains=list(plan.include_domains),
+            exclude_domains=list(plan.exclude_domains),
+            provider_capabilities=provider_capabilities,
+            provider_caveats=provider_caveats,
+        )
 
     merged_results: list[SearchDocument] = []
     provider_labels: list[str] = []
@@ -209,12 +908,22 @@ async def search_web(
             answer = response.answer
         merged_results.extend(response.results)
 
+    ranked_results = _prepare_search_documents(merged_results, plan=plan)
+
+    max_per_domain = None if plan.include_domains else 2
     return SearchResponse(
         query=query,
         provider=" + ".join(dict.fromkeys(provider_labels)),
-        results=dedupe_search_documents(merged_results, limit=max_results),
+        results=dedupe_search_documents(ranked_results, limit=max_results, max_per_domain=max_per_domain),
         answer=answer,
-        search_depth=search_depth or "basic",
+        search_depth=plan.search_depth,
+        rewritten_query=plan.effective_query,
+        topic=plan.topic,
+        time_range=plan.time_range,
+        include_domains=list(plan.include_domains),
+        exclude_domains=list(plan.exclude_domains),
+        provider_capabilities=provider_capabilities,
+        provider_caveats=provider_caveats,
     )
 
 
@@ -224,12 +933,26 @@ def format_search_results(query: str, response: SearchResponse) -> str:
     if response.answer:
         output.append(f"【AI 总结】\n{response.answer}\n")
 
-    output.append(f"【搜索结果 - {query}】\n")
+    header = f"【搜索结果 - {query}】"
+    if response.rewritten_query and response.rewritten_query != query:
+        header += f"\n检索词: {response.rewritten_query}"
+    output.append(header)
 
     for index, result in enumerate(response.results, 1):
+        meta_bits: list[str] = []
+        if result.domain:
+            meta_bits.append(f"域名: {result.domain}")
+        if result.published_at:
+            meta_bits.append(f"发布时间: {result.published_at}")
+        if result.confidence is not None:
+            meta_bits.append(f"置信度: {result.confidence:.2f}")
+        if result.source_quality:
+            meta_bits.append(f"质量: {result.source_quality}")
+
         output.append(
             f"{index}. {result.title or '无标题'}\n"
             f"链接: {result.url}\n"
+            f"{' | '.join(meta_bits) if meta_bits else '来源元数据: 无'}\n"
             f"摘要: {result.snippet}"
         )
 
@@ -256,16 +979,18 @@ async def search_web_text(
     except SearchRuntimeError as exc:
         return _describe_search_error(
             exc,
-            config_message="❌ 未配置可用的联网搜索 provider,无法使用联网搜索功能",
+            config_message="未配置可用的联网搜索 provider，无法使用联网搜索功能。",
         )
     except Exception as exc:
         logger.exception("search_web_text failed provider=%s", provider_name)
         return _describe_search_error(
             exc,
-            config_message="❌ 未配置可用的联网搜索 provider,无法使用联网搜索功能",
+            config_message="未配置可用的联网搜索 provider，无法使用联网搜索功能。",
         )
 
     if not response.results:
+        if response.include_domains:
+            return f"未找到与指定站点相关的搜索结果: {', '.join(response.include_domains)}"
         return f"未找到相关搜索结果: {query}"
 
     return format_search_results(query, response)
@@ -291,18 +1016,20 @@ async def quick_answer_text(
     except SearchRuntimeError as exc:
         return _describe_search_error(
             exc,
-            config_message="❌ 未配置可用的联网搜索 provider",
+            config_message="未配置可用的联网搜索 provider。",
         )
     except Exception as exc:
         logger.exception("quick_answer_text failed provider=%s", provider_name)
         return _describe_search_error(
             exc,
-            config_message="❌ 未配置可用的联网搜索 provider",
+            config_message="未配置可用的联网搜索 provider。",
         )
 
     if response.answer:
-        return f"【网络搜索答案】\n{response.answer}"
-    return "未能生成答案,请使用 web_search 查看详细结果"
+        top_sources = [item.title for item in response.results[:2] if item.title]
+        source_line = f"\n来源: {'；'.join(top_sources)}" if top_sources else ""
+        return f"【网络搜索答案】\n{response.answer}{source_line}"
+    return "未能生成答案，请使用 web_search 查看详细搜索结果。"
 
 
 async def fetch_webpage_document(url: str, *, max_chars: int = 8000) -> SearchDocument:
@@ -335,7 +1062,8 @@ async def fetch_webpage_document(url: str, *, max_chars: int = 8000) -> SearchDo
         text = text[:max_chars] + "\n\n...[内容已截断]"
 
     parsed = urlparse(url)
-    return SearchDocument(
+    plan = _build_query_plan(url)
+    document = SearchDocument(
         doc_id=f"fetch:{url}",
         provider="fetch",
         source_type="web",
@@ -343,8 +1071,11 @@ async def fetch_webpage_document(url: str, *, max_chars: int = 8000) -> SearchDo
         url=_canonicalize_url(url) or url,
         snippet=text[:200],
         raw_text=text,
-        domain=parsed.netloc or None,
+        domain=_normalize_domain(parsed.netloc) or None,
+        retrieval_query=url,
+        evidence_tags=["page_fetch"],
     )
+    return _score_document(document, query_terms=_extract_query_terms(url), plan=plan)
 
 
 async def fetch_webpage_text(url: str, *, max_chars: int = 8000) -> str:
@@ -353,7 +1084,7 @@ async def fetch_webpage_text(url: str, *, max_chars: int = 8000) -> str:
     except SearchRuntimeError as exc:
         return _describe_search_error(
             exc,
-            config_message="❌ 缺少网页抓取依赖",
+            config_message="缺少网页抓取依赖。",
         )
     return _append_sources_marker(f"【网页内容 - {url}】\n\n{document.raw_text}", [document])
 
@@ -395,6 +1126,8 @@ async def run_web_research(
         summary=summary,
         sources=response.results,
         highlights=highlights,
+        provider_capabilities=response.provider_capabilities,
+        caveats=list(response.provider_caveats),
     )
 
 
@@ -402,6 +1135,11 @@ def describe_runtime_error(exc: Exception) -> str:
     if isinstance(exc, SearchRuntimeError):
         return _describe_search_error(
             exc,
-            config_message="未配置可用的联网搜索 provider,无法使用联网搜索功能",
+            config_message="未配置可用的联网搜索 provider，无法使用联网搜索功能。",
         )
-    return str(exc)
+    messages = _exception_message_chain(exc)
+    if not messages:
+        return str(exc)
+    if len(messages) == 1:
+        return messages[0]
+    return f"{messages[0]} | 原因: {' | '.join(messages[1:])}"

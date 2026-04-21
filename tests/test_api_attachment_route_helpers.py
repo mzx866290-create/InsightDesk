@@ -2,11 +2,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from api_attachment_route_helpers import (
+from backend.api_attachment_route_helpers import (
     prepare_attachment_promotion,
     session_attachments_payload,
 )
-from api_task_store import TaskRecord, TaskStatus
+from backend.api_task_store import TaskRecord, TaskStatus
 
 
 def test_session_attachments_payload_wraps_workspace_status():

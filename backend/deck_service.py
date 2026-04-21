@@ -17,9 +17,9 @@ from typing import Any, Literal
 from langchain_core.documents import Document
 from pydantic import BaseModel, Field
 
-from agent_core import get_llm
-from chat_store import connect_sqlite
-from doc_pipeline import DocPipeline
+from backend.agent_core import get_llm
+from backend.chat_store import connect_sqlite
+from backend.doc_pipeline import DocPipeline
 
 
 DeckSourceMode = Literal["kb_plus_chat", "chat_only"]
@@ -1238,6 +1238,8 @@ def _build_deck_from_generated(
     outline: OutlinePlan,
     drafted: DraftedSlideBundle,
     theme: DeckThemeName = "default",
+    source_answer_group_id: str = "",
+    source_panel_id: str = "",
 ) -> DeckSpec:
     slides: list[DeckSlide] = [
         DeckSlide(
@@ -1410,6 +1412,8 @@ async def build_deck(
         outline=outline,
         drafted=drafted,
         theme=normalize_deck_theme(theme),
+        source_answer_group_id=source_answer_group_id,
+        source_panel_id=source_panel_id,
     )
 
 
@@ -1476,6 +1480,8 @@ async def regenerate_deck_slide(
         vector_store_path=vector_store_path,
         system_prompt=system_prompt,
         theme=deck.meta.theme,
+        source_answer_group_id=deck.meta.source_answer_group_id,
+        source_panel_id=deck.meta.source_panel_id,
     )
     current_index, replacement = _select_regenerated_slide(deck, regenerated_deck, slide_id)
     current_slide = deck.slides[current_index]

@@ -1,7 +1,7 @@
 import time
 
-from api_task_store import RESTART_FAILURE_MESSAGE, SQLiteTaskStore, TaskRecord, TaskStatus
-from chat_store import connect_sqlite
+from backend.api_task_store import RESTART_FAILURE_MESSAGE, SQLiteTaskStore, TaskRecord, TaskStatus
+from backend.chat_store import connect_sqlite
 
 
 def test_task_store_marks_incomplete_tasks_failed_after_restart(tmp_path):

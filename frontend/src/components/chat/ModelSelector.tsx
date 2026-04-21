@@ -26,7 +26,7 @@ const COMPATIBLE_PRESETS: Array<{
 }> = [
   {
     label: 'OpenRouter',
-    description: '托管型 OpenAI 兼容网关',
+    description: '托管的 OpenAI 兼容网关',
     baseUrl: 'https://openrouter.ai/api/v1',
     defaultModel: 'openai/gpt-4o-mini',
   },
@@ -37,7 +37,7 @@ const COMPATIBLE_PRESETS: Array<{
   },
   {
     label: 'vLLM / OneAPI',
-    description: '自托管兼容接口',
+    description: '自托管兼容网关',
     baseUrl: 'http://localhost:8000/v1',
   },
 ]
@@ -86,6 +86,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       model: defaultModelForConnectionType(nextType),
       base_url: defaultBaseUrlForConnectionType(nextType),
       api_key: '',
+      api_key_ref: '',
     })
   }
 
@@ -99,6 +100,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
         modelConfig.model ??
         defaultModelForConnectionType('openai_compatible'),
       api_key: preset.baseUrl.startsWith('http://localhost') ? '' : modelConfig.api_key,
+      api_key_ref: modelConfig.api_key_ref,
     })
   }
 
@@ -111,13 +113,13 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   }> = [
     {
       id: 'auto',
-      label: 'Agent 开',
-      description: '保留知识库、联网搜索和工具链能力',
+      label: '智能体',
+      description: '保留知识库、联网搜索和工具编排能力',
     },
     {
       id: 'plain_chat',
       label: '直连',
-      description: '绕过 Agent，更适合小说、续写、润色等纯文本场景',
+      description: '绕过智能体，仅进行纯文本生成',
     },
   ]
 
@@ -143,6 +145,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
           if (disabled) return
           setOpen(!open)
         }}
+        data-testid={`model-selector-trigger-${panelId}`}
         disabled={disabled}
         className="flex min-w-0 items-center gap-1 text-xs text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
       >
@@ -160,7 +163,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
           onClick={onRemove}
           disabled={disabled}
           className="ml-1 text-text-secondary transition-colors hover:text-accent-red disabled:cursor-not-allowed disabled:opacity-40"
-          title="移除面板"
+          title="移除此面板"
         >
           <X size={12} />
         </button>
@@ -168,6 +171,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
 
       {open && (
         <div
+          data-testid={`model-selector-menu-${panelId}`}
           className="absolute left-0 top-full z-50 mt-1 w-[min(20rem,calc(100vw-1rem))] max-h-[min(70vh,38rem)] max-w-[calc(100vw-1rem)] overflow-y-auto animate-fade-in rounded-xl border border-bg-border bg-bg-secondary p-3 shadow-2xl sm:w-80"
           onClick={(event) => event.stopPropagation()}
         >
@@ -180,6 +184,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                 <button
                   key={item.id}
                   type="button"
+                  data-testid={`model-selector-connection-${panelId}-${item.id}`}
                   onClick={() => handleConnectionTypeChange(item.id)}
                   disabled={disabled}
                   className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-xs font-medium transition-colors ${
@@ -230,7 +235,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
 
               <div>
                 <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
-                  服务地址
+                  基础 URL
                 </div>
                 <input
                   className="input-base w-full text-xs"
@@ -281,7 +286,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
               <div>
                 <div className="mb-1 flex items-center justify-between gap-2">
                   <div className="text-[10px] uppercase tracking-wide text-text-secondary">
-                    已保存云端模型
+                    已保存云端配置
                   </div>
                   <button
                     type="button"
@@ -296,11 +301,15 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                 </div>
 
                 {cloudModelProfiles.length > 0 ? (
-                  <div className="max-h-36 space-y-1.5 overflow-y-auto">
+                  <div
+                    data-testid={`model-selector-cloud-profile-list-${panelId}`}
+                    className="max-h-36 space-y-1.5 overflow-y-auto"
+                  >
                     {cloudModelProfiles.map((profile) => (
                       <button
                         key={profile.id}
                         type="button"
+                        data-testid={`model-selector-cloud-profile-${panelId}-${profile.id}`}
                         onClick={() => {
                           if (disabled) return
                           applyCloudModelProfile(panelId, profile.id)
@@ -326,7 +335,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                   </div>
                 ) : (
                   <p className="rounded-lg border border-dashed border-bg-border px-2.5 py-2 text-[11px] leading-5 text-text-secondary">
-                    还没有已保存的云端模型配置。点右侧“管理”后可集中维护，再回来一键选用。
+                    还没有已保存的云端配置。先点“管理”创建，再回来在这里应用。
                   </p>
                 )}
               </div>
@@ -368,7 +377,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
 
               <div>
                 <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
-                  服务地址
+                  基础 URL
                 </div>
                 <input
                   className="input-base w-full text-xs"
@@ -384,24 +393,37 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                   API Key
                 </div>
                 <input
+                  data-testid={`model-selector-api-key-input-${panelId}`}
                   className="input-base w-full text-xs"
                   type="password"
                   value={modelConfig.api_key}
-                  onChange={(event) => updatePanelModel(panelId, { api_key: event.target.value })}
+                  onChange={(event) =>
+                    updatePanelModel(panelId, {
+                      api_key: event.target.value,
+                      api_key_ref: '',
+                    })}
                   placeholder="本地兼容服务可留空"
                   disabled={disabled}
                 />
+                {modelConfig.api_key_ref ? (
+                  <p
+                    data-testid={`model-selector-managed-key-notice-${panelId}`}
+                    className="mt-1 text-[11px] leading-5 text-text-secondary"
+                  >
+                    当前已关联后端托管密钥，在此输入会解除关联。
+                  </p>
+                ) : null}
               </div>
 
               <p className="text-[11px] leading-5 text-text-secondary">
-                支持 OpenRouter、OneAPI、NewAPI、LM Studio、vLLM 等 OpenAI 兼容网关与服务。
+                支持 OpenRouter、OneAPI、NewAPI、LM Studio、vLLM 等 OpenAI 兼容网关和服务。
               </p>
             </div>
           )}
 
           <div className="mt-3 border-t border-bg-border pt-3">
             <div className="mb-2 text-[10px] uppercase tracking-wide text-text-secondary">
-              执行方式
+              执行模式
             </div>
             <div className="grid gap-1.5">
               {agentModeOptions.map((option) => (
@@ -491,7 +513,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                 ))}
               </div>
             ) : (
-              <p className="mt-2 text-[11px] text-text-secondary">还没有保存的预设。</p>
+              <p className="mt-2 text-[11px] text-text-secondary">还没有已保存的预设。</p>
             )}
           </div>
 

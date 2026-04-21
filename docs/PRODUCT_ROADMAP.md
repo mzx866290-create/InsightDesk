@@ -25,8 +25,8 @@ That means the strongest long-term product value is not generic chat. It is the 
 
 ### P0: Production Readiness
 
-- authentication
-- RBAC
+- managed authentication and token lifecycle
+- organization-grade RBAC and policy enforcement
 - audit logging
 - safer file / share / admin boundaries
 - monitoring and error visibility
@@ -133,6 +133,16 @@ The most defensible areas are:
 - workspace presets (v1)
 - MCP connector catalog and workspace-scoped selection (v1)
 - security status, share-link audit, and token-safe request logging (v1)
+- token-based authentication, `/api/auth/whoami`, and RBAC lite for viewer / editor / admin routes
+- admin visibility for the effective auth token catalog via `/api/auth/tokens` with masked previews and fingerprints
+- auth token hygiene visibility for weak / legacy token configuration in `/api/security/status` and `/api/auth/tokens`
+- basic fixed-window rate limiting for remote management APIs, with config visibility in `/api/security/status`
+- runtime operations status, request/error counters, and recent-error visibility (v1)
+- security audit event visibility for recent admin / auth operations (v1)
+- SQLite-backed persistence for recent security audit events (v1)
+- audit retention/status visibility in `/api/security/status` (v1)
+- safe fallback for invalid `SECURITY_AUDIT_HISTORY_LIMIT` values, with config-source visibility in `/api/security/status`
+- admin cleanup control for persisted / in-memory security audit windows
 
 ## Current Retrieval State
 

@@ -157,6 +157,149 @@ test('creates a session and completes the send-message flow', async ({ page }) =
   )
 })
 
+test('manages a cloud model profile from settings', async ({ page }) => {
+  const profileName = 'OpenRouter QA Profile'
+  const initialApiKey = 'sk-initial-123'
+  const rotatedApiKey = 'sk-rotated-456'
+
+  await page.goto('/')
+  await page.getByTestId('header-open-settings').click()
+
+  await page.getByTestId('settings-cloud-profile-name-input').fill(profileName)
+  await page.getByTestId('settings-cloud-profile-api-key-input').fill(initialApiKey)
+  await page.getByTestId('settings-cloud-profile-save').click()
+
+  const profileList = page.getByTestId('settings-cloud-profile-list')
+  const profileCard = profileList.locator('[data-testid^="settings-cloud-profile-card-"]').first()
+
+  await expect(profileCard).toContainText(profileName)
+  await expect(profileCard).toContainText('Managed key linked')
+
+  await profileCard.locator('[data-testid^="settings-cloud-profile-edit-"]').click()
+  await expect(page.getByTestId('settings-cloud-profile-clear-editor')).toBeVisible()
+  await expect(page.getByText('Managed key is currently linked to this profile.')).toBeVisible()
+
+  await page.getByTestId('settings-cloud-profile-api-key-input').fill(rotatedApiKey)
+  await page.getByTestId('settings-cloud-profile-save').click()
+
+  await expect(profileCard).toContainText('Managed key linked')
+
+  await profileCard.locator('[data-testid^="settings-cloud-profile-clear-"]').click()
+  await expect(profileCard).toContainText('No managed key')
+
+  await profileCard.locator('[data-testid^="settings-cloud-profile-delete-"]').click()
+  await expect(profileCard).toHaveCount(0)
+})
+
+test('applies a saved cloud model profile from the panel selector', async ({ page }) => {
+  const profileName = 'Panel Apply Profile'
+  const profileModel = 'gpt-4.1-mini'
+  const apiKey = 'sk-apply-789'
+  const prompt = 'Create the first panel so the selector is available'
+
+  await page.goto('/')
+  await page.getByTestId('composer-input').fill(prompt)
+  await page.getByTestId('composer-send').click()
+  await expect(page.getByTestId('session-item')).toHaveCount(1)
+  await expect(page.locator('[data-role="assistant"]').last()).toContainText(
+    `Mock answer for: ${prompt}`,
+  )
+  await page.getByTestId('header-open-settings').click()
+
+  await page.getByTestId('settings-cloud-profile-name-input').fill(profileName)
+  await page.getByTestId('settings-cloud-profile-model-input').fill(profileModel)
+  await page.getByTestId('settings-cloud-profile-api-key-input').fill(apiKey)
+  await page.getByTestId('settings-cloud-profile-save').click()
+
+  const settingsProfileCard = page
+    .getByTestId('settings-cloud-profile-list')
+    .locator('[data-testid^="settings-cloud-profile-card-"]')
+    .first()
+  await expect(settingsProfileCard).toContainText(profileName)
+  await expect(settingsProfileCard).toContainText('Managed key linked')
+
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('settings-cloud-profile-list')).toHaveCount(0)
+
+  const panel = page.getByTestId('chat-panel').first()
+  const modelSelectorTrigger = panel.locator('[data-testid^="model-selector-trigger-"]').first()
+  await modelSelectorTrigger.click()
+
+  const modelSelectorMenu = panel.locator('[data-testid^="model-selector-menu-"]').first()
+  await modelSelectorMenu
+    .locator('[data-testid^="model-selector-connection-"][data-testid$="openai_compatible"]')
+    .first()
+    .click()
+  const cloudProfileButton = modelSelectorMenu
+    .locator('[data-testid^="model-selector-cloud-profile-"]')
+    .first()
+
+  await expect(cloudProfileButton).toContainText(profileName)
+  await expect(cloudProfileButton).toContainText(profileModel)
+
+  await cloudProfileButton.click()
+  await expect(modelSelectorTrigger).toContainText(profileModel)
+
+  await modelSelectorTrigger.click()
+  await expect(
+    panel.locator('[data-testid^="model-selector-managed-key-notice-"]').first(),
+  ).toBeVisible()
+})
+
+test('manual API key input detaches the managed cloud key in the panel selector', async ({ page }) => {
+  const profileName = 'Manual Override Profile'
+  const profileModel = 'gpt-4.1-nano'
+  const managedApiKey = 'sk-managed-001'
+  const manualApiKey = 'sk-manual-override'
+  const prompt = 'Render the first panel before opening the selector'
+
+  await page.goto('/')
+  await page.getByTestId('composer-input').fill(prompt)
+  await page.getByTestId('composer-send').click()
+  await expect(page.getByTestId('session-item')).toHaveCount(1)
+  await expect(page.locator('[data-role="assistant"]').last()).toContainText(
+    `Mock answer for: ${prompt}`,
+  )
+
+  await page.getByTestId('header-open-settings').click()
+  await page.getByTestId('settings-cloud-profile-name-input').fill(profileName)
+  await page.getByTestId('settings-cloud-profile-model-input').fill(profileModel)
+  await page.getByTestId('settings-cloud-profile-api-key-input').fill(managedApiKey)
+  await page.getByTestId('settings-cloud-profile-save').click()
+  await expect(
+    page
+      .getByTestId('settings-cloud-profile-list')
+      .locator('[data-testid^="settings-cloud-profile-card-"]')
+      .first(),
+  ).toContainText(profileName)
+
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('settings-cloud-profile-list')).toHaveCount(0)
+
+  const panel = page.getByTestId('chat-panel').first()
+  const modelSelectorTrigger = panel.locator('[data-testid^="model-selector-trigger-"]').first()
+  await modelSelectorTrigger.click()
+
+  const modelSelectorMenu = panel.locator('[data-testid^="model-selector-menu-"]').first()
+  await modelSelectorMenu
+    .locator('[data-testid^="model-selector-connection-"][data-testid$="openai_compatible"]')
+    .first()
+    .click()
+  await modelSelectorMenu
+    .locator('[data-testid^="model-selector-cloud-profile-"]')
+    .first()
+    .click()
+
+  await modelSelectorTrigger.click()
+  const managedKeyNotice = panel.locator('[data-testid^="model-selector-managed-key-notice-"]').first()
+  const apiKeyInput = panel.locator('[data-testid^="model-selector-api-key-input-"]').first()
+
+  await expect(managedKeyNotice).toBeVisible()
+  await apiKeyInput.fill(manualApiKey)
+  await expect(apiKeyInput).toHaveValue(manualApiKey)
+  await expect(managedKeyNotice).toHaveCount(0)
+})
+
 test('attaches a file and sends it with the message', async ({ page }) => {
   const prompt = 'Use the attached note as context for the reply'
 
@@ -289,7 +432,9 @@ test('shares the generated deck from the editor', async ({ page }) => {
   await openDeckEditorFromLatestResearch(page, query)
   await page.getByTestId('deck-editor-share').click()
 
-  await expect(page.getByTestId('deck-editor-share')).toContainText('已复制')
+  await expect.poll(async () => page.evaluate(() => navigator.clipboard.readText())).toContain(
+    'https://example.com/shared/decks/deck-mock-1',
+  )
   await expect(page.getByTestId('deck-editor-save-message')).toBeVisible()
 })
 
@@ -367,3 +512,4 @@ test('shows completed tasks in task center and reopens the generated report', as
   await expect(page.getByTestId('report-preview-modal')).toBeVisible()
   await expect(page.getByTestId('report-preview-content')).toContainText('Mock Research Report')
 })
+

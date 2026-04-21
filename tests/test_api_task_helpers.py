@@ -1,6 +1,6 @@
 import asyncio
 
-from api_task_helpers import (
+from backend.api_task_helpers import (
     contains_dashboard_card,
     create_inline_task_record,
     prune_task_records,
@@ -8,7 +8,7 @@ from api_task_helpers import (
     summarize_dashboard_task_error,
     summarize_dashboard_task_result,
 )
-from api_task_store import TaskRecord, TaskStatus
+from backend.api_task_store import TaskRecord, TaskStatus
 
 
 def test_dashboard_summary_helpers_extract_title_and_strip_markup():

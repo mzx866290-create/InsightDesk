@@ -6,9 +6,9 @@ from fastapi.testclient import TestClient
 from langchain_core.documents import Document
 from pptx import Presentation
 
-import api_server
-import chat_store
-import deck_service
+import backend.api_server as api_server
+import backend.chat_store as chat_store
+import backend.deck_service as deck_service
 
 
 def _history_cls_for_db(db_path: Path):
@@ -146,7 +146,7 @@ def test_upload_documents_endpoint_cleans_temp_files_when_task_setup_fails(
 ):
     staged_paths: list[str] = []
 
-    async def fake_stage_upload_files(files):
+    async def fake_stage_upload_files(files, **kwargs):
         paths = [tmp_path / "upload-1.txt", tmp_path / "upload-2.md"]
         for index, path in enumerate(paths, start=1):
             path.write_bytes(f"payload-{index}".encode("utf-8"))
@@ -473,7 +473,7 @@ def test_export_deck_endpoint_returns_pptx_bytes():
 
 
 def test_test_retrieval_endpoint_returns_results(monkeypatch):
-    import doc_pipeline
+    import backend.doc_pipeline as doc_pipeline
 
     events: list[tuple[str, object]] = []
 
@@ -522,7 +522,7 @@ def test_test_retrieval_endpoint_returns_results(monkeypatch):
 
 
 def test_test_retrieval_endpoint_supports_hybrid_mode(monkeypatch):
-    import doc_pipeline
+    import backend.doc_pipeline as doc_pipeline
 
     events: list[tuple[str, object]] = []
 
@@ -606,7 +606,7 @@ def test_test_retrieval_endpoint_supports_hybrid_mode(monkeypatch):
 
 
 def test_test_retrieval_endpoint_rejects_blank_query(monkeypatch):
-    import doc_pipeline
+    import backend.doc_pipeline as doc_pipeline
 
     class FakePipeline:
         def __init__(self, vector_store_path=None):

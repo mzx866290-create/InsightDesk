@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from fastapi import Request
-from chat_store import connect_sqlite
+from backend.chat_store import connect_sqlite
 
 
 @dataclass

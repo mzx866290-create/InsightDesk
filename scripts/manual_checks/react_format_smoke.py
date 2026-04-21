@@ -1,7 +1,7 @@
 import argparse
 import asyncio
 
-from agent_core import build_agent
+from backend.agent_core import build_agent
 
 
 async def run_react_smoke(model_name: str, base_url: str) -> bool:

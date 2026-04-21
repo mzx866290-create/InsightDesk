@@ -8,19 +8,29 @@ from .service import (
     search_web_text,
 )
 from .types import (
+    ResearchBudget,
     ResearchContradiction,
     ResearchFinding,
+    ResearchIntent,
+    ResearchPlan,
+    ResearchQuery,
     ResearchRound,
     SearchDocument,
+    SearchProviderCapabilities,
     SearchResponse,
     WebResearchResult,
 )
 
 __all__ = [
+    "ResearchBudget",
     "ResearchContradiction",
     "ResearchFinding",
+    "ResearchIntent",
+    "ResearchPlan",
+    "ResearchQuery",
     "ResearchRound",
     "SearchDocument",
+    "SearchProviderCapabilities",
     "SearchResponse",
     "WebResearchResult",
     "dedupe_search_documents",

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage
 
-import deck_service
+import backend.deck_service as deck_service
 
 
 def _messages():

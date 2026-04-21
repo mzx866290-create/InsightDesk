@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-import api_server
+import backend.api_server as api_server
 
 
 def test_health_endpoint_returns_request_trace_headers():

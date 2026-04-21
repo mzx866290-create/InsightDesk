@@ -8,7 +8,7 @@ on:
   pull_request:
 
 jobs:
-  backend-tests:
+  backend-checks:
     runs-on: windows-latest
     env:
       PYTHONPATH: .
@@ -24,6 +24,12 @@ jobs:
 
       - name: Install backend dependencies
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+
+      - name: Run ruff lint
+        run: python -m ruff check backend/ --output-format=github
+
+      - name: Run mypy type check
+        run: python -m mypy backend/ --config-file=mypy.ini
 
       - name: Run backend tests
         run: python -m pytest -q tests
