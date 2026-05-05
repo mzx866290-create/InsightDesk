@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react'
 
 const frontendPort = Number(process.env.FRONTEND_PORT || '5173')
 const backendPort = Number(process.env.BACKEND_PORT || process.env.SERVER_PORT || '8000')
+const backendHost = process.env.BACKEND_HOST || '127.0.0.1'
 
 export default defineConfig({
   plugins: [react()],
@@ -11,7 +12,7 @@ export default defineConfig({
     strictPort: false,
     proxy: {
       '/api': {
-        target: `http://localhost:${backendPort}`,
+        target: `http://${backendHost}:${backendPort}`,
         changeOrigin: true,
       },
     },
