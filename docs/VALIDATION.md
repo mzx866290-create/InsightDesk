@@ -188,8 +188,11 @@ venv312\Scripts\python.exe deploy/run_arq_drain_drill.py --timeout-seconds 120 -
 ```
 
 Keep the task backend default as `memory` until
-`TASK_BACKEND_SWITCH_READY=1` is approved and the ops readiness report shows the
-ARQ long-running validation plus drain drill closed in the target environment.
+`TASK_BACKEND_SWITCH_READY=1` is approved and the persisted ops evidence shows
+the ARQ long-running validation plus drain drill closed for the target
+environment. Readiness uses those archived reports for
+`summary.task_backend_default_switch.decision`, so a local shell does not need
+to re-run the gated drills just to confirm `eligible_for_arq_default`.
 
 For Kubernetes rollout closure, set `OPS_REAL_CLUSTER_TEST=1` only against the
 target cluster. The readiness report then includes the real cluster probe and

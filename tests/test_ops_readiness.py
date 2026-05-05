@@ -262,6 +262,37 @@ def test_ops_readiness_allows_default_switch_with_closed_arq_evidence(
     assert default_switch["blockers"] == []
 
 
+def test_ops_readiness_default_switch_uses_persisted_evidence_without_real_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        readiness,
+        "_read_json_report",
+        lambda path: {
+            "exists": True,
+            "ok": True,
+            "skipped": False,
+            "blocker": "",
+            "archive_path": str(path).replace(".json", "-archive.json"),
+        },
+    )
+
+    report = readiness.build_readiness_report(
+        env={"TASK_BACKEND_SWITCH_READY": "1"},
+        include_real=False,
+        run_safe=False,
+    )
+
+    default_switch = report["summary"]["task_backend_default_switch"]  # type: ignore[index]
+    assert default_switch["switch_ready"] is True
+    assert default_switch["decision"] == "eligible_for_arq_default"
+    assert default_switch["blockers"] == []
+
+    arq_required = default_switch["required_checks"]["arq_drain_drill"]
+    assert arq_required["status"] == "blocked"
+    assert arq_required["ready"] is True
+
+
 def test_ops_readiness_storage_gate_accepts_enabled_env() -> None:
     storage_check = [
         check

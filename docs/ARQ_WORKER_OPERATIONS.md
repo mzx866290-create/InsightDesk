@@ -193,12 +193,14 @@ The switch contract is considered closed only when:
   a passing real-environment report.
 - `deploy/run_arq_drain_drill.py --timeout-seconds 120 --json --report-path ...`
   produces a successful closure report.
-- `deploy/run_ops_readiness.py --include-real --json` shows no remaining ARQ
-  real-environment blockers and lists the ARQ report paths under
-  `summary.arq_report_paths`.
+- `deploy/verify_ops_evidence.py --json --strict` reports the persisted ARQ
+  evidence as closed and lists the ARQ report paths under
+  `summary.arq_report_paths` when readiness is rendered.
 - `summary.task_backend_default_switch.decision` is
-  `eligible_for_arq_default`. If the gate is set before the ARQ evidence files
-  are present, passed, and not skipped, readiness records
+  `eligible_for_arq_default`. The decision uses the persisted ARQ evidence so
+  it can be evaluated without re-running the gated drills in the current shell.
+  If the gate is set before the ARQ evidence files are present, passed, and not
+  skipped, readiness records
   `blocked_until_arq_evidence_closes` and blocks
   `task_backend_default_switch_contract`.
 

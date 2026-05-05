@@ -931,24 +931,34 @@ V2 is successful if the system can consistently produce research output where:
 
 ---
 
-## Remaining Open Questions
+## Resolved Implementation Choices
 
-Only lower-risk questions should remain open after `v2.1`.
+The `v2.1` implementation closes the lower-risk design questions with
+conservative deterministic defaults:
 
-1. Whether provider capability metadata should be fully static or partly runtime-detected.
-2. Whether template matching should use rules only in Phase 1 or rules plus a lightweight classifier.
-3. Whether contradiction clustering should stay LLM-assisted or add more rule-based numeric matching in Phase 2.
+1. Provider capability metadata is explicit and static in runtime contracts.
+   Runtime checks may add caveats, but they do not redefine provider
+   capabilities during planning.
+2. Template matching stays rule-based for Phase 1. The planner first applies a
+   domain template, then falls back to generic intent facets and query-matrix
+   expansion.
+3. Contradiction handling keeps the LLM-assisted upstream detection path and
+   adds deterministic aggregation/resolution actions. Numeric rule matching can
+   be added later as an enhancement without changing the V2 artifact contract.
 
 ---
 
-## Recommended Next Implementation Order
+## Implemented Closure
 
-1. Add provider capability declarations.
-2. Introduce `ResearchIntent`, `ResearchQuery`, and budget config.
-3. Add facet resolution with template override plus generic fallback.
-4. Restrict Phase 1 deep-mode query planning to the new query matrix path.
-5. Keep quick mode on the lightweight path, but make it capability-aware.
-6. Begin Phase 2 only after the Phase 1 contracts are stable.
+1. Provider capability declarations are part of `ResearchPlan` and
+   `WebResearchResult`.
+2. `ResearchIntent`, `ResearchQuery`, and budget config drive the fallback
+   planner.
+3. Facet resolution uses template override plus generic fallback.
+4. Deep-mode planning flows through the query matrix path.
+5. Quick mode keeps the lightweight path while preserving provider caveats.
+6. Citation artifacts expose archive reuse, claim evidence chains, and
+   contradiction edges for review UI consumers.
 
 ---
 

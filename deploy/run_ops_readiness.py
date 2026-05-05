@@ -730,7 +730,7 @@ def _build_task_backend_default_switch_decision(
             else {"exists": False, "ok": False, "blocker": "missing_report_path"}
         )
         status = str(item.get("status") or "blocked")
-        ready = status == "ready" and bool(evidence.get("ok"))
+        ready = bool(evidence.get("ok"))
         required[check_id] = {
             "status": status,
             "report_path": report_path,
