@@ -153,6 +153,8 @@ docker compose up --build -d api
   文档导航
 - [docs/DELIVERY_STATUS.md](./docs/DELIVERY_STATUS.md)
   当前代码交付状态、已验证命令与剩余外部审批项
+- [docs/USER_MANUAL.md](./docs/USER_MANUAL.md)
+  项目功能说明书、使用方法与适用场景
 - [docs/GETTING_STARTED.md](./docs/GETTING_STARTED.md)
   安装、模型模式与首次运行说明
 - [docs/AGENT_AND_WORKFLOW.md](./docs/AGENT_AND_WORKFLOW.md)

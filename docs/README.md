@@ -21,6 +21,9 @@ The goal is to keep the repository documentation maintainable by reducing duplic
 - [GETTING_STARTED.md](/f:/项目/AI智能体/docs/GETTING_STARTED.md)
   Setup options, local/cloud model modes, LangGraph mode, and recommended first-run path.
 
+- [USER_MANUAL.md](/f:/项目/AI智能体/docs/USER_MANUAL.md)
+  User-facing feature manual, usage steps, and recommended scenarios.
+
 - [AGENT_AND_WORKFLOW.md](/f:/项目/AI智能体/docs/AGENT_AND_WORKFLOW.md)
   Agent modes, LangGraph integration, workflow visualization, and implementation notes.
 
