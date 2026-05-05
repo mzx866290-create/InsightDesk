@@ -16,6 +16,7 @@ from deploy.run_final_validation import (
     build_results_summary,
     _print_human_report,
     _print_json_report,
+    _safe_print,
     effective_parallel_workers,
     run_step,
     run_steps,
@@ -432,6 +433,28 @@ def test_final_validation_human_and_json_reports_include_timing(capfd) -> None:
     assert payload["summary"]["duration_ms_avg"] == 42
     assert payload["summary"]["duration_ms_max"] == 42
     assert payload["results"][0]["duration_ms"] == 42
+
+
+def test_final_validation_human_report_tolerates_legacy_console_encoding() -> None:
+    class StrictGbkStream:
+        encoding = "gbk"
+
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+
+        def write(self, text: str) -> int:
+            text.encode(self.encoding, errors="strict")
+            self.writes.append(text)
+            return len(text)
+
+        def flush(self) -> None:
+            return None
+
+    stream = StrictGbkStream()
+
+    _safe_print("frontend build ✓", file=stream)
+
+    assert "frontend build ?" in "".join(stream.writes)
 
 
 def test_final_validation_output_truncation_contract() -> None:

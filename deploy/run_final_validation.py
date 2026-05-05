@@ -611,11 +611,25 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _safe_print(text: object = "", *, file: object | None = None) -> None:
+    stream = file or sys.stdout
+    try:
+        print(text, file=stream)
+        return
+    except UnicodeEncodeError:
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        safe_text = str(text).encode(encoding, errors="replace").decode(
+            encoding,
+            errors="replace",
+        )
+        print(safe_text, file=stream)
+
+
 def _print_human_report(report: dict[str, object]) -> None:
-    print(f"ok: {str(report['ok']).lower()}")
-    print(f"listed_only: {str(report['listed_only']).lower()}")
-    print(f"step_count: {report['step_count']}")
-    print(f"parallel_workers: {report.get('parallel_workers', 1)}")
+    _safe_print(f"ok: {str(report['ok']).lower()}")
+    _safe_print(f"listed_only: {str(report['listed_only']).lower()}")
+    _safe_print(f"step_count: {report['step_count']}")
+    _safe_print(f"parallel_workers: {report.get('parallel_workers', 1)}")
     summary = report.get("summary")
     if isinstance(summary, dict):
         truncated = summary.get("truncated") if isinstance(summary.get("truncated"), dict) else {}
@@ -624,7 +638,7 @@ def _print_human_report(report: dict[str, object]) -> None:
             if isinstance(summary.get("output_failures"), dict)
             else {}
         )
-        print(
+        _safe_print(
             "summary: "
             f"selected={summary.get('selected', 0)} "
             f"executed={summary.get('executed', 0)} "
@@ -642,12 +656,12 @@ def _print_human_report(report: dict[str, object]) -> None:
     results = report.get("results")
     if not isinstance(results, list):
         for step in report["steps"]:  # type: ignore[index]
-            print(f"- {step['id']}: {' '.join(step['command'])}")  # type: ignore[index]
+            _safe_print(f"- {step['id']}: {' '.join(step['command'])}")  # type: ignore[index]
         return
 
     for result in results:
         status = "PASS" if result["ok"] else "FAIL"
-        print(
+        _safe_print(
             f"- {status} {result['id']} "
             f"({result['returncode']}) "
             f"duration_ms={result.get('duration_ms', 0)} "
@@ -656,9 +670,9 @@ def _print_human_report(report: dict[str, object]) -> None:
         stdout = str(result.get("stdout") or "")
         stderr = str(result.get("stderr") or "")
         if stdout:
-            print(stdout)
+            _safe_print(stdout)
         if stderr:
-            print(stderr, file=sys.stderr)
+            _safe_print(stderr, file=sys.stderr)
 
 
 def _print_json_report(report: dict[str, object]) -> None:
