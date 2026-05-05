@@ -168,13 +168,13 @@ docker compose up --build -d api
 - [docs/BACKEND_ARCHITECTURE.md](./docs/BACKEND_ARCHITECTURE.md)
   后端分层、入口职责与 `api_*` 兼容层边界
 - [docs/STORAGE_RUNTIME.md](./docs/STORAGE_RUNTIME.md)
-  SQLite ???????????? PostgreSQL ????
+  SQLite 存储抽象、PostgreSQL 适配与迁移说明
 - [docs/DEPLOYMENT_OPERATIONS.md](./docs/DEPLOYMENT_OPERATIONS.md)
   Docker Compose、API、worker、Redis 与 Qdrant 部署运维说明
 - [docs/IDENTITY_AND_ORGS.md](./docs/IDENTITY_AND_ORGS.md)
-  ????????????
+  组织、用户、成员关系与身份治理说明
 - [docs/RESOURCE_ACCESS.md](./docs/RESOURCE_ACCESS.md)
-  ????????API ???????
+  资源授权、分享链接与访问控制 API 说明
 - [docs/VALIDATION.md](./docs/VALIDATION.md)
   冒烟、回归与发布前检查
 
