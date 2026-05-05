@@ -1,5 +1,7 @@
 # Documentation Map
 
+Current delivery status: [DELIVERY_STATUS.md](./DELIVERY_STATUS.md)
+
 ## Purpose
 
 This directory contains the consolidated project documentation.

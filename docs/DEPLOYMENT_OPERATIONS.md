@@ -382,7 +382,13 @@ The default `minAvailable: 1` protects at least one API pod during voluntary dis
 
 ## 当前边界
 
-- Compose MVP 继续复用现有 `/api/health`；已新增独立 `/healthz` 与 `/readyz`，供 Kubernetes / 运维探针使用。
-- `worker` 健康检查覆盖 Redis 连通性；已补充可配置 ARQ worker 心跳键，并在任务列表 payload 中暴露 pending/running 滞留告警。该告警不读取 Redis 队列长度，真实队列积压仍建议接入外部监控。
-- Qdrant 已具备 Compose 服务与健康检查；真实 Qdrant 集成测试、collection 清理工具仍待补。
-- Kubernetes、Helm、HPA、PVC、优雅关停与配置热更新仍属于后续生产化事项。
+- Compose MVP 继续复用现有 `/api/health`；独立 `/healthz` 与 `/readyz`
+  已供 Kubernetes / 运维探针使用。
+- `worker` 健康检查覆盖 Redis 连通性、ARQ worker 心跳、Redis 队列长度、
+  pending/running 滞留告警与 drain / graceful shutdown 摘要；生产告警仍应
+  接入外部监控系统。
+- Qdrant 已具备 Compose 服务、健康检查、真实迁移/回滚演练入口与证据契约；
+  生产环境复跑和 collection 生命周期清理属于非阻塞增强。
+- Kubernetes、Helm、HPA、PVC、优雅关停与配置热更新已具备静态验证、演练入口
+  和证据契约；真实集群复跑仍由 `OPS_REAL_CLUSTER_TEST=1` 门控，作为部署审批
+  或环境准入动作执行。
