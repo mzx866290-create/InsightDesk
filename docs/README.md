@@ -1,48 +1,77 @@
-# Documentation Map
+# 文档导航
 
-Current delivery status: [DELIVERY_STATUS.md](./DELIVERY_STATUS.md)
+语言 / Language: [中文](./README.md) | [English](./README.en.md)
 
-## Purpose
+当前交付状态：[DELIVERY_STATUS.md](./DELIVERY_STATUS.md)
 
-This directory contains the consolidated project documentation.
+## 用途
 
-The goal is to keep the repository documentation maintainable by reducing duplicated planning notes, implementation summaries, and feature guides into a small number of living documents.
+本目录用于集中维护项目文档，减少重复的计划说明、阶段总结和功能说明。
 
-## Read First
+## 优先阅读
 
-- [README.md](/f:/项目/AI智能体/README.md)
-  Project overview, current capabilities, architecture, boundaries, and deployment entry points.
+- [README.md](../README.md)
+  项目概览、核心能力、技术栈、启动方式和当前边界。
 
-- [QUICKSTART.md](/f:/项目/AI智能体/QUICKSTART.md)
-  Fastest path to run the project locally.
+- [README.en.md](../README.en.md)
+  英文项目首页。
 
-## Core Docs
+- [QUICKSTART.md](../QUICKSTART.md)
+  最短本地启动路径。
 
-- [GETTING_STARTED.md](/f:/项目/AI智能体/docs/GETTING_STARTED.md)
-  Setup options, local/cloud model modes, LangGraph mode, and recommended first-run path.
+## 核心文档
 
-- [USER_MANUAL.md](/f:/项目/AI智能体/docs/USER_MANUAL.md)
-  User-facing feature manual, usage steps, and recommended scenarios.
+- [USER_MANUAL.md](./USER_MANUAL.md)
+  中文功能说明书、使用方法与适用场景。
 
-- [AGENT_AND_WORKFLOW.md](/f:/项目/AI智能体/docs/AGENT_AND_WORKFLOW.md)
-  Agent modes, LangGraph integration, workflow visualization, and implementation notes.
+- [USER_MANUAL.en.md](./USER_MANUAL.en.md)
+  English user manual.
 
-- [RESEARCH_LOGIC_V2.md](/f:/项目/AI智能体/docs/RESEARCH_LOGIC_V2.md)
-  Research pipeline v2 design, evidence model, provider caveats, and phased implementation plan.
+- [GETTING_STARTED.md](./GETTING_STARTED.md)
+  安装方式、本地/云端模型模式、LangGraph 模式和首次运行路径。
 
-- [PRODUCT_ROADMAP.md](/f:/项目/AI智能体/docs/PRODUCT_ROADMAP.md)
-  Consolidated product roadmap, migration priorities, retention direction, and execution order.
+- [AGENT_AND_WORKFLOW.md](./AGENT_AND_WORKFLOW.md)
+  Agent 模式、LangGraph 集成、工作流可视化和实现说明。
 
-- [DECK_DELIVERY_PLAN.md](/f:/项目/AI智能体/docs/DECK_DELIVERY_PLAN.md)
-  Report/PPT delivery redesign direction, Deck architecture, and phased evolution plan.
+- [RESEARCH_LOGIC_V2.md](./RESEARCH_LOGIC_V2.md)
+  Research V2 管线、证据模型、provider caveat 和阶段实现计划。
 
-- [IMPLEMENTATION_PLAN.md](/f:/项目/AI智能体/docs/IMPLEMENTATION_PLAN.md)
+- [PRODUCT_ROADMAP.md](./PRODUCT_ROADMAP.md)
+  产品路线图、迁移优先级、数据保留方向和后续执行顺序。
+
+- [DECK_DELIVERY_PLAN.md](./DECK_DELIVERY_PLAN.md)
+  报告/PPT 交付管线、Deck 架构和后续演进方向。
+
+- [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md)
   四阶段优化实施计划：架构治理、多 Agent 协作、研究与交付强化、生产化与生态扩展。
 
-- [VALIDATION.md](/f:/项目/AI智能体/docs/VALIDATION.md)
-  Smoke checks, release validation, and regression checklist.
+- [VALIDATION.md](./VALIDATION.md)
+  冒烟检查、发布验证和回归清单。
 
-## Archive
+## 运维与交付
 
-- [archive/README.md](/f:/项目/AI智能体/docs/archive/README.md)
-  Mapping from old standalone markdown files to the new consolidated docs.
+- [DELIVERY_STATUS.md](./DELIVERY_STATUS.md)
+  当前代码交付状态、已验证命令和剩余外部审批项。
+
+- [DEPLOYMENT_OPERATIONS.md](./DEPLOYMENT_OPERATIONS.md)
+  Docker Compose、API、worker、Redis、Qdrant、Helm 和 K8s 运维说明。
+
+- [ARQ_WORKER_OPERATIONS.md](./ARQ_WORKER_OPERATIONS.md)
+  ARQ worker 运行、drain、心跳和默认后端切换说明。
+
+- [STORAGE_RUNTIME.md](./STORAGE_RUNTIME.md)
+  SQLite 存储抽象、PostgreSQL/Qdrant 适配、迁移和回滚说明。
+
+## 权限与安全
+
+- [IDENTITY_AND_ORGS.md](./IDENTITY_AND_ORGS.md)
+  组织、用户、成员关系和身份治理说明。
+
+- [RESOURCE_ACCESS.md](./RESOURCE_ACCESS.md)
+  资源授权、分享链接和访问控制 API 说明。
+
+## 归档
+
+- [archive/README.md](./archive/README.md)
+  历史文档归档说明。归档内容不是当前交付状态的 source of truth。
+

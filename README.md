@@ -1,5 +1,7 @@
 # InsightDesk
 
+语言 / Language: [中文](./README.md) | [English](./README.en.md)
+
 InsightDesk 是一个面向企业知识问答、资料分析与结果交付的 AI 工作台。  
 它把聊天、知识库检索、附件分析、联网研究、会话记忆、异步任务、报告生成和 PPT 交付整合在同一个项目里。
 
@@ -151,6 +153,8 @@ docker compose up --build -d api
   最短启动路径
 - [docs/README.md](./docs/README.md)
   文档导航
+- [docs/README.en.md](./docs/README.en.md)
+  English documentation map
 - [docs/DELIVERY_STATUS.md](./docs/DELIVERY_STATUS.md)
   当前代码交付状态、已验证命令与剩余外部审批项
 - [docs/USER_MANUAL.md](./docs/USER_MANUAL.md)

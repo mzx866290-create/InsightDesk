@@ -1,643 +1,492 @@
-# InsightDesk User Manual
+# InsightDesk 用户说明书
 
-Last updated: 2026-05-05
+语言 / Language: [中文](./USER_MANUAL.md) | [English](./USER_MANUAL.en.md)
 
-This manual explains what each major InsightDesk feature is for and how to use
-it in day-to-day work. It is written for operators, internal users, reviewers,
-and project maintainers who need a practical guide rather than an architecture
-deep dive.
+最后更新：2026-05-05
 
-## 1. Product Purpose
+这份说明书面向实际使用者、管理员、审核人员和运维人员，解释 InsightDesk
+每个主要功能的用途、使用方法和适用场景。
 
-InsightDesk is an enterprise AI workbench for knowledge Q&A, document analysis,
-web research, writing/review workflows, and report or slide delivery.
+## 1. 项目用途
 
-Use it when you need to:
+InsightDesk 是一个企业 AI 工作台，用于知识问答、资料分析、联网研究、写作
+审校、任务执行和报告/PPT 交付。
 
-- turn internal files into searchable, citable knowledge;
-- ask questions across uploaded documents, attachments, and web research;
-- compare answers from multiple model configurations;
-- preserve useful context as session memory;
-- generate reports, decks, and exportable PPTX/PDF artifacts;
-- route high-impact tasks through review or approval gates;
-- monitor task, connector, trace, audit, and deployment readiness status.
+适合用于：
 
-## 2. First-Time Startup
+- 把内部文档变成可检索、可引用、可追溯的知识资产；
+- 在同一个会话里持续完成提问、分析、总结和交付；
+- 对比本地模型和云端模型的回答质量；
+- 生成报告、Deck、PPTX/PDF 等交付物；
+- 对高风险任务、连接器和导出动作加入人工审批；
+- 查看任务、审计、Trace、连接器和部署 readiness 状态。
 
-### Purpose
+## 2. 首次启动
 
-Start the backend API and frontend UI so users can chat, upload documents, run
-research, and generate deliverables.
+### 用途
 
-### How To Use
+启动后端 API 和前端界面，让用户可以聊天、上传文档、检索知识库、运行研究和
+生成交付物。
 
-1. Copy `.env.example` to `.env`.
-2. Choose at least one model provider:
-   - local/private mode: configure `OLLAMA_BASE_URL` and an Ollama model;
-   - cloud mode: configure `OPENAI_API_KEY`, OpenRouter, or another
-     OpenAI-compatible provider.
-3. Start the project:
-   - Windows quick path: run `start.bat`;
-   - manual backend: `venv312\Scripts\python.exe -m uvicorn backend.api_server:app --host 0.0.0.0 --port 8000`;
-   - manual frontend: run `npm run dev -- --host 0.0.0.0 --port 5173` inside
-     `frontend`.
-4. Open the frontend at `http://localhost:5173`.
+### 使用方法
 
-### Notes
+1. 复制 `.env.example` 为 `.env`。
+2. 配置至少一种模型：
+   - 本地模型：配置 `OLLAMA_BASE_URL` 和 Ollama 模型；
+   - 云端模型：配置 `OPENAI_API_KEY`、OpenRouter 或 OpenAI-Compatible
+     服务。
+3. Windows 快速启动：运行 `start.bat`。
+4. 手动启动后端：
 
-- Python `3.12.x` and Node.js `18+` are expected; Node.js `20 LTS` is
-  recommended.
-- The fastest validation path is: create a session, ask a normal question,
-  upload a small document, ask a retrieval question, then generate a report or
-  deck.
+```bash
+venv312\Scripts\python.exe -m uvicorn backend.api_server:app --host 0.0.0.0 --port 8000
+```
 
-## 3. Workspaces
+5. 手动启动前端：
 
-### Purpose
+```bash
+cd frontend
+npm run dev -- --host 0.0.0.0 --port 5173
+```
 
-Workspaces separate different projects, departments, clients, or topics. They
-keep sessions and related knowledge context organized.
+6. 打开 `http://localhost:5173`。
 
-### How To Use
+### 注意事项
 
-1. Open the workspace selector in the sidebar.
-2. Create a workspace with a clear name and optional description.
-3. Activate the workspace before creating sessions or uploading project-specific
-   material.
-4. Rename, archive, or delete workspaces when they are no longer needed.
+- 推荐 Python `3.12.x`，Node.js `20 LTS`。
+- 如果 Windows 保留了 `8000` 端口，可以把后端改到其他端口，并同步设置
+  `BACKEND_PORT`。
 
-### Best Use
+## 3. 工作区
 
-- Use one workspace per business project or team.
-- Do not mix unrelated client or department material in the same workspace if
-  answers need to remain traceable.
+### 用途
 
-## 4. Sessions And Conversation History
+工作区用于隔离不同项目、团队、客户或主题，避免会话和知识资料混在一起。
 
-### Purpose
+### 使用方法
 
-Sessions preserve a threaded work context: questions, model answers, sources,
-feedback, generated artifacts, and follow-up actions.
+1. 在侧边栏打开工作区选择器。
+2. 新建工作区并填写名称、描述。
+3. 进入对应工作区后再创建会话、上传文档或生成交付物。
+4. 不再使用时可归档、重命名或删除。
 
-### How To Use
+### 建议
 
-1. Create a new session from the sidebar.
-2. Give it a useful title after the first meaningful question.
-3. Use the same session for a continuous analysis thread.
-4. Use reset/delete only when the conversation is no longer useful.
-5. Use share links when a session needs to be reviewed by another person.
+- 一个客户、部门或项目使用一个工作区。
+- 涉及权限、审计或外部交付时，不要把无关资料放进同一工作区。
 
-### Useful Actions
+## 4. 会话与历史记录
 
-- `continue`: ask the system to keep working from the existing answer.
-- `retry`: regenerate an answer when the result is poor or an upstream model
-  failed.
-- `fork`: branch from a useful point without losing the original line of work.
-- bookmark/feedback: mark useful or weak answers for later review.
+### 用途
 
-## 5. Chat And Agent Modes
+会话保存一个连续的工作上下文，包括用户问题、模型回答、引用来源、反馈、任务
+和生成的交付物。
 
-### Purpose
+### 使用方法
 
-The chat area is the main command surface. It routes user requests through the
-selected model, optional knowledge retrieval, web research, MCP tools, memory,
-and workflow logic.
+1. 在侧边栏创建新会话。
+2. 围绕同一个问题持续追问、补充资料、生成报告或 Deck。
+3. 使用 `continue` 让模型继续完善回答。
+4. 使用 `retry` 重新生成不满意的回答。
+5. 使用 `fork` 从某个节点分叉出新的分析路径。
+6. 对重要回答添加反馈、收藏或生成分享链接。
 
-### How To Use
+## 5. 聊天与 Agent 模式
 
-1. Type a question or instruction in the message input.
-2. Choose whether knowledge base and web search should be enabled.
-3. Select quick or deep research mode when the task needs web research.
-4. Send the message and watch the streamed answer, workflow nodes, citations,
-   and source panels.
+### 用途
 
-### Agent Modes
+聊天区是主要操作入口。系统会根据设置调用模型、知识库、Web Research、
+MCP 工具、会话记忆和工作流节点。
 
-- `auto`: recommended default. It chooses a suitable runtime strategy.
-- `function_calling`: best for cloud models that support tool/function calls.
-- `langgraph`: best for predictable routing, local models, and visible workflow
-  steps.
+### 使用方法
 
-### Best Use
+1. 在输入框输入问题或任务。
+2. 按需要开启知识库、联网搜索或 MCP 工具。
+3. 对资料型问题选择知识库检索。
+4. 对时效性问题选择 Web Research。
+5. 观察回答、引用、来源面板和工作流节点。
 
-- Use direct chat for drafting, summarization, Q&A, and small analysis tasks.
-- Use deep research for time-sensitive or source-heavy topics.
-- Use knowledge base retrieval for internal documents and stable facts.
+### Agent 模式
 
-## 6. Multi-Panel And Multi-Model Comparison
+- `auto`：默认推荐，自动选择合适模式。
+- `function_calling`：适合支持工具调用的云端模型。
+- `langgraph`：适合本地模型、可视化工作流和稳定路由。
 
-### Purpose
+## 6. 多面板与多模型对比
 
-Multi-panel chat lets you compare model configurations side by side and decide
-which answer is better for the current task.
+### 用途
 
-### How To Use
+多面板可以让多个模型或配置同时回答同一个问题，用于质量对比、成本对比和风格
+对比。
 
-1. Add another chat panel.
-2. Select a different model or provider profile for each panel.
-3. Send the same question to compare answers.
-4. Review differences with the panel comparison/diff view.
-5. Keep the best answer or use it as source material for a report/deck.
+### 使用方法
 
-### Best Use
+1. 新增聊天面板。
+2. 给每个面板选择不同模型或模型配置。
+3. 发送同一个问题。
+4. 使用对比视图查看差异。
+5. 选择最佳回答作为后续报告、Deck 或决策依据。
 
-- Compare local vs cloud model quality.
-- Compare concise vs deep reasoning configurations.
-- Use review results and user feedback to build preference knowledge over time.
+## 7. 模型配置与预设
 
-## 7. Model Profiles And Presets
+### 用途
 
-### Purpose
+模型配置用于管理本地模型、云端模型、OpenAI-Compatible 服务、温度、模型名和
+连接参数。
 
-Profiles make model selection repeatable. They store provider, base URL, model
-name, temperature, and related parameters.
+### 使用方法
 
-### How To Use
+1. 打开设置。
+2. 配置本地 Ollama 或云端 API。
+3. 保存常用模型配置为预设。
+4. 在不同聊天面板中应用不同预设。
 
-1. Open Settings.
-2. Configure local or OpenAI-compatible profiles.
-3. Save frequently used model configurations as presets.
-4. Apply presets to individual panels when comparing models.
+### 建议
 
-### Notes
+- 隐私数据优先使用本地模型。
+- 复杂推理、写作、审校和研究任务可使用云端强模型。
 
-- Store secrets in `.env` or protected settings, not in shared docs.
-- Local models are better for privacy-sensitive data; cloud models are usually
-  stronger and faster for complex reasoning.
+## 8. 知识库文档
 
-## 8. Knowledge Base Documents
+### 用途
 
-### Purpose
+知识库把文档切分、向量化并建立索引，让回答能够引用内部资料。
 
-The knowledge base turns files into searchable chunks so answers can cite
-internal documents.
+### 支持格式
 
-### Supported Files
+支持 `PDF`、`DOC`、`DOCX`、`TXT`、Markdown、CSV 和 Excel。
 
-`PDF`, `DOC`, `DOCX`, `TXT`, `Markdown`, `CSV`, and Excel files are supported by
-the documented ingestion path.
+### 使用方法
 
-### How To Use
+1. 打开设置 -> 知识库文档。
+2. 上传文件。
+3. 等待导入任务完成。
+4. 查看文档统计和知识库健康状态。
+5. 在聊天时开启知识库检索。
+6. 检查回答里的来源和引用片段。
 
-1. Open Settings -> Knowledge Base Documents.
-2. Upload one or more files.
-3. Wait for the upload/import task to complete.
-4. Check document statistics or knowledge base health.
-5. Ask a question with knowledge base retrieval enabled.
-6. Review the source panel to confirm cited chunks support the answer.
+## 9. 检索测试与来源审查
 
-### Maintenance
+### 用途
 
-- Use knowledge base monitoring to inspect chunks.
-- Edit or delete bad chunks when source extraction is noisy.
-- Delete a knowledge base only after confirming no active role or workflow
-  depends on it.
+检索测试用于确认系统是否能找到正确文档片段，避免模型引用错误资料。
 
-## 9. Retrieval Testing And Source Review
+### 使用方法
 
-### Purpose
+1. 打开设置 -> 知识库监控。
+2. 输入与真实问题相似的检索词。
+3. 对比 semantic、keyword、hybrid 结果。
+4. 查看 chunk 内容、分数、来源标题和告警。
+5. 删除或修正质量差的切片。
 
-Retrieval testing helps confirm whether the right document chunks are being
-found before relying on an answer.
+## 10. 附件
 
-### How To Use
+### 用途
 
-1. Open Settings -> Knowledge Base Monitoring.
-2. Enter a query similar to the user question.
-3. Compare semantic, keyword, and hybrid retrieval results.
-4. Inspect source titles, chunk text, scores, and warnings.
-5. Adjust or remove weak chunks when needed.
+附件适合临时分析文件，不一定进入长期知识库。
 
-### Best Use
+### 使用方法
 
-- Use this before demos, client reviews, or high-stakes internal decisions.
-- If retrieval returns nothing, confirm upload completion and the active
-  workspace/role binding.
+1. 在聊天输入区或附件工作区上传文件。
+2. 直接询问附件内容。
+3. 预览支持的附件。
+4. 如果后续需要反复使用，再转入知识库。
 
-## 10. Attachments
+## 11. 会话记忆
 
-### Purpose
+### 用途
 
-Attachments let users analyze files inside a session without necessarily turning
-them into a long-term knowledge base.
+会话记忆保存长期有效的信息，例如项目目标、术语、偏好、限制条件和阶段总结。
 
-### How To Use
+### 使用方法
 
-1. Add files from the chat input or attachment workspace.
-2. Ask direct questions about the uploaded files.
-3. Preview attachment contents when supported.
-4. Promote important attachments to the knowledge base if they should be reused.
-
-### Best Use
-
-- Use attachments for one-off analysis.
-- Use the knowledge base for reusable organizational material.
-
-## 11. Session Memory
-
-### Purpose
-
-Session memory preserves important facts, decisions, preferences, and summaries
-so later answers stay consistent.
-
-### How To Use
-
-1. Open the memory workspace from the chat UI.
-2. Pin important facts manually when they should remain active.
-3. Review generated summaries after long sessions.
-4. Remove outdated memory to prevent stale assumptions.
-
-### Best Use
-
-- Pin project goals, glossary definitions, stakeholder constraints, and writing
-  style preferences.
-- Do not pin temporary assumptions or unverified claims.
+1. 打开会话记忆工作区。
+2. 手动固定重要事实。
+3. 查看长会话生成的阶段性总结。
+4. 删除过期或错误记忆。
 
 ## 12. Web Research
 
-### Purpose
+### 用途
 
-Web research gathers external evidence, ranks sources, detects caveats, and
-produces research-style answers with citations.
+Web Research 用于处理时效性、行业、政策、竞品、市场和需要外部证据的问题。
 
-### How To Use
+### 使用方法
 
-1. Enable web search or research mode.
-2. Choose `quick` for lightweight current-context questions.
-3. Choose `deep` for industry, policy, market, or time-sensitive research.
-4. Ask a specific question with date, geography, industry, and output format
-   when possible.
-5. Review the research metadata, citations, caveats, and contradiction notes.
+1. 开启联网搜索或研究模式。
+2. `quick` 用于轻量查询。
+3. `deep` 用于来源密集、需要结构化证据的问题。
+4. 提问时尽量提供日期、地区、行业、公司和输出格式。
+5. 查看来源、研究 caveat 和冲突提示。
 
-### Best Use
+## 13. Research Archive 与冲突审校
 
-- Use research mode for latest information, regulations, market updates, vendor
-  comparisons, and fact-heavy briefs.
-- Treat caveats and unresolved conflicts as review prompts, not as noise.
+### 用途
 
-## 13. Research Archives And Conflict Review
+Research Archive 保存历史研究结果，方便复用证据并发现跨报告冲突。
 
-### Purpose
+### 使用方法
 
-Research archives preserve previous research outputs so future work can reuse
-evidence and spot cross-report conflicts.
+1. 生成研究型回答或 artifact。
+2. 在研究归档中按主题或会话搜索。
+3. 查看历史来源和研究结论。
+4. 对冲突结论添加人工处理说明。
 
-### How To Use
+## 14. 报告与 Artifact
 
-1. Generate a research-backed answer or artifact.
-2. Open archived research entries from the artifact/research panel when
-   available.
-3. Search archives by topic or session.
-4. Review conflicts and add conflict-resolution notes.
+### 用途
 
-### Best Use
+报告功能把会话、资料和研究结果整理成可交付文本。
 
-- Reuse prior research for recurring market, policy, or competitor briefs.
-- Record why a conflict was accepted, rejected, or deferred.
+### 使用方法
 
-## 14. Reports And Artifacts
+1. 在会话中完成必要分析。
+2. 生成报告。
+3. 预览报告内容。
+4. 检查引用和来源。
+5. 按需要导出或继续生成 Deck。
 
-### Purpose
+## 15. Deck 与 PPT 交付
 
-Reports turn a conversation, selected sources, or research results into a
-structured deliverable.
+### 用途
 
-### How To Use
+Deck 功能把会话和证据转换成可编辑幻灯片，并支持导出 PPTX/PDF。
 
-1. Work inside a session until the needed context is present.
-2. Generate a report from the session or selected scope.
-3. Preview the report.
-4. Export the artifact in a supported format when needed.
-5. Revisit artifacts from the session artifact list.
+### 使用方法
 
-### Best Use
+1. 从当前会话生成 Deck draft。
+2. 设置标题、主题、受众和页数范围。
+3. 打开 Deck 编辑器。
+4. 逐页检查标题、正文、内容块和来源绑定。
+5. 对弱页面执行单页重生成。
+6. 通过证据审查和导出 gate 后导出 PPTX/PDF。
 
-- Use reports for memos, analysis summaries, decision records, and internal
-  handoffs.
-- Review citations before sharing externally.
+## 16. 写作 Agent
 
-## 15. Deck And PPT Delivery
+### 用途
 
-### Purpose
+写作 Agent 用于从资料生成大纲、草稿、摘要、邮件、汇报稿和风格化文本。
 
-Deck delivery converts conversation and evidence into editable slide specs and
-exportable PPTX/PDF files.
+### 使用方法
 
-### How To Use
+1. 先要求生成大纲。
+2. 明确受众、语气、长度、结构和引用要求。
+3. 确认大纲后生成正文。
+4. 要求进行风格校正、压缩、扩写或改写。
 
-1. Generate a deck draft from the current session.
-2. Choose title, theme, audience, and slide scope.
-3. Open the deck editor.
-4. Review each slide, content block, source binding, and evidence coverage.
-5. Regenerate a weak slide when needed.
-6. Manually confirm slides that pass human review.
-7. Export PPTX or PDF after export gates are satisfied.
+## 17. 质量审核 Agent
 
-### Export Gates
+### 用途
 
-The deck editor shows citation and evidence-review status. If a slide lacks
-source coverage or requires review, resolve the issue before export or apply the
-documented manual confirmation path.
+质量审核 Agent 检查事实、引用一致性、覆盖完整度、语气、安全和合规风险。
 
-## 16. Writing Agent
+### 使用方法
 
-### Purpose
+1. 提交回答、报告或幻灯片进行审核。
+2. 指定审核标准。
+3. 查看问题、风险和修改建议。
+4. 修改后重新审核。
 
-The writing workflow helps turn source material into outlines, drafts, and
-style-adjusted content.
+## 18. 人工审批门控
 
-### How To Use
+### 用途
 
-1. Ask for an outline before requesting a full draft.
-2. Provide audience, tone, length, required sections, and source constraints.
-3. Review the outline and ask for changes.
-4. Generate the draft.
-5. Ask for style correction, shortening, expansion, or executive-summary
-   variants.
+人工审批用于防止高风险任务自动执行，例如高风险连接器、导出、外部动作和运维
+动作。
 
-### Best Use
+### 使用方法
 
-- Use it for reports, emails, summaries, policies, scripts, and briefing notes.
-- Keep factual claims grounded in citations or known session evidence.
+1. 打开任务中心或审批面板。
+2. 查看待审批任务、风险级别和原因。
+3. 执行批准、拒绝或批量处理。
+4. 在设置中维护审批策略。
 
-## 17. Quality Review Agent
+## 19. 任务中心与异步队列
 
-### Purpose
+### 用途
 
-The quality review workflow checks answer quality, citation consistency,
-coverage gaps, and risk before content is approved or exported.
+任务中心跟踪文档导入、报告生成、多 Agent 工作流、长耗时操作和审批状态。
 
-### How To Use
+### 使用方法
 
-1. Ask for a review of an answer, report, slide, or source-backed section.
-2. Include review criteria: factuality, citation match, tone, completeness,
-   security, or compliance.
-3. Review findings and recommended actions.
-4. Revise content and rerun review when needed.
+1. 打开任务中心。
+2. 按 pending、running、completed、failed、awaiting approval 过滤。
+3. 查看进度、结果、错误和告警。
+4. 对失败任务重试或处理审批。
 
-### Best Use
+### 运行说明
 
-- Use before external sharing, executive review, compliance-sensitive output, or
-  any generated deck export.
+- 默认任务后端是 `memory`。
+- ARQ/Redis 已具备能力，但默认切换需要运维审批。
+- `TASK_BACKEND_SWITCH_READY=1` 后 readiness 才会报告
+  `eligible_for_arq_default`。
 
-## 18. Human Approval Gates
+## 20. MCP 连接器
 
-### Purpose
+### 用途
 
-Approval gates prevent sensitive or high-impact tasks from executing without a
-human decision.
+MCP 连接器把知识库、搜索、数据库、日历、通知等工具接入 Agent。
 
-### How To Use
+### 使用方法
 
-1. Open the Task Center or relevant approval panel.
-2. Review pending tasks and their risk level.
-3. Approve, reject, or batch-decide tasks.
-4. Update approval policy from the admin/settings path when governance rules
-   change.
-
-### Best Use
-
-- Gate destructive operations, connector access, high-risk MCP tools, external
-  delivery, and production-operation actions.
-
-## 19. Task Center And Async Queue
-
-### Purpose
-
-The task center tracks background work such as document ingestion, reports,
-multi-agent workflows, and long-running operations.
-
-### How To Use
-
-1. Open Task Center.
-2. Filter by status: pending, running, completed, failed, or awaiting approval.
-3. Open a task to inspect progress, result, warnings, or errors.
-4. Retry or approve tasks when the UI exposes that action.
-
-### Runtime Notes
-
-- The default task backend remains `memory` for release safety.
-- ARQ/Redis can be enabled for worker-backed execution after operational
-  approval.
-- Readiness reports `eligible_for_arq_default` only when
-  `TASK_BACKEND_SWITCH_READY=1` and the required ARQ evidence is accepted.
-
-## 20. MCP Connectors
-
-### Purpose
-
-MCP connectors expose controlled tools such as knowledge base, web search,
-database, calendar, and notification integrations to the agent runtime.
-
-### How To Use
-
-1. Open Settings -> MCP Approvals or Integrations.
-2. Review connector metadata, category, risk level, and health.
-3. Approve only connectors that are needed for the current workspace.
-4. Configure connector settings through the MCP config panel when required.
-5. Revoke unused or high-risk connectors.
-
-### Best Use
-
-- Keep the default connector set small.
-- Require approval for high-risk or external-action connectors.
+1. 打开设置 -> MCP 审批或 Integrations。
+2. 查看连接器类别、风险等级和健康状态。
+3. 只批准当前工作需要的连接器。
+4. 配置连接器参数。
+5. 撤销不再使用或风险过高的连接器。
 
 ## 21. Integrations
 
-### Purpose
+### 用途
 
-Integrator connectors manage external systems, credential rotation, probes,
-audit events, and scheduled sync-style operations.
+Integrations 管理外部系统连接、凭据轮换、探测、审计事件和定时触发。
 
-### How To Use
+### 使用方法
 
-1. Open Settings -> Integrations.
-2. Add or edit connector settings.
-3. Test or probe the connector before enabling operational use.
-4. Rotate credentials when secrets change.
-5. Review integration audit events.
-6. Configure and manually trigger schedules when needed.
+1. 打开设置 -> Integrations。
+2. 新增或编辑连接器。
+3. 先 test/probe，再正式启用。
+4. 凭据变化时执行 rotate。
+5. 查看集成审计事件。
+6. 使用 dry-run 测试定时任务。
 
-### Best Use
+## 22. 身份、组织与资源权限
 
-- Use dry-run schedule triggers before live execution.
-- Keep credentials scoped to the minimum required permission.
+### 用途
 
-## 22. Identity, Organizations, And Resource Access
+身份和资源权限提供轻量治理能力，包括组织、用户、成员关系和资源授权。
 
-### Purpose
+### 使用方法
 
-Identity and resource access features provide a lightweight governance layer for
-organizations, users, memberships, and resource grants.
+1. 在身份管理面板维护组织和用户。
+2. 设置成员关系。
+3. 在资源授权面板授予或撤销 workspace、session、artifact 等访问权限。
 
-### How To Use
+### 注意
 
-1. Open the identity/admin panel.
-2. Create or update organizations and users.
-3. Assign memberships.
-4. Open resource access settings.
-5. Grant or revoke access to workspaces, sessions, artifacts, or other governed
-   resources.
+这属于 RBAC-lite，不等同于完整多租户 SaaS 身份系统。
 
-### Best Use
+## 23. 安全审计
 
-- Use organization and grant records to prepare for enterprise-style operation.
-- Treat this as RBAC-lite, not a full SaaS tenant system.
+### 用途
 
-## 23. Security Audit
+安全审计记录敏感操作、管理变更、连接器动作、分享链接和清理行为。
 
-### Purpose
+### 使用方法
 
-Security audit records help operators understand sensitive actions, admin
-changes, connector activity, and cleanup status.
+1. 打开设置 -> 安全审计。
+2. 按时间、操作者、动作或资源筛选。
+3. 检查高风险事件。
+4. 按保留策略执行清理。
 
-### How To Use
+## 24. Trace 与可观测性
 
-1. Open Settings -> Security Audit.
-2. Filter audit events by time, actor, action, or resource when supported.
-3. Review high-risk actions.
-4. Run cleanup only according to retention policy.
+### 用途
 
-### Best Use
+Trace 面板用于查看运行事件、工作流轨迹、健康快照和故障诊断信息。
 
-- Review audit events after connector changes, approval decisions, share-link
-  creation, or admin operations.
-- Export or forward audit data to a SIEM in production environments when
-  required.
+### 使用方法
 
-## 24. Trace And Observability
+1. 打开设置 -> Trace 运维。
+2. 加载最近事件。
+3. 按来源、进程、级别或类型过滤。
+4. 清理本地 Trace 前确认不再需要排障。
 
-### Purpose
+## 25. 健康检查与部署运维
 
-Trace and observability panels expose runtime events, workflow traces, health
-snapshots, and operational diagnostics.
+### 用途
 
-### How To Use
+运维检查用于判断服务是否存活、是否 ready、是否满足发布或环境准入要求。
 
-1. Open Settings -> Trace Operations.
-2. Load recent traces.
-3. Filter by source, process, level, or trace type when available.
-4. Ingest trace events from supported runtime paths.
-5. Clear local traces only when they are no longer needed.
+### 使用方法
 
-### Best Use
+1. `/healthz` 用于 liveness。
+2. `/readyz` 用于 readiness。
+3. Docker Compose profile：
+   - `tasks`：Redis/ARQ worker；
+   - `storage`：Qdrant；
+   - `search`：本地 SearXNG。
+4. 发布前运行：
 
-- Use traces to debug failed retrieval, connector calls, workflow routing, and
-  background task behavior.
-- Use production exporters for long-term monitoring.
+```bash
+venv312\Scripts\python.exe deploy\run_final_validation.py --profile quick --parallel-workers 2
+venv312\Scripts\python.exe deploy\run_final_validation.py --profile full --include-frontend-build --parallel-workers 2
+venv312\Scripts\python.exe deploy\verify_ops_evidence.py --json --strict
+```
 
-## 25. Health, Readiness, And Deployment Operations
+## 26. 典型使用流程
 
-### Purpose
+### 内部知识问答
 
-Operations endpoints and validation scripts show whether the project is safe to
-run, ship, or promote to a target environment.
+1. 创建或进入工作区。
+2. 上传知识库文档。
+3. 等待导入任务完成。
+4. 开启知识库检索并提问。
+5. 检查引用来源。
+6. 保存回答或生成报告。
 
-### How To Use
+### 研究简报
 
-1. Use `/healthz` for liveness checks.
-2. Use `/readyz` for readiness checks.
-3. Use Docker Compose profiles for optional services:
-   - `tasks` for Redis/ARQ worker;
-   - `storage` for Qdrant;
-   - `search` for local SearXNG when explicitly enabled.
-4. Run validation before release:
-   - `venv312\Scripts\python.exe deploy\run_final_validation.py --profile quick --parallel-workers 2`
-   - `venv312\Scripts\python.exe deploy\run_final_validation.py --profile full --include-frontend-build --parallel-workers 2`
-   - `venv312\Scripts\python.exe deploy\verify_ops_evidence.py --json --strict`
+1. 创建专题会话。
+2. 开启 Web Research deep 模式。
+3. 提出带日期、范围和输出格式的问题。
+4. 查看来源、caveat 和冲突。
+5. 生成报告或 Deck。
 
-### Best Use
+### 多模型决策
 
-- Run quick validation during normal development.
-- Run full validation before handoff, release, or GitHub push.
-- Keep real-environment drills gated by explicit environment variables.
+1. 新增多个面板。
+2. 给每个面板配置不同模型。
+3. 发送同一问题。
+4. 比较回答质量、引用和风格。
+5. 选择最佳答案并反馈。
 
-## 26. Typical Workflows
+### PPT 交付
 
-### Internal Knowledge Q&A
+1. 在会话中积累上下文。
+2. 生成 Deck draft。
+3. 编辑页面和来源绑定。
+4. 单页重生成弱页面。
+5. 通过证据审查。
+6. 导出 PPTX/PDF。
 
-1. Create or activate a workspace.
-2. Upload documents to the knowledge base.
-3. Confirm ingestion task completion.
-4. Ask a question with knowledge base retrieval enabled.
-5. Review citations and source chunks.
-6. Save useful answers or generate a report.
+## 27. 常见问题
 
-### Research Brief
+### 模型无法回答
 
-1. Start a session for the topic.
-2. Enable web research and choose deep mode.
-3. Ask for a structured brief with dates and scope.
-4. Review citations, caveats, and contradictions.
-5. Archive or reuse research findings.
-6. Generate a report or deck.
+- 检查 `.env`。
+- 确认 Ollama 或云端 API 可访问。
+- 切换模型配置定位问题。
 
-### Multi-Model Decision
+### 检索不到内容
 
-1. Add two or more panels.
-2. Assign different model profiles.
-3. Ask the same question across panels.
-4. Compare quality, citations, and style.
-5. Choose the best answer and provide feedback.
+- 确认上传任务已完成。
+- 检查知识库健康和 chunk 数量。
+- 确认当前工作区或角色绑定了正确知识库。
+- 用检索测试复现问题。
 
-### PPT Delivery
+### Web Research 质量弱
 
-1. Build enough session context through chat, documents, or research.
-2. Generate a deck draft.
-3. Edit slides and source bindings.
-4. Regenerate weak pages.
-5. Review export gates.
-6. Export PPTX/PDF.
+- 确认 `TAVILY_API_KEY` 或搜索服务配置。
+- 提供日期、地区、行业、公司和来源要求。
+- 对重要任务使用 deep 模式。
 
-### Governed Operation
+### Deck 导出被拦截
 
-1. Configure approval policy.
-2. Trigger a task or connector action.
-3. Review pending approval.
-4. Approve or reject.
-5. Check audit and task result.
+- 打开 Deck 证据审查面板。
+- 修复缺引用或待审页面。
+- 人工确认后再导出。
 
-## 27. Troubleshooting
+### 任务一直 pending
 
-### Model Answers Fail
+- 检查任务中心状态。
+- 确认任务后端配置。
+- 如果使用 ARQ，确认 Redis 和 worker 正在运行。
 
-- Confirm `.env` model configuration.
-- Confirm local Ollama or cloud API endpoint is reachable.
-- Switch to another model profile to isolate provider issues.
+## 28. 当前交付边界
 
-### Retrieval Is Empty
+此前跟踪的 11 个剩余板块已经完成代码和产品收口。当前只剩一个非代码决策：
+是否接受归档 ARQ 证据，并批准默认任务后端从 `memory` 切到 `arq`。
 
-- Confirm document upload task completed.
-- Check knowledge base health and chunk count.
-- Verify the active workspace or role is bound to the intended knowledge base.
-- Run retrieval testing with the same query.
-
-### Web Research Is Weak
-
-- Confirm `TAVILY_API_KEY` or search provider configuration.
-- Add date range, geography, company names, and source expectations to the
-  prompt.
-- Use deep mode for source-heavy work.
-
-### Deck Export Is Blocked
-
-- Open the deck editor evidence panel.
-- Fix slides with missing citations or review actions.
-- Manually confirm only after human review.
-- Retry export after gates are cleared.
-
-### Tasks Stay Pending
-
-- Check Task Center status and warnings.
-- Confirm the selected backend is intended.
-- If using ARQ, confirm Redis and worker are running.
-- Review queue health and worker heartbeat.
-
-## 28. Current Delivery Boundary
-
-The project is currently code/product closed for the previously tracked 11
-remaining sections. The remaining non-code decision is whether operators approve
-the ARQ default-backend switch after accepting the archived evidence.
-
-For the current source-of-truth status, read `docs/DELIVERY_STATUS.md`.
+当前交付状态以 [DELIVERY_STATUS.md](./DELIVERY_STATUS.md) 为准。
 
