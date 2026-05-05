@@ -3,12 +3,8 @@ import time
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
-from backend.api_share_helpers import (
-    SQLiteShareLinkStore,
-    build_share_url,
-    decode_share_token,
-    encode_share_token,
-)
+from backend.helpers.share_helpers import build_share_url, decode_share_token, encode_share_token
+from backend.stores.share_link_store import SQLiteShareLinkStore
 
 
 def test_share_token_round_trip():

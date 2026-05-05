@@ -1,13 +1,14 @@
 import asyncio
 
-import backend.api_task_execution_helpers as api_task_execution_helpers
-from backend.api_task_execution_helpers import (
+import backend.helpers.task_execution_helpers as task_execution_helpers_module
+from backend.helpers.task_execution_helpers import (
     persist_web_research_task_placeholder,
     persist_web_research_task_result,
     run_web_research_task,
 )
 from backend.api_task_store import TaskRecord, TaskStatus
 from backend.chat_store import connect_sqlite
+from search_runtime.providers.bing_provider import BingSearchProvider
 from search_runtime.providers.duckduckgo_provider import DuckDuckGoSearchProvider
 from search_runtime import registry as search_registry
 from search_runtime import service as search_service
@@ -130,8 +131,8 @@ def test_registry_prefers_available_runtime_providers(monkeypatch):
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.delenv("SEARXNG_URL", raising=False)
 
-    assert search_registry.get_default_provider_sequence() == ["duckduckgo"]
-    assert search_registry.normalize_provider_name(None) == "duckduckgo"
+    assert search_registry.get_default_provider_sequence() == ["bing", "duckduckgo"]
+    assert search_registry.normalize_provider_name(None) == "bing"
 
 
 def test_registry_respects_explicit_provider_selection(monkeypatch):
@@ -139,8 +140,69 @@ def test_registry_respects_explicit_provider_selection(monkeypatch):
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-key")
 
     assert search_registry.normalize_provider_list(["tavily"]) == ["tavily"]
-    assert search_registry.normalize_provider_list("tavily") == ["tavily", "searxng", "duckduckgo"]
+    assert search_registry.normalize_provider_list("tavily") == ["tavily", "searxng", "bing", "duckduckgo"]
     assert search_registry.normalize_provider_list("searxng") == ["searxng"]
+
+
+def test_query_plan_strips_conversational_prefix_and_generates_candidates():
+    plan = search_service._build_query_plan(  # noqa: SLF001
+        "please help me find the latest OpenAI agents updates for enterprise users"
+    )
+
+    assert plan.effective_query.startswith("the latest OpenAI agents updates")
+    assert plan.original_query in plan.query_candidates
+    assert any("OpenAI agents updates enterprise users" in item for item in plan.query_candidates)
+
+
+def test_search_web_retries_with_simplified_query_variant(monkeypatch):
+    class VariantProvider:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        async def search(
+            self,
+            query,
+            *,
+            max_results=5,
+            search_depth="basic",
+            include_answer=True,
+            topic=None,
+            time_range=None,
+            include_raw_content=False,
+        ):
+            del max_results, search_depth, include_answer, topic, time_range, include_raw_content
+            self.calls.append(query)
+            if len(query.split()) > 6:
+                raise search_service.SearchProviderHTTPError(400, '{"detail":{"error":"Query is invalid."}}')
+            return SearchResponse(
+                query=query,
+                provider="fake",
+                results=[
+                    SearchDocument(
+                        doc_id="fake-1",
+                        provider="fake",
+                        title="OpenAI Agents Update",
+                        url="https://example.com/agents",
+                        snippet="Short successful query",
+                    )
+                ],
+            )
+
+    provider = VariantProvider()
+    monkeypatch.setattr(search_service, "get_search_provider", lambda provider_name=None: provider)
+
+    response = asyncio.run(
+        search_service.search_web(
+            "What are the latest OpenAI agents updates for enterprise users",
+            provider="tavily",
+        )
+    )
+
+    assert len(provider.calls) >= 2
+    assert response.results[0].title == "OpenAI Agents Update"
+    assert response.rewritten_query == provider.calls[-1]
+    assert response.rewritten_query != provider.calls[0]
+    assert any("simplified query variant" in item for item in response.provider_caveats)
 
 
 def test_registry_exposes_provider_capabilities():
@@ -228,6 +290,50 @@ def test_duckduckgo_provider_surfaces_clear_connectivity_error(monkeypatch):
         assert "198.18.0.125" in message
     else:
         raise AssertionError("expected SearchRuntimeError for DuckDuckGo connectivity failure")
+
+
+def test_bing_provider_parses_rss_results(monkeypatch):
+    rss_payload = """<?xml version="1.0" encoding="utf-8" ?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>OpenAI ships new agents platform</title>
+      <link>https://example.com/openai-agents</link>
+      <description>Platform update for enterprise agent workflows.</description>
+      <pubDate>Mon, 21 Apr 2026 08:30:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
+"""
+
+    class FakeResponse:
+        status_code = 200
+        text = rss_payload
+
+        def raise_for_status(self):
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get(self, *args, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr("search_runtime.providers.bing_provider.httpx.AsyncClient", FakeAsyncClient)
+
+    response = asyncio.run(BingSearchProvider().search("OpenAI agents latest", max_results=3))
+
+    assert response.provider == "bing"
+    assert len(response.results) == 1
+    assert response.results[0].title == "OpenAI ships new agents platform"
+    assert response.results[0].published_at == "2026-04-21"
 
 
 def test_search_web_does_not_fallback_when_provider_list_is_explicit(monkeypatch):
@@ -812,6 +918,54 @@ def test_run_deep_research_uses_generic_fallback_when_no_template_matches(monkey
     assert any("deterministic query templates" in item for item in result.caveats)
 
 
+def test_run_deep_research_normalizes_string_caveats(monkeypatch):
+    responses = iter(
+        [
+            '{"topic":"OpenAI agents market","facets":["market_structure"],"query_groups":[{"query":"OpenAI agents market structure","facet":"market_structure","bucket":"news","expected_source_tier":"secondary"}],"caveats":"Need fresh market data."}',
+            '{"sufficient": true, "follow_up_queries": [], "findings": [], "contradictions": [], "caveats": "Check date coverage."}',
+            '{"summary":"OpenAI agents market summary","highlights":["market is evolving"],"findings":[],"contradictions":[],"caveats":"Some figures need confirmation."}',
+        ]
+    )
+
+    class FakeLLM:
+        async def ainvoke(self, prompt: str):
+            return type("Resp", (), {"content": next(responses)})()
+
+    async def fake_search_web(query, **kwargs):
+        return SearchResponse(
+            query=query,
+            provider="searxng",
+            results=[
+                SearchDocument(
+                    doc_id=f"{query}-1",
+                    provider="searxng",
+                    title=f"{query} result",
+                    url=f"https://example.com/{query.replace(' ', '-')}",
+                    snippet=f"{query} snippet",
+                )
+            ],
+        )
+
+    monkeypatch.setattr("search_runtime.research_service.search_web", fake_search_web)
+
+    result = asyncio.run(
+        run_deep_research(
+            "OpenAI agents market",
+            llm=FakeLLM(),
+            providers=["searxng"],
+            max_rounds=1,
+            max_results_per_query=1,
+            max_fetch_pages=0,
+        )
+    )
+
+    assert "Need fresh market data." in result.caveats
+    assert "Check date coverage." in result.caveats
+    assert "Some figures need confirmation." in result.caveats
+    assert "N" not in result.caveats
+    assert "e" not in result.caveats
+
+
 def test_run_deep_research_strips_think_tags_from_llm_output(monkeypatch):
     responses = iter(
         [
@@ -900,7 +1054,7 @@ def test_run_web_research_task_builds_summary(monkeypatch):
             highlights=["key highlight"],
         )
 
-    monkeypatch.setattr(api_task_execution_helpers, "run_web_research", fake_run_web_research)
+    monkeypatch.setattr(task_execution_helpers_module, "run_web_research", fake_run_web_research)
 
     record = TaskRecord(
         task_id="task-research",
@@ -966,7 +1120,7 @@ def test_run_web_research_task_supports_deep_mode(monkeypatch):
             ],
         )
 
-    monkeypatch.setattr(api_task_execution_helpers, "run_deep_research", fake_run_deep_research)
+    monkeypatch.setattr(task_execution_helpers_module, "run_deep_research", fake_run_deep_research)
 
     llm_calls: list[tuple[str, str]] = []
 
@@ -1020,6 +1174,70 @@ def test_run_web_research_task_supports_deep_mode(monkeypatch):
     assert "deep research complete" in (record.result or "")
 
 
+def test_run_web_research_task_falls_back_to_quick_mode_when_deep_config_is_missing(monkeypatch):
+    async def fake_run_web_research(
+        query,
+        *,
+        max_results=8,
+        provider=None,
+        providers=None,
+        search_depth="advanced",
+        topic=None,
+        time_range=None,
+    ):
+        assert query == "OpenAI agents"
+        assert provider == "tavily"
+        return WebResearchResult(
+            query=query,
+            provider="tavily",
+            provider_summary="tavily",
+            summary="quick fallback complete",
+            sources=[
+                SearchDocument(
+                    doc_id="src-quick-1",
+                    provider="tavily",
+                    title="Quick Source",
+                    url="https://example.com/quick",
+                    snippet="Quick snippet",
+                )
+            ],
+            caveats=["provider note"],
+        )
+
+    monkeypatch.setattr(task_execution_helpers_module, "run_web_research", fake_run_web_research)
+
+    record = TaskRecord(
+        task_id="task-research-deep-fallback",
+        task_type="web_research",
+        status=TaskStatus.RUNNING,
+        params={
+            "query": "OpenAI agents",
+            "provider": "tavily",
+            "research_mode": "deep",
+        },
+        session_id="session-1",
+        created_at=1.0,
+        updated_at=1.0,
+        progress=0,
+    )
+    progress_updates: list[int] = []
+
+    async def set_progress(value: int) -> None:
+        progress_updates.append(value)
+
+    asyncio.run(run_web_research_task(record, set_progress=set_progress))
+
+    assert progress_updates == [25, 85]
+    assert record.params["research_requested_mode"] == "deep"
+    assert record.params["research_mode"] == "quick"
+    assert "未提供研究模型配置" in record.params["research_fallback_note"]
+    assert any(
+        "已自动回退到 quick 模式" in str(item)
+        for item in record.params.get("research_caveats", [])
+    )
+    assert "quick fallback complete" in (record.result or "")
+
+
 def test_run_web_research_task_deep_mode_allows_default_provider_selection(monkeypatch):
     async def fake_run_deep_research(
         query,
@@ -1051,7 +1269,7 @@ def test_run_web_research_task_deep_mode_allows_default_provider_selection(monke
             ],
         )
 
-    monkeypatch.setattr(api_task_execution_helpers, "run_deep_research", fake_run_deep_research)
+    monkeypatch.setattr(task_execution_helpers_module, "run_deep_research", fake_run_deep_research)
 
     def fake_create_llm(provider, model_name, base_url, api_key, temperature):
         return object()

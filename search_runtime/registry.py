@@ -4,6 +4,7 @@ import os
 from collections.abc import Sequence
 
 from .providers import (
+    BingSearchProvider,
     DuckDuckGoSearchProvider,
     SearchProvider,
     SearxngSearchProvider,
@@ -54,6 +55,7 @@ def _env_provider_sequence() -> list[str]:
         sequence.append("tavily")
     if str(os.getenv("SEARXNG_URL") or "").strip():
         sequence.append("searxng")
+    sequence.append("bing")
     sequence.append("duckduckgo")
     return sequence
 
@@ -62,6 +64,8 @@ def _default_provider_sequence() -> list[str]:
     sequence = _env_provider_sequence()
     if "searxng" not in sequence and str(os.getenv("SEARXNG_URL") or "").strip():
         sequence.append("searxng")
+    if "bing" not in sequence:
+        sequence.append("bing")
     if "duckduckgo" not in sequence:
         sequence.append("duckduckgo")
     return _dedupe_provider_sequence(sequence) or ["duckduckgo"]
@@ -81,6 +85,8 @@ def normalize_provider_list(providers: Sequence[str] | str | None = None) -> lis
         normalized = _dedupe_provider_sequence(parsed)
         if normalized == ["tavily"] and str(os.getenv("SEARXNG_URL") or "").strip():
             normalized.append("searxng")
+        if normalized and normalized[0] == "tavily" and "bing" not in normalized:
+            normalized.append("bing")
         if normalized and normalized[0] == "tavily":
             normalized.append("duckduckgo")
         return _dedupe_provider_sequence(normalized)
@@ -98,6 +104,8 @@ def get_search_provider(provider: str | None = None) -> SearchProvider:
         return TavilySearchProvider()
     if normalized == "searxng":
         return SearxngSearchProvider()
+    if normalized == "bing":
+        return BingSearchProvider()
     if normalized == "duckduckgo":
         return DuckDuckGoSearchProvider()
     raise UnsupportedSearchProviderError(f"不支持的搜索 provider: {normalized}")

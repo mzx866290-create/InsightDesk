@@ -1,19 +1,22 @@
 import asyncio
+import base64
 import json
 import sys
 import types
 import time
 from pathlib import Path
 
+import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage
 
 import backend.agent_core as agent_core
-import backend.api_config_store as api_config_store
 import backend.api_server as api_server
 import backend.chat_store as chat_store
 import backend.deck_service as deck_service
+import backend.stores.config_store as api_config_store
 
 
 def _history_cls_for_db(db_path: Path):
@@ -996,6 +999,82 @@ def test_promote_attachment_endpoint_enqueues_kb_task(monkeypatch, tmp_path):
         coro.close()
 
 
+def test_promote_attachment_endpoint_arq_persists_and_enqueues_external_task(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "chat_history.db"
+    test_history_cls = _history_cls_for_db(db_path)
+    task_store = api_server.SQLiteTaskStore(db_path=str(db_path))
+    enqueued_task_ids: list[str] = []
+    local_create_calls: list[object] = []
+
+    async def fake_enqueue_external_task(record):
+        enqueued_task_ids.append(record.task_id)
+        return "arq-job-id"
+
+    def fail_create_task(coro):
+        local_create_calls.append(coro)
+        if hasattr(coro, "close"):
+            coro.close()
+        raise AssertionError("attachment promotion should use the external task queue")
+
+    monkeypatch.setattr(chat_store, "SQLiteChatMessageHistory", test_history_cls)
+    monkeypatch.setattr(api_server, "_task_store", task_store)
+    monkeypatch.setattr(api_server, "_tasks", {})
+    monkeypatch.setattr(api_server, "TASK_BACKEND", "arq")
+    monkeypatch.setattr(api_server, "_effective_vector_store_path", lambda path=None: "vector_store_test")
+    monkeypatch.setattr(
+        api_server,
+        "enqueue_external_task",
+        fake_enqueue_external_task,
+        raising=False,
+    )
+    monkeypatch.setattr(asyncio, "create_task", fail_create_task)
+
+    history = test_history_cls("session-promote-attachment-arq")
+    history.add_user_message_once(
+        "Use this brief",
+        answer_group_id="grp-brief-arq",
+        files=[
+            {
+                "name": "brief.txt",
+                "media_type": "text/plain",
+                "data_url": "data:text/plain;base64,QnJpZWY=",
+                "size_bytes": 5,
+                "extracted_text": "Alpha section",
+            }
+        ],
+    )
+
+    app = FastAPI()
+    monkeypatch.setattr(api_server, "app", app)
+    api_server.register_deferred_routers(api_server)
+
+    client = TestClient(app)
+    attachments_response = client.get("/api/sessions/session-promote-attachment-arq/attachments")
+    attachment_id = attachments_response.json()["attachments"][0]["attachment_id"]
+
+    response = client.post(
+        f"/api/sessions/session-promote-attachment-arq/attachments/{attachment_id}/promote"
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["task_type"] == "promote_attachment_to_kb"
+    assert payload["session_id"] == "session-promote-attachment-arq"
+    assert payload["status"] == "pending"
+    assert payload["params"]["attachment_id"] == attachment_id
+    assert enqueued_task_ids == [payload["task_id"]]
+    assert local_create_calls == []
+
+    stored = task_store.get(payload["task_id"])
+    assert stored is not None
+    assert stored.task_type == "promote_attachment_to_kb"
+    assert stored.params["vector_store_path"] == "vector_store_test"
+
+
 def test_promote_attachment_endpoint_enqueues_selected_kb_task(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     db_path = tmp_path / "chat_history.db"
@@ -1317,6 +1396,31 @@ def test_sqlite_task_store_marks_incomplete_tasks_failed_after_restart(tmp_path)
     assert reloaded is not None
     assert reloaded.status == api_server.TaskStatus.FAILED
     assert reloaded.error == "服务已重启，任务未能继续执行，请重新发起。"
+
+
+def test_sqlite_task_store_keeps_waiting_approval_tasks_after_restart(tmp_path):
+    db_path = tmp_path / "chat_history.db"
+
+    store = api_server.SQLiteTaskStore(db_path=str(db_path))
+    store.save(
+        api_server.TaskRecord(
+            task_id="approval-task",
+            task_type="multi_agent_workflow",
+            status=api_server.TaskStatus.WAITING_APPROVAL,
+            params={"user_request": "Publish report"},
+            session_id="session-1",
+            created_at=1.0,
+            updated_at=1.0,
+            progress=80,
+        )
+    )
+
+    restarted_store = api_server.SQLiteTaskStore(db_path=str(db_path))
+    reloaded = restarted_store.get("approval-task")
+
+    assert reloaded is not None
+    assert reloaded.status == api_server.TaskStatus.WAITING_APPROVAL
+    assert reloaded.error is None
 
 
 def test_list_tasks_can_fall_back_to_persisted_store(monkeypatch, tmp_path):
@@ -1651,6 +1755,126 @@ def test_function_calling_wrapper_ainvoke_filters_think_tags(monkeypatch):
     )
 
     assert result["output"] == "最终答案"
+
+
+def test_function_calling_wrapper_refuses_grounded_answer_without_sources(monkeypatch):
+    class FakeLLM:
+        async def ainvoke(self, payload):
+            return types.SimpleNamespace(content="plain")
+
+    class FakeExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def ainvoke(self, payload):
+            return {
+                "output": "FC_MISSING_SOURCE_CONCLUSION",
+                "sources": [],
+                "intermediate_steps": [(None, "knowledge snippet without marker")],
+            }
+
+    async def fake_build_runtime_tools(*args, **kwargs):
+        return [types.SimpleNamespace(name="query_knowledge")]
+
+    monkeypatch.setattr(agent_core, "get_llm", lambda *args, **kwargs: FakeLLM())
+    monkeypatch.setattr(agent_core, "DocPipeline", lambda *args, **kwargs: object())
+    monkeypatch.setattr(agent_core, "build_runtime_tools", fake_build_runtime_tools)
+    monkeypatch.setattr(agent_core, "create_tool_calling_agent", lambda *args, **kwargs: object())
+    monkeypatch.setattr(agent_core, "AgentExecutor", FakeExecutor)
+
+    agent = asyncio.run(
+        agent_core.build_agent(
+            provider="cloud",
+            agent_mode="function_calling",
+            knowledge_base_enabled=True,
+            web_search_enabled=True,
+        )
+    )
+
+    result = asyncio.run(
+        agent.ainvoke(
+            {"input": "请查询知识库报销制度并总结"},
+            config={"configurable": {"session_id": "fc-missing-sources", "persist_history": False}},
+        )
+    )
+
+    assert result["output"].count("## ") == 5
+    assert "FC_MISSING_SOURCE_CONCLUSION" not in result["output"]
+    assert result["sources"] == []
+
+
+def test_plain_chat_wrapper_formats_attachment_grounding_sources(monkeypatch):
+    class FakeLLM:
+        async def ainvoke(self, payload):
+            return types.SimpleNamespace(content="ATTACHMENT_ONLY_ANSWER")
+
+    monkeypatch.setattr(agent_core, "get_llm", lambda *args, **kwargs: FakeLLM())
+    monkeypatch.setattr(agent_core, "DocPipeline", lambda *args, **kwargs: object())
+
+    agent = asyncio.run(
+        agent_core.build_agent(
+            provider="cloud",
+            agent_mode="plain_chat",
+            knowledge_base_enabled=False,
+            web_search_enabled=False,
+        )
+    )
+
+    result = asyncio.run(
+        agent.ainvoke(
+            {"input": "请基于我上传的文件总结"},
+            config={
+                "configurable": {
+                    "session_id": "plain-chat-attachment-format",
+                    "persist_history": False,
+                    "raw_files": [
+                        {
+                            "name": "brief.txt",
+                            "media_type": "text/plain",
+                            "data_url": "data:text/plain;base64,QnJpZWY=",
+                            "size_bytes": 5,
+                            "extracted_text": "Alpha evidence line",
+                        }
+                    ],
+                }
+            },
+        )
+    )
+
+    assert result["output"].count("## ") == 5
+    assert "brief.txt" in result["output"]
+    assert any(source.get("title") == "brief.txt" for source in result["sources"])
+
+
+def test_finalize_business_answer_output_renders_fixed_sections_for_sources():
+    output = agent_core._finalize_business_answer_output(
+        "Conclusion\nUse the latest policy.",
+        sources=[
+            {
+                "type": "doc",
+                "title": "policy_v2.md",
+                "snippet": "Use the latest policy",
+                "index": 1,
+                "version_label": "v2",
+                "lifecycle_status": "current",
+            }
+        ],
+        response_mode="knowledge_grounded",
+    )
+
+    assert output.count("## ") == 5
+    assert "policy_v2.md" in output
+
+
+def test_finalize_business_answer_output_refuses_grounded_answer_without_sources():
+    output = agent_core._finalize_business_answer_output(
+        "NO_SOURCE_CONCLUSION",
+        sources=[],
+        response_mode="knowledge_grounded",
+    )
+
+    assert output.count("## ") == 5
+    assert "NO_SOURCE_CONCLUSION" not in output
 
 
 def test_query_knowledge_uses_current_default_topk_and_fetch_k(monkeypatch):
@@ -2253,6 +2477,646 @@ def test_create_task_persists_record_before_background_execution(monkeypatch, tm
     assert payload["session_id"] == "session-xyz"
 
 
+def test_task_approval_endpoint_reschedules_waiting_workflow(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    task_store = api_server.SQLiteTaskStore(db_path=str(db_path))
+    record = api_server.TaskRecord(
+        task_id="task-approval-1",
+        task_type="multi_agent_workflow",
+        status=api_server.TaskStatus.WAITING_APPROVAL,
+        params={
+            "user_request": "Publish the report",
+            "workflow_status": "waiting_approval",
+            "approval_reason": "Report publication requires review",
+        },
+        session_id=None,
+        created_at=time.time(),
+        updated_at=time.time(),
+        progress=80,
+    )
+    task_store.save(record)
+    monkeypatch.setattr(api_server, "_task_store", task_store)
+    monkeypatch.setattr(api_server, "_tasks", {})
+
+    scheduled: list[object] = []
+
+    def fake_create_task(coro):
+        scheduled.append(coro)
+        return object()
+
+    monkeypatch.setattr(asyncio, "create_task", fake_create_task)
+
+    client = TestClient(api_server.app)
+    response = client.post(
+        "/api/tasks/task-approval-1/approval",
+        json={"decision": "approved", "reviewer": "owner-1", "comment": "go ahead"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "pending"
+    assert payload["params"]["approval_decision"] == "approved"
+    assert len(scheduled) == 1
+    for coro in scheduled:
+        coro.close()
+
+
+def test_task_approval_endpoint_dispatches_persisted_workflow_to_arq(
+    monkeypatch, tmp_path
+):
+    db_path = tmp_path / "chat_history.db"
+    task_store = api_server.SQLiteTaskStore(db_path=str(db_path))
+    task_id = "task-approval-arq"
+    task_store.save(
+        api_server.TaskRecord(
+            task_id=task_id,
+            task_type="multi_agent_workflow",
+            status=api_server.TaskStatus.WAITING_APPROVAL,
+            params={
+                "user_request": "Publish the report",
+                "workflow_status": "waiting_approval",
+                "approval_reason": "Report publication requires review",
+            },
+            session_id=None,
+            created_at=time.time(),
+            updated_at=time.time(),
+            progress=80,
+        )
+    )
+
+    enqueued_task_ids: list[str] = []
+    local_create_calls: list[object] = []
+
+    async def fake_enqueue_external_task(record):
+        enqueued_task_ids.append(record.task_id)
+        return "arq-job-id"
+
+    def fail_create_task(coro):
+        local_create_calls.append(coro)
+        if hasattr(coro, "close"):
+            coro.close()
+        raise AssertionError("approval resume should use the external task queue")
+
+    monkeypatch.setattr(api_server, "_task_store", task_store)
+    monkeypatch.setattr(api_server, "_tasks", {})
+    monkeypatch.setattr(api_server, "TASK_BACKEND", "arq")
+    monkeypatch.setattr(
+        api_server,
+        "enqueue_external_task",
+        fake_enqueue_external_task,
+        raising=False,
+    )
+    monkeypatch.setattr(asyncio, "create_task", fail_create_task)
+
+    app = FastAPI()
+    monkeypatch.setattr(api_server, "app", app)
+    api_server.register_deferred_routers(api_server)
+
+    client = TestClient(app)
+    response = client.post(
+        f"/api/tasks/{task_id}/approval",
+        json={"decision": "approved", "reviewer": "owner-1", "comment": "go ahead"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "pending"
+    assert payload["params"]["approval_decision"] == "approved"
+    assert payload["params"]["approval_reviewer"] == "owner-1"
+    assert payload["params"]["approval_comment"] == "go ahead"
+    assert enqueued_task_ids == [task_id]
+    assert local_create_calls == []
+
+    stored = task_store.get(task_id)
+    assert stored is not None
+    assert stored.status == api_server.TaskStatus.PENDING
+    assert stored.params["approval_decision"] == "approved"
+    assert stored.params["approval_reviewer"] == "owner-1"
+    assert stored.params["approval_comment"] == "go ahead"
+
+
+def test_batch_task_approval_endpoint_allows_partial_success(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    task_store = api_server.SQLiteTaskStore(db_path=str(db_path))
+    approved_task_id = "task-approval-batch-ok"
+    blocked_task_id = "task-approval-batch-not-waiting"
+    now = time.time()
+    task_store.save(
+        api_server.TaskRecord(
+            task_id=approved_task_id,
+            task_type="multi_agent_workflow",
+            status=api_server.TaskStatus.WAITING_APPROVAL,
+            params={
+                "user_request": "Publish the report",
+                "workflow_status": "waiting_approval",
+                "approval_reason": "Report publication requires review",
+            },
+            session_id=None,
+            created_at=now,
+            updated_at=now,
+            progress=80,
+        )
+    )
+    task_store.save(
+        api_server.TaskRecord(
+            task_id=blocked_task_id,
+            task_type="multi_agent_workflow",
+            status=api_server.TaskStatus.COMPLETED,
+            params={"user_request": "Already done"},
+            session_id=None,
+            created_at=now,
+            updated_at=now,
+            progress=100,
+        )
+    )
+    monkeypatch.setattr(api_server, "_task_store", task_store)
+    monkeypatch.setattr(api_server, "_tasks", {})
+
+    scheduled: list[object] = []
+
+    def fake_create_task(coro):
+        scheduled.append(coro)
+        return object()
+
+    monkeypatch.setattr(asyncio, "create_task", fake_create_task)
+
+    client = TestClient(api_server.app)
+    response = client.post(
+        "/api/tasks/approvals/batch",
+        json={
+            "task_ids": [approved_task_id, blocked_task_id, "missing-task"],
+            "decision": "approved",
+            "reviewer": "owner-1",
+            "comment": "go ahead",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 3
+    assert payload["succeeded"] == 1
+    assert payload["failed"] == 2
+    assert payload["results"][0]["task_id"] == approved_task_id
+    assert payload["results"][0]["ok"] is True
+    assert payload["results"][0]["task"]["status"] == "pending"
+    assert payload["results"][1]["task_id"] == blocked_task_id
+    assert payload["results"][1]["ok"] is False
+    assert payload["results"][1]["error"] == "Task is not waiting for approval."
+    assert payload["results"][2]["task_id"] == "missing-task"
+    assert payload["results"][2]["ok"] is False
+    assert payload["results"][2]["error"] == "Task was not found."
+    assert len(scheduled) == 1
+
+    stored = task_store.get(approved_task_id)
+    assert stored is not None
+    assert stored.status == api_server.TaskStatus.PENDING
+    assert stored.params["approval_decision"] == "approved"
+    assert stored.params["approval_reviewer"] == "owner-1"
+    assert stored.params["approval_comment"] == "go ahead"
+
+    blocked = task_store.get(blocked_task_id)
+    assert blocked is not None
+    assert "approval_decision" not in blocked.params
+
+    for coro in scheduled:
+        coro.close()
+
+
+def test_task_approval_policy_endpoint_defaults_and_normalizes_payload(
+    monkeypatch, tmp_path
+):
+    db_path = tmp_path / "chat_history.db"
+    store = api_config_store.SQLiteAppConfigStore(db_path=str(db_path))
+    monkeypatch.setattr(api_server, "_app_config_store", store)
+    monkeypatch.setattr(api_server, "_security_audit_events", [])
+
+    client = TestClient(api_server.app)
+    default_response = client.get("/api/tasks/approval-policy")
+
+    assert default_response.status_code == 200
+    assert default_response.json() == {
+        "enabled": False,
+        "required_task_types": [],
+        "high_risk_requires_approval": True,
+        "default_reviewer_role": "admin",
+        "updated_at": None,
+    }
+
+    update_response = client.put(
+        "/api/tasks/approval-policy",
+        json={
+            "enabled": True,
+            "required_task_types": [
+                "multi_agent_workflow",
+                "",
+                "web_research",
+                "multi_agent_workflow",
+                "  generate_report  ",
+            ],
+            "high_risk_requires_approval": False,
+            "default_reviewer_role": " ",
+        },
+    )
+
+    assert update_response.status_code == 200
+    payload = update_response.json()
+    assert payload["enabled"] is True
+    assert payload["required_task_types"] == [
+        "multi_agent_workflow",
+        "web_research",
+        "generate_report",
+    ]
+    assert payload["high_risk_requires_approval"] is False
+    assert payload["default_reviewer_role"] == "admin"
+    assert isinstance(payload["updated_at"], float)
+
+    persisted = json.loads(store.get_value("task_approval_policy"))
+    assert "updated_at" not in persisted
+    assert persisted == {
+        "enabled": True,
+        "required_task_types": [
+            "multi_agent_workflow",
+            "web_research",
+            "generate_report",
+        ],
+        "high_risk_requires_approval": False,
+        "default_reviewer_role": "admin",
+    }
+    assert any(
+        event["action"] == "task_approval_policy_update"
+        for event in api_server._security_audit_events
+    )
+
+    get_response = client.get("/api/tasks/approval-policy")
+    assert get_response.status_code == 200
+    assert get_response.json() == payload
+
+
+def test_task_approval_policy_endpoint_validates_limit_and_admin_role(
+    monkeypatch, tmp_path
+):
+    db_path = tmp_path / "chat_history.db"
+    store = api_config_store.SQLiteAppConfigStore(db_path=str(db_path))
+    monkeypatch.setattr(api_server, "_app_config_store", store)
+    monkeypatch.setattr(api_server, "ALLOW_REMOTE_CLIENTS", True)
+    monkeypatch.setattr(api_server, "_request_is_local", lambda request: False)
+    monkeypatch.delenv("ADMIN_API_TOKEN", raising=False)
+    monkeypatch.delenv("EDITOR_API_TOKEN", raising=False)
+    monkeypatch.delenv("VIEWER_API_TOKEN", raising=False)
+    monkeypatch.setenv(
+        "APP_AUTH_TOKENS_JSON",
+        json.dumps(
+            [
+                {
+                    "token": "viewer-token",
+                    "user_id": "viewer.user",
+                    "role": "viewer",
+                    "auth_source": "approval_policy_test",
+                },
+                {
+                    "token": "admin-token",
+                    "user_id": "admin.user",
+                    "role": "admin",
+                    "auth_source": "approval_policy_test",
+                },
+            ]
+        ),
+    )
+
+    client = TestClient(api_server.app)
+    viewer_response = client.get(
+        "/api/tasks/approval-policy",
+        headers={"X-API-Token": "viewer-token"},
+    )
+    assert viewer_response.status_code == 403
+    assert viewer_response.json()["detail"] == "Insufficient role: admin required."
+
+    too_many_response = client.put(
+        "/api/tasks/approval-policy",
+        headers={"X-API-Token": "admin-token"},
+        json={
+            "enabled": True,
+            "required_task_types": [f"task_{index}" for index in range(21)],
+            "high_risk_requires_approval": True,
+            "default_reviewer_role": "owner",
+        },
+    )
+    assert too_many_response.status_code == 400
+    assert too_many_response.json()["detail"] == (
+        "required_task_types must contain at most 20 items."
+    )
+
+
+def test_create_multi_agent_workflow_task_endpoint_validates_and_persists(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    task_store = api_server.SQLiteTaskStore(db_path=str(db_path))
+    monkeypatch.setattr(api_server, "_task_store", task_store)
+    monkeypatch.setattr(api_server, "_tasks", {})
+
+    scheduled: list[object] = []
+
+    def fake_create_task(coro):
+        scheduled.append(coro)
+        return object()
+
+    monkeypatch.setattr(asyncio, "create_task", fake_create_task)
+
+    client = TestClient(api_server.app)
+
+    invalid_response = client.post(
+        "/api/tasks/multi-agent-workflow",
+        json={"user_request": "   "},
+    )
+    assert invalid_response.status_code == 400
+
+    response = client.post(
+        "/api/tasks/multi-agent-workflow",
+        json={
+            "user_request": "Research the AI slide market",
+            "context": {"workspace_id": "workspace-1"},
+            "plan": [
+                {
+                    "id": "step-1",
+                    "agent": "research",
+                    "task_type": "research",
+                    "description": "Research the AI slide market",
+                }
+            ],
+            "providers": ["tavily"],
+            "max_rounds": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["task_type"] == "multi_agent_workflow"
+    assert payload["params"]["user_request"] == "Research the AI slide market"
+    assert payload["params"]["context"]["workspace_id"] == "workspace-1"
+    assert payload["params"]["plan"][0]["agent"] == "research"
+    assert payload["params"]["providers"] == ["tavily"]
+    assert len(scheduled) == 1
+
+    stored = task_store.get(payload["task_id"])
+    assert stored is not None
+    assert stored.task_type == "multi_agent_workflow"
+    assert stored.params["user_request"] == "Research the AI slide market"
+
+    for coro in scheduled:
+        coro.close()
+
+
+def test_create_multi_agent_workflow_task_injects_enabled_approval_policy(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    task_store = api_server.SQLiteTaskStore(db_path=str(db_path))
+    config_store = api_config_store.SQLiteAppConfigStore(db_path=str(db_path))
+    monkeypatch.setattr(api_server, "_task_store", task_store)
+    monkeypatch.setattr(api_server, "_app_config_store", config_store)
+    monkeypatch.setattr(api_server, "_tasks", {})
+    config_store.set(
+        "task_approval_policy",
+        json.dumps(
+            {
+                "enabled": True,
+                "required_task_types": ["writing"],
+                "high_risk_requires_approval": True,
+                "default_reviewer_role": "owner",
+            }
+        ),
+    )
+
+    scheduled: list[object] = []
+
+    def fake_create_task(coro):
+        scheduled.append(coro)
+        return object()
+
+    monkeypatch.setattr(asyncio, "create_task", fake_create_task)
+
+    client = TestClient(api_server.app)
+    response = client.post(
+        "/api/tasks/multi-agent-workflow",
+        json={"user_request": "write a launch report"},
+    )
+
+    assert response.status_code == 200
+    context = response.json()["params"]["context"]
+    assert context["task_approval_policy"]["enabled"] is True
+    assert context["task_approval_policy"]["required_task_types"] == ["writing"]
+    assert context["task_approval_policy"]["default_reviewer_role"] == "owner"
+
+    for coro in scheduled:
+        coro.close()
+
+
+def test_create_multi_agent_workflow_task_extracts_data_files(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    task_store = api_server.SQLiteTaskStore(db_path=str(db_path))
+    monkeypatch.setattr(api_server, "_task_store", task_store)
+    monkeypatch.setattr(api_server, "_tasks", {})
+
+    scheduled: list[object] = []
+
+    def fake_create_task(coro):
+        scheduled.append(coro)
+        return object()
+
+    monkeypatch.setattr(asyncio, "create_task", fake_create_task)
+
+    client = TestClient(api_server.app)
+    response = client.post(
+        "/api/tasks/multi-agent-workflow",
+        json={
+            "user_request": "Show top 2 regions by revenue",
+            "data_files": [
+                {
+                    "name": "revenue.csv",
+                    "media_type": "text/csv",
+                    "data_url": "data:text/csv,region,revenue%0ANorth,120%0ASouth,180%0ANorth,80%0A",
+                    "size_bytes": 43,
+                }
+            ],
+            "plan": [
+                {
+                    "id": "step-1",
+                    "agent": "writing",
+                    "task_type": "writing",
+                    "description": "Summarize the data",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["params"]["context"]["rows"][0] == {"region": "North", "revenue": "120"}
+    assert payload["params"]["context"]["data_source"] == "revenue.csv"
+    assert payload["params"]["data_files"] == [{"name": "revenue.csv", "row_count": 3}]
+    assert [step["agent"] for step in payload["params"]["plan"]] == ["data_analysis", "writing"]
+    assert payload["params"]["plan"][0]["metadata"]["planner"] == "workflow_data_files"
+
+    for coro in scheduled:
+        coro.close()
+
+
+def test_create_multi_agent_workflow_task_extracts_excel_data_files(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    task_store = api_server.SQLiteTaskStore(db_path=str(db_path))
+    monkeypatch.setattr(api_server, "_task_store", task_store)
+    monkeypatch.setattr(api_server, "_tasks", {})
+
+    scheduled: list[object] = []
+
+    def fake_create_task(coro):
+        scheduled.append(coro)
+        return object()
+
+    monkeypatch.setattr(asyncio, "create_task", fake_create_task)
+
+    pd = pytest.importorskip("pandas")
+
+    def fake_read_excel(source, nrows=500):
+        assert hasattr(source, "read")
+        assert nrows == 500
+        return pd.DataFrame(
+            [
+                {"region": "North", "revenue": 120},
+                {"region": "South", "revenue": 180},
+            ]
+        )
+
+    monkeypatch.setattr(pd, "read_excel", fake_read_excel)
+    encoded = base64.b64encode(b"fake-xlsx-payload").decode("ascii")
+
+    client = TestClient(api_server.app)
+    response = client.post(
+        "/api/tasks/multi-agent-workflow",
+        json={
+            "user_request": "Show top regions by revenue",
+            "data_files": [
+                {
+                    "name": "revenue.xlsx",
+                    "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "data_url": f"data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{encoded}",
+                    "size_bytes": 17,
+                }
+            ],
+            "plan": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert payload["params"]["context"]["rows"] == [
+        {"region": "North", "revenue": 120},
+        {"region": "South", "revenue": 180},
+    ]
+    assert payload["params"]["data_files"] == [{"name": "revenue.xlsx", "row_count": 2}]
+    assert [step["agent"] for step in payload["params"]["plan"]] == ["data_analysis"]
+
+    for coro in scheduled:
+        coro.close()
+
+
+def test_create_multi_agent_workflow_task_samples_large_data_files(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    task_store = api_server.SQLiteTaskStore(db_path=str(db_path))
+    monkeypatch.setattr(api_server, "_task_store", task_store)
+    monkeypatch.setattr(api_server, "_tasks", {})
+
+    scheduled: list[object] = []
+
+    def fake_create_task(coro):
+        scheduled.append(coro)
+        return object()
+
+    monkeypatch.setattr(asyncio, "create_task", fake_create_task)
+
+    rows = ["region,revenue"]
+    rows.extend(f"R{index},{index}" for index in range(600))
+    csv_text = "\n".join(rows)
+
+    client = TestClient(api_server.app)
+    response = client.post(
+        "/api/tasks/multi-agent-workflow",
+        json={
+            "user_request": "Show top regions by revenue",
+            "data_files": [
+                {
+                    "name": "large.csv",
+                    "media_type": "text/csv",
+                    "data_url": f"data:text/csv,{csv_text}",
+                    "size_bytes": len(csv_text),
+                }
+            ],
+            "plan": [],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    context = payload["params"]["context"]
+
+    assert len(context["rows"]) == 500
+    assert context["rows"][0] == {"region": "R0", "revenue": "0"}
+    assert context["rows"][-1] == {"region": "R499", "revenue": "499"}
+    assert payload["params"]["data_files"] == [
+        {
+            "name": "large.csv",
+            "row_count": 600,
+            "sampled": True,
+            "sampled_row_count": 500,
+            "sample_limit": 500,
+        }
+    ]
+    assert context["data_sampling"] == payload["params"]["data_files"][0]
+
+    for coro in scheduled:
+        coro.close()
+
+
+def test_multi_agent_workflow_task_can_pause_for_approval(monkeypatch):
+    record = api_server.TaskRecord(
+        task_id="task-workflow-pause",
+        task_type="multi_agent_workflow",
+        status=api_server.TaskStatus.PENDING,
+        params={"user_request": "Publish the report"},
+        session_id=None,
+        created_at=time.time(),
+        updated_at=time.time(),
+        progress=0,
+    )
+    persisted_statuses: list[tuple[str, int]] = []
+
+    async def fake_run_multi_agent_workflow_task(*args, **kwargs):
+        await kwargs["set_progress"](20)
+        await kwargs["set_progress"](80)
+        record.params["workflow_status"] = "waiting_approval"
+        record.params["approval_reason"] = "Report publication requires review"
+        record.result = "Workflow is waiting for human approval: Report publication requires review"
+
+    async def fake_drop_suppressed_task(_record):
+        return False
+
+    monkeypatch.setattr(
+        api_server,
+        "_persist_task_record",
+        lambda current: persisted_statuses.append((current.status.value, current.progress)),
+    )
+    monkeypatch.setattr(api_server, "_prune_persisted_tasks", lambda: None)
+    monkeypatch.setattr(api_server, "_prune_task_records_locked", lambda now=None: None)
+    monkeypatch.setattr(api_server, "_drop_suppressed_task", fake_drop_suppressed_task)
+    monkeypatch.setattr(api_server, "run_multi_agent_workflow_task", fake_run_multi_agent_workflow_task)
+
+    asyncio.run(api_server._run_task(record))
+
+    assert record.status == api_server.TaskStatus.WAITING_APPROVAL
+    assert record.progress == 80
+    assert ("running", 10) in persisted_statuses
+    assert ("waiting_approval", 80) in persisted_statuses
+
+
 def test_deep_research_task_waits_for_concurrency_slot(monkeypatch):
     record = api_server.TaskRecord(
         task_id="task-deep-queued",
@@ -2442,6 +3306,46 @@ def test_langgraph_wrapper_merges_attachment_sources(monkeypatch):
     )
     assert file_source["answer_group_id"] == "grp-attachment"
     assert "Alpha section" in file_source["snippet"]
+    assert result["output"].count("## ") == 5
+
+
+def test_langgraph_wrapper_refuses_grounded_answer_without_sources(monkeypatch):
+    monkeypatch.setattr(agent_core, "get_llm", lambda *args, **kwargs: object())
+    monkeypatch.setattr(agent_core, "DocPipeline", lambda *args, **kwargs: object())
+
+    async def fake_build_langgraph_agent(*args, **kwargs):
+        class FakeApp:
+            async def ainvoke(self, state, config=None):
+                return {
+                    "output": "MISSING_SOURCE_CONCLUSION",
+                    "sources": [],
+                    "tool_choice": "1",
+                    "tool_result": "knowledge tool returned text but source parsing failed",
+                }
+
+        return FakeApp()
+
+    monkeypatch.setattr(agent_core, "build_langgraph_agent", fake_build_langgraph_agent)
+
+    agent = asyncio.run(
+        agent_core.build_agent(
+            provider="local",
+            agent_mode="langgraph",
+            knowledge_base_enabled=True,
+            web_search_enabled=False,
+        )
+    )
+
+    result = asyncio.run(
+        agent.ainvoke(
+            {"input": "请总结报销制度"},
+            config={"configurable": {"session_id": "langgraph-missing-sources", "persist_history": False}},
+        )
+    )
+
+    assert result["output"].count("## ") == 5
+    assert "MISSING_SOURCE_CONCLUSION" not in result["output"]
+    assert result["sources"] == []
 
 
 def test_langgraph_wrapper_persists_configured_task_metadata(monkeypatch, tmp_path):
@@ -2757,7 +3661,7 @@ def test_langgraph_wrapper_streams_native_tokens_without_duplicate_chunking(monk
     items = asyncio.run(collect_items())
     text_items = [item for item in items if isinstance(item, str)]
 
-    assert text_items == ["原生", "流式"]
+    assert text_items == ["原生流式"]
     assert any(
         isinstance(item, dict)
         and item.get("type") == "workflow_state"

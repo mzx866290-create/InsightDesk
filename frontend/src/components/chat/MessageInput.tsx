@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Send, Globe, Square, Database, ImagePlus, Paperclip, Sparkles, Loader2, X } from 'lucide-react'
 import { useChatStore } from '../../stores/chatStore'
+import type { ResearchMode } from '../../stores/chatStore'
 import {
   streamChat,
   createSession as apiCreateSession,
@@ -8,7 +9,7 @@ import {
   truncateSessionMessagesFromAnswerGroup,
 } from '../../api/client'
 import type { ChatFile, ChatImage, SSEChunk, SourceItem, SystemPrompt } from '../../api/client'
-import { createAndTrackTask, useTaskStore } from '../../stores/taskStore'
+import { createAndTrackTask, createAndTrackWorkflowTask, useTaskStore } from '../../stores/taskStore'
 import type { ActiveStreamControl } from './streamControl'
 import { parseWorkflowEvent } from '../../api/workflowClient'
 import { useWorkflowStore } from '../../stores/workflowStore'
@@ -35,9 +36,13 @@ const SUPPORTED_ATTACHMENT_EXTENSIONS = new Set([
   '.txt',
   '.md',
   '.csv',
+  '.tsv',
+  '.json',
   '.xls',
   '.xlsx',
 ])
+
+const WORKFLOW_DATA_FILE_EXTENSIONS = new Set(['.csv', '.tsv', '.json', '.xls', '.xlsx'])
 
 const MAX_ATTACHMENT_FILE_SIZE_BYTES = 5 * 1024 * 1024
 const MAX_ATTACHMENT_COUNT = 6
@@ -53,6 +58,13 @@ interface ComposerSuggestion {
 interface TriggerRange {
   start: number
   end: number
+}
+
+interface ResearchRequestConfig {
+  searchDepth: 'basic' | 'advanced'
+  maxResults: number
+  maxRounds: number
+  maxResultsPerQuery: number
 }
 
 const SLASH_TEMPLATES: ComposerSuggestion[] = [
@@ -121,6 +133,104 @@ const validateAttachmentFile = (file: File): string | null => {
   }
   return null
 }
+
+const isWorkflowDataFile = (file: ChatFile): boolean => {
+  const extension = getFileExtension(file.name)
+  if (WORKFLOW_DATA_FILE_EXTENSIONS.has(extension)) return true
+
+  const mediaType = file.media_type.toLowerCase()
+  return (
+    mediaType === 'text/csv' ||
+    mediaType === 'text/tab-separated-values' ||
+    mediaType === 'application/json' ||
+    mediaType === 'application/vnd.ms-excel' ||
+    mediaType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+    mediaType.endsWith('+json')
+  )
+}
+
+const buildDataWorkflowPlan = (query: string): Array<Record<string, unknown>> => [
+  {
+    id: 'step-1',
+    agent: 'data_analysis',
+    task_type: 'data_analysis',
+    description: query,
+    input: query,
+    status: 'pending',
+    requires_approval: false,
+    metadata: {
+      source: 'composer_data_files',
+    },
+  },
+  {
+    id: 'step-2',
+    agent: 'writing',
+    task_type: 'writing',
+    description: `Summarize the data analysis for: ${query}`,
+    input: query,
+    status: 'pending',
+    requires_approval: false,
+    metadata: {
+      output: 'data_brief',
+    },
+  },
+  {
+    id: 'step-3',
+    agent: 'review',
+    task_type: 'review',
+    description: `Review data quality and interpretation risks for: ${query}`,
+    input: query,
+    status: 'pending',
+    requires_approval: false,
+    metadata: {
+      focus: 'data_quality_and_risk',
+    },
+  },
+]
+
+const buildDeepResearchWorkflowPlan = (
+  query: string,
+  requestConfig: ResearchRequestConfig,
+): Array<Record<string, unknown>> => [
+  {
+    id: 'step-1',
+    agent: 'research',
+    task_type: 'research',
+    description: query,
+    input: query,
+    status: 'pending',
+    requires_approval: false,
+    metadata: {
+      research_mode: 'deep',
+      max_rounds: requestConfig.maxRounds,
+      max_results_per_query: requestConfig.maxResultsPerQuery,
+    },
+  },
+  {
+    id: 'step-2',
+    agent: 'writing',
+    task_type: 'writing',
+    description: `Draft a concise research brief for: ${query}`,
+    input: query,
+    status: 'pending',
+    requires_approval: false,
+    metadata: {
+      output: 'research_brief',
+    },
+  },
+  {
+    id: 'step-3',
+    agent: 'review',
+    task_type: 'review',
+    description: `Review evidence quality and risks for: ${query}`,
+    input: query,
+    status: 'pending',
+    requires_approval: false,
+    metadata: {
+      focus: 'evidence_and_risk',
+    },
+  },
+]
 
 const filesToChatImages = async (files: File[]): Promise<ChatImage[]> =>
   Promise.all(
@@ -201,6 +311,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     setWebSearchEnabled,
     knowledgeBaseEnabled,
     setKnowledgeBaseEnabled,
+    researchMode,
+    setResearchMode,
     enabledMcpServers,
     addUserMessage,
     appendChunk,
@@ -221,6 +333,22 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     adjustWorkspaceSessionCount,
   } = useChatStore()
   const tasksMap = useTaskStore((state) => state.tasks)
+
+  const researchModeLabel = researchMode === 'quick' ? 'Quick' : 'Deep'
+  const researchRequestConfig: Record<ResearchMode, ResearchRequestConfig> = {
+    quick: {
+      searchDepth: 'basic',
+      maxResults: 5,
+      maxRounds: 1,
+      maxResultsPerQuery: 2,
+    },
+    deep: {
+      searchDepth: 'advanced',
+      maxResults: 8,
+      maxRounds: 2,
+      maxResultsPerQuery: 4,
+    },
+  }
 
   const [input, setInput] = useState('')
   const [images, setImages] = useState<ChatImage[]>([])
@@ -635,12 +763,16 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
   const handleStartResearch = async () => {
     const query = input.trim()
+    const requestConfig = researchRequestConfig[researchMode]
     const pendingImages = [...images]
     const pendingFiles = [...files]
+    const pendingDataFiles = pendingFiles.filter(isWorkflowDataFile)
+    const hasWorkflowDataFiles = pendingDataFiles.length > 0 && pendingDataFiles.length === pendingFiles.length
+    const shouldUseWorkflow = researchMode === 'deep' || hasWorkflowDataFiles
     if (
       query.length === 0 ||
       pendingImages.length > 0 ||
-      pendingFiles.length > 0 ||
+      (pendingFiles.length > 0 && !hasWorkflowDataFiles) ||
       pendingEditAnswerGroupId ||
       isLoading ||
       isResearchStarting ||
@@ -661,27 +793,49 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     const answerGroupId = buildAnswerGroupId()
     const primaryPanelId = panels[0]?.id
     const assistantMessageId = `assistant-research-${Date.now()}`
-    const researchModelId = 'web_research'
+    const researchModelId = shouldUseWorkflow ? 'multi_agent_workflow' : 'web_research'
 
     try {
-      const task = await createAndTrackTask(
-        'web_research',
-        {
-          query,
-          research_mode: 'deep',
-          search_depth: 'advanced',
-          max_results: 8,
-          max_results_per_query: 4,
-          max_rounds: 2,
-          panel_id: primaryPanelId ?? '',
-          answer_group_id: answerGroupId,
-          model_id: researchModelId,
-          panel_config: panels[0]?.modelConfig,
-        },
-        sessionId,
-      )
+      const task =
+        shouldUseWorkflow
+          ? await createAndTrackWorkflowTask({
+              user_request: query,
+              session_id: sessionId,
+              panel_id: primaryPanelId ?? '',
+              answer_group_id: answerGroupId,
+              model_id: researchModelId,
+              panel_config: panels[0]?.modelConfig,
+              research_mode: 'deep',
+              max_rounds: requestConfig.maxRounds,
+              max_results_per_query: requestConfig.maxResultsPerQuery,
+              context: hasWorkflowDataFiles
+                ? {
+                    workflow_origin: 'composer_data_files',
+                    data_file_count: pendingDataFiles.length,
+                  }
+                : undefined,
+              data_files: hasWorkflowDataFiles ? pendingDataFiles : undefined,
+              plan: hasWorkflowDataFiles
+                ? buildDataWorkflowPlan(query)
+                : buildDeepResearchWorkflowPlan(query, requestConfig),
+            })
+          : await createAndTrackTask(
+              'web_research',
+              {
+                query,
+                research_mode: researchMode,
+                search_depth: requestConfig.searchDepth,
+                max_results: requestConfig.maxResults,
+                max_results_per_query: requestConfig.maxResultsPerQuery,
+                max_rounds: requestConfig.maxRounds,
+                panel_id: primaryPanelId ?? '',
+                answer_group_id: answerGroupId,
+                model_id: researchModelId,
+              },
+              sessionId,
+            )
 
-      addUserMessage(query, [], [], answerGroupId)
+      addUserMessage(query, [], hasWorkflowDataFiles ? pendingDataFiles : [], answerGroupId)
 
       if (primaryPanelId) {
         appendChunk(primaryPanelId, assistantMessageId, '', {
@@ -691,9 +845,17 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         setAssistantMessage(
           primaryPanelId,
           assistantMessageId,
-          '已发起联网研究任务，系统会整理实时网页来源并在任务完成后显示摘要。',
+          `已发起联网研究任务（${researchModeLabel}），系统会整理实时网页来源并在任务完成后显示摘要。`,
           false,
         )
+        if (hasWorkflowDataFiles) {
+          setAssistantMessage(
+            primaryPanelId,
+            assistantMessageId,
+            `已发起数据分析工作流（${pendingDataFiles.length} 个文件），系统会先解析表格并生成摘要、图表和审核结果。`,
+            false,
+          )
+        }
         setTaskId(primaryPanelId, assistantMessageId, task.task_id, task.task_type)
       }
 
@@ -980,19 +1142,28 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const composerLocked = isInteractionLocked && !isLoading
   const composerBusy = isLoading || isResearchStarting
   const canSend = input.trim().length > 0 || images.length > 0 || files.length > 0
+  const composerDataFiles = files.filter(isWorkflowDataFile)
+  const hasOnlyComposerDataFiles =
+    composerDataFiles.length > 0 && composerDataFiles.length === files.length
   const canResearch =
     input.trim().length > 0 &&
     images.length === 0 &&
-    files.length === 0 &&
+    (files.length === 0 || hasOnlyComposerDataFiles) &&
     !pendingEditAnswerGroupId &&
     !composerBusy &&
     !composerLocked
+  const researchButtonLabel = hasOnlyComposerDataFiles ? '分析' : '研究'
   const researchButtonTitle =
     pendingEditAnswerGroupId
       ? '编辑重发模式下暂不支持联网研究'
       : images.length > 0 || files.length > 0
         ? '联网研究暂不支持图片或文件附件'
-        : '发起联网研究任务'
+        : researchMode === 'deep'
+          ? '以 Deep 模式发起联网研究；若研究模型不可用会自动回退 Quick'
+          : '以 Quick 模式发起联网研究；更快返回网页摘要与来源'
+  const effectiveResearchButtonTitle = hasOnlyComposerDataFiles
+    ? '用多 Agent 数据分析工作流处理 CSV/TSV/JSON/Excel 文件'
+    : researchButtonTitle
 
   return (
     <div
@@ -1146,7 +1317,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             <input
               ref={attachmentInputRef}
               type="file"
-              accept=".pdf,.doc,.docx,.txt,.md,.csv,.xls,.xlsx"
+              accept=".pdf,.doc,.docx,.txt,.md,.csv,.tsv,.json,.xls,.xlsx"
               multiple
               data-testid="composer-attachment-input"
               className="hidden"
@@ -1156,6 +1327,39 @@ export const MessageInput: React.FC<MessageInputProps> = ({
             />
 
             <div className="flex flex-wrap items-center justify-end gap-2 sm:pb-0.5">
+              <div
+                className="inline-flex items-center rounded-lg border border-bg-border bg-bg-primary/50 p-0.5"
+                title="研究模式"
+              >
+                {(['quick', 'deep'] as const).map((mode) => {
+                  const active = researchMode === mode
+                  const label = mode === 'quick' ? 'Quick' : 'Deep'
+                  return (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setResearchMode(mode)}
+                      disabled={composerBusy || composerLocked}
+                      data-testid={`composer-research-mode-${mode}`}
+                      className={`rounded-md px-2 py-1 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                        active
+                          ? mode === 'deep'
+                            ? 'bg-amber-400/20 text-amber-200'
+                            : 'bg-accent-blue/20 text-accent-blue'
+                          : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+                      }`}
+                      title={
+                        mode === 'deep'
+                          ? '深度研究：多轮检索与综合，成本更高'
+                          : '快速研究：更快返回摘要与主要来源'
+                      }
+                    >
+                      {label}
+                    </button>
+                  )
+                })}
+              </div>
+
               <button
                 type="button"
                 onClick={() => setWebSearchEnabled(!webSearchEnabled)}
@@ -1216,17 +1420,19 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 data-testid="composer-research"
                 className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                   canResearch
-                    ? 'bg-amber-400/15 text-amber-300 hover:bg-amber-400/20'
+                    ? researchMode === 'deep' || hasOnlyComposerDataFiles
+                      ? 'bg-amber-400/15 text-amber-300 hover:bg-amber-400/20'
+                      : 'bg-accent-blue/15 text-accent-blue hover:bg-accent-blue/20'
                     : 'text-text-secondary'
                 }`}
-                title={researchButtonTitle}
+                title={effectiveResearchButtonTitle}
               >
                 {isResearchStarting ? (
                   <Loader2 size={13} className="animate-spin" />
                 ) : (
                   <Sparkles size={13} />
                 )}
-                <span>研究</span>
+                <span>{researchButtonLabel}</span>
               </button>
 
               {activeStopHandler ? (

@@ -18,13 +18,14 @@ export default defineConfig({
   },
   build: {
     outDir: 'dist',
+    emptyOutDir: true,
     sourcemap: false,
     chunkSizeWarningLimit: 1000,
     rollupOptions: {
       output: {
         manualChunks: {
           'react-vendor': ['react', 'react-dom'],
-          'markdown-vendor': ['react-markdown', 'remark-gfm', 'react-syntax-highlighter'],
+          'markdown-vendor': ['react-markdown', 'remark-gfm'],
           'charts-vendor': ['echarts', 'echarts-for-react'],
         },
       },

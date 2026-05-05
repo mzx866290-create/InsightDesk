@@ -1,0 +1,13 @@
+InsightDesk has been installed.
+
+API service:
+  {{ include "insightdesk.fullname" . }}-api:{{ .Values.service.port }}
+
+Probe paths:
+  /healthz
+  /readyz
+
+Optional production hardening:
+  worker.enabled=true
+  autoscaling.enabled=true
+  podDisruptionBudget.enabled=true

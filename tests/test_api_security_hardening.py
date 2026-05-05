@@ -7,7 +7,9 @@ from fastapi.testclient import TestClient
 
 import backend.api_server as api_server
 from backend.api_security_audit_store import SQLiteSecurityAuditStore
-from backend.api_share_helpers import encode_share_token
+from backend.stores.config_store import SQLiteAppConfigStore
+from backend.stores.sso_session_store import SQLiteSsoSessionStore
+from backend.helpers.share_helpers import encode_share_token
 import backend.chat_store as chat_store
 
 
@@ -338,6 +340,412 @@ def test_admin_token_can_access_auth_token_catalog(monkeypatch):
     assert "admin-token" not in serialized_payload
 
 
+def test_auth_sso_config_reports_oidc_readiness_without_secrets(monkeypatch):
+    _set_remote_mode(monkeypatch)
+    _set_auth_catalog(monkeypatch)
+    monkeypatch.setattr(api_server, "SSO_PROVIDER", "oidc")
+    monkeypatch.setattr(api_server, "OIDC_ISSUER_URL", "https://idp.example.com")
+    monkeypatch.setattr(
+        api_server,
+        "OIDC_AUTHORIZATION_ENDPOINT",
+        "https://idp.example.com/oauth2/v1/authorize",
+    )
+    monkeypatch.setattr(
+        api_server,
+        "OIDC_TOKEN_ENDPOINT",
+        "https://idp.example.com/oauth2/v1/token",
+    )
+    monkeypatch.setattr(
+        api_server,
+        "OIDC_JWKS_URL",
+        "https://idp.example.com/oauth2/v1/keys",
+    )
+    monkeypatch.setattr(api_server, "OIDC_CLIENT_ID", "insightdesk")
+    monkeypatch.setattr(api_server, "OIDC_CLIENT_SECRET", "super-secret")
+    monkeypatch.setattr(api_server, "OIDC_ALLOWED_DOMAINS", "Example.com, ops.example.com")
+    client = TestClient(api_server.app)
+
+    response = client.get(
+        "/api/auth/sso/config",
+        headers={"X-API-Token": "viewer-token"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["enabled"] is True
+    assert payload["provider"] == "oidc"
+    assert payload["issuer_url"] == "https://idp.example.com"
+    assert payload["authorization_endpoint_configured"] is True
+    assert payload["token_endpoint_configured"] is True
+    assert payload["jwks_url_configured"] is True
+    assert payload["client_id_configured"] is True
+    assert payload["client_secret_configured"] is True
+    assert payload["allowed_domains"] == ["example.com", "ops.example.com"]
+    assert payload["callback_path"] == "/api/auth/sso/callback"
+    assert payload["ready"] is True
+    assert payload["mode"] == "oidc_configured"
+    assert payload["claim_mapping"]["user_id"] == "sub"
+    assert "super-secret" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_admin_can_save_sso_config_without_exposing_secret(monkeypatch, tmp_path):
+    _set_remote_mode(monkeypatch)
+    _set_auth_catalog(monkeypatch)
+    for env_name in (
+        "SSO_PROVIDER",
+        "OIDC_ISSUER_URL",
+        "OIDC_AUTHORIZATION_ENDPOINT",
+        "OIDC_TOKEN_ENDPOINT",
+        "OIDC_JWKS_URL",
+        "OIDC_CLIENT_ID",
+        "OIDC_CLIENT_SECRET",
+        "OIDC_ALLOWED_DOMAINS",
+        "OIDC_SCOPES",
+        "SSO_DEFAULT_ROLE",
+        "SSO_SESSION_TTL_SECONDS",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+    config_store = SQLiteAppConfigStore(db_path=str(tmp_path / "config.db"))
+    monkeypatch.setattr(api_server, "_app_config_store", config_store)
+    monkeypatch.setattr(api_server, "_security_audit_events", [])
+    monkeypatch.setattr(api_server, "SSO_PROVIDER", "none")
+    monkeypatch.setattr(api_server, "OIDC_ISSUER_URL", "")
+    monkeypatch.setattr(api_server, "OIDC_AUTHORIZATION_ENDPOINT", "")
+    monkeypatch.setattr(api_server, "OIDC_TOKEN_ENDPOINT", "")
+    monkeypatch.setattr(api_server, "OIDC_JWKS_URL", "")
+    monkeypatch.setattr(api_server, "OIDC_CLIENT_ID", "")
+    monkeypatch.setattr(api_server, "OIDC_CLIENT_SECRET", "")
+    monkeypatch.setattr(api_server, "OIDC_ALLOWED_DOMAINS", "")
+    monkeypatch.setattr(api_server, "OIDC_SCOPES", "openid email profile")
+    monkeypatch.setattr(api_server, "SSO_DEFAULT_ROLE", "viewer")
+    monkeypatch.setattr(api_server, "SSO_SESSION_TTL_SECONDS", 28800)
+    client = TestClient(api_server.app)
+
+    response = client.put(
+        "/api/auth/sso/config",
+        headers={"X-API-Token": "admin-token"},
+        json={
+            "provider": "oidc",
+            "issuer_url": "https://idp.example.com",
+            "authorization_endpoint": "https://idp.example.com/authorize",
+            "token_endpoint": "https://idp.example.com/token",
+            "jwks_url": "https://idp.example.com/keys",
+            "client_id": "insightdesk",
+            "client_secret": "stored-secret",
+            "allowed_domains": "Example.com, ops.example.com",
+            "scopes": "openid email profile groups",
+            "default_role": "editor",
+            "session_ttl_seconds": 3600,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ready"] is True
+    assert payload["provider"] == "oidc"
+    assert payload["client_id"] == "insightdesk"
+    assert payload["client_secret_configured"] is True
+    assert payload["allowed_domains"] == ["example.com", "ops.example.com"]
+    assert payload["scopes"] == ["openid", "email", "profile", "groups"]
+    assert payload["default_role"] == "editor"
+    assert payload["session_ttl_seconds"] == 3600
+    assert "stored-secret" not in json.dumps(payload, ensure_ascii=False)
+    assert config_store.get_value("sso.oidc_client_secret") == "stored-secret"
+    assert any(
+        event.get("action") == "update_auth_sso_config"
+        for event in api_server._security_audit_events
+    )
+
+
+def test_auth_sso_login_builds_oidc_authorization_url(monkeypatch):
+    _set_remote_mode(monkeypatch)
+    _set_auth_catalog(monkeypatch)
+    monkeypatch.setattr(api_server, "_security_audit_events", [])
+    monkeypatch.setattr(api_server, "SSO_PROVIDER", "oidc")
+    monkeypatch.setattr(
+        api_server,
+        "OIDC_AUTHORIZATION_ENDPOINT",
+        "https://idp.example.com/oauth2/v1/authorize",
+    )
+    monkeypatch.setattr(api_server, "OIDC_CLIENT_ID", "insightdesk")
+    monkeypatch.setattr(api_server, "OIDC_SCOPES", "openid email profile groups")
+    monkeypatch.setattr(api_server, "_sso_login_states", {})
+    client = TestClient(api_server.app)
+
+    response = client.get("/api/auth/sso/login")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["authorization_url"].startswith(
+        "https://idp.example.com/oauth2/v1/authorize?"
+    )
+    assert "client_id=insightdesk" in payload["authorization_url"]
+    assert "response_type=code" in payload["authorization_url"]
+    assert "code_challenge_method=S256" in payload["authorization_url"]
+    assert "code_verifier" not in payload
+    assert payload["redirect_uri"] == "http://testserver/api/auth/sso/callback"
+    assert payload["scopes"] == ["openid", "email", "profile", "groups"]
+    assert payload["state"] in api_server._sso_login_states
+    stored_state = api_server._sso_login_states[payload["state"]]
+    assert stored_state["nonce"] == payload["nonce"]
+    assert stored_state["code_verifier"]
+    login_events = [
+        event
+        for event in api_server._security_audit_events
+        if event.get("action") == "start_auth_sso_login"
+    ]
+    assert login_events
+    login_details = login_events[-1].get("details", "")
+    assert "response_mode=<default>" in login_details
+    assert "state_fp=" in login_details
+    assert "nonce_fp=" in login_details
+    assert payload["state"] not in login_details
+    assert payload["nonce"] not in login_details
+
+
+def test_auth_sso_login_fragment_mode_sets_callback_response_mode(monkeypatch):
+    _set_remote_mode(monkeypatch)
+    _set_auth_catalog(monkeypatch)
+    monkeypatch.setattr(api_server, "SSO_PROVIDER", "oidc")
+    monkeypatch.setattr(
+        api_server,
+        "OIDC_AUTHORIZATION_ENDPOINT",
+        "https://idp.example.com/oauth2/v1/authorize",
+    )
+    monkeypatch.setattr(api_server, "OIDC_CLIENT_ID", "insightdesk")
+    monkeypatch.setattr(api_server, "_sso_login_states", {})
+    client = TestClient(api_server.app)
+
+    response = client.get("/api/auth/sso/login?response_mode=fragment")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["redirect_uri"] == (
+        "http://testserver/api/auth/sso/callback?response_mode=fragment"
+    )
+    assert (
+        "redirect_uri=http%3A%2F%2Ftestserver%2Fapi%2Fauth%2Fsso%2Fcallback%3Fresponse_mode%3Dfragment"
+        in payload["authorization_url"]
+    )
+
+
+def test_auth_sso_login_requires_authorization_endpoint(monkeypatch):
+    _set_remote_mode(monkeypatch)
+    _set_auth_catalog(monkeypatch)
+    monkeypatch.setattr(api_server, "SSO_PROVIDER", "oidc")
+    monkeypatch.setattr(api_server, "OIDC_AUTHORIZATION_ENDPOINT", "")
+    monkeypatch.setattr(api_server, "OIDC_CLIENT_ID", "insightdesk")
+    client = TestClient(api_server.app)
+
+    response = client.get("/api/auth/sso/login")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "OIDC_AUTHORIZATION_ENDPOINT is required"
+
+
+def test_auth_sso_callback_exchanges_code_verifies_claims_and_syncs_identity(
+    monkeypatch,
+    tmp_path,
+):
+    from backend.stores.identity_store import SQLiteIdentityStore
+
+    _set_remote_mode(monkeypatch)
+    _clear_auth_env(monkeypatch)
+    store = SQLiteIdentityStore(db_path=str(tmp_path / "identity.db"))
+    store.upsert_org(
+        org_id="org-acme",
+        name="Acme",
+        description="Demo org",
+        now=1.0,
+    )
+    monkeypatch.setattr(api_server, "_identity_store", store)
+    monkeypatch.setattr(api_server, "_security_audit_events", [])
+    monkeypatch.setattr(api_server, "_sso_sessions", {})
+    monkeypatch.setattr(
+        api_server,
+        "_sso_session_store",
+        SQLiteSsoSessionStore(db_path=str(tmp_path / "sso-sessions.db")),
+    )
+    monkeypatch.setattr(api_server, "SSO_PROVIDER", "oidc")
+    monkeypatch.setattr(api_server, "SSO_DEFAULT_ROLE", "viewer")
+    monkeypatch.setattr(api_server, "OIDC_ALLOWED_DOMAINS", "example.com")
+    monkeypatch.setattr(
+        api_server,
+        "_sso_login_states",
+        {
+            "state-1": {
+                "created_at": api_server.time.time(),
+                "nonce": "nonce-1",
+                "code_verifier": "verifier-1",
+                "redirect_uri": "http://testserver/api/auth/sso/callback",
+            }
+        },
+    )
+
+    async def fake_exchange_oidc_code(*, code, redirect_uri, code_verifier):
+        assert code == "auth-code"
+        assert redirect_uri == "http://testserver/api/auth/sso/callback"
+        assert code_verifier == "verifier-1"
+        return {"id_token": "id-token", "token_type": "Bearer", "expires_in": 3600}
+
+    def fake_verify_oidc_id_token(id_token, *, nonce):
+        assert id_token == "id-token"
+        assert nonce == "nonce-1"
+        return {
+            "sub": "idp-user-3",
+            "email": "carol@example.com",
+            "name": "Carol Example",
+            "groups": [],
+        }
+
+    monkeypatch.setattr(api_server, "_exchange_oidc_code", fake_exchange_oidc_code)
+    monkeypatch.setattr(api_server, "_verify_oidc_id_token", fake_verify_oidc_id_token)
+    client = TestClient(api_server.app)
+
+    response = client.get(
+        "/api/auth/sso/callback",
+        params={"code": "auth-code", "state": "state-1"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["auth_source"] == "oidc"
+    assert payload["token_type"] == "Bearer"
+    assert payload["expires_in"] == 3600
+    assert payload["app_session_token"].startswith("sso_")
+    assert payload["app_session_expires_at"] > api_server.time.time()
+    assert payload["role"] == "viewer"
+    assert payload["user"]["user_id"] == "oidc:idp-user-3"
+    assert payload["user"]["email"] == "carol@example.com"
+    assert "state-1" not in api_server._sso_login_states
+    assert store.get_user("oidc:idp-user-3").display_name == "Carol Example"
+    callback_events = [
+        event
+        for event in api_server._security_audit_events
+        if event.get("action") == "complete_auth_sso_callback"
+        and event.get("result") == "ok"
+    ]
+    assert callback_events
+    callback_details = callback_events[-1].get("details", "")
+    assert "provider=oidc" in callback_details
+    assert "user_id=oidc:idp-user-3" in callback_details
+    assert "role=viewer" in callback_details
+    assert "memberships=0" in callback_details
+    assert "groups=0" in callback_details
+    assert "token_type=Bearer" in callback_details
+    assert "expires_in=3600" in callback_details
+    assert "app_session_expires_at=" in callback_details
+    assert "app_session_token_fp=" in callback_details
+    assert payload["app_session_token"] not in callback_details
+
+    whoami = client.get(
+        "/api/auth/whoami",
+        headers={"Authorization": f"Bearer {payload['app_session_token']}"},
+    )
+    assert whoami.status_code == 200
+    assert whoami.json()["user_id"] == "oidc:idp-user-3"
+    assert whoami.json()["role"] == "viewer"
+    assert whoami.json()["auth_source"] == "sso_oidc"
+
+
+def test_auth_sso_callback_rejects_invalid_state(monkeypatch):
+    monkeypatch.setattr(api_server, "_sso_login_states", {})
+    client = TestClient(api_server.app)
+
+    response = client.get(
+        "/api/auth/sso/callback",
+        params={"code": "auth-code", "state": "missing"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid or expired SSO state"
+
+
+def test_auth_sso_callback_fragment_mode_writes_session_storage(monkeypatch, tmp_path):
+    from backend.stores.identity_store import SQLiteIdentityStore
+
+    _set_remote_mode(monkeypatch)
+    _clear_auth_env(monkeypatch)
+    store = SQLiteIdentityStore(db_path=str(tmp_path / "identity.db"))
+    monkeypatch.setattr(api_server, "_identity_store", store)
+    monkeypatch.setattr(api_server, "_sso_sessions", {})
+    monkeypatch.setattr(
+        api_server,
+        "_sso_session_store",
+        SQLiteSsoSessionStore(db_path=str(tmp_path / "sso-sessions.db")),
+    )
+    monkeypatch.setattr(api_server, "SSO_PROVIDER", "oidc")
+    monkeypatch.setattr(api_server, "OIDC_ALLOWED_DOMAINS", "example.com")
+    monkeypatch.setattr(
+        api_server,
+        "_sso_login_states",
+        {
+            "state-html": {
+                "created_at": api_server.time.time(),
+                "nonce": "nonce-html",
+                "code_verifier": "verifier-html",
+                "redirect_uri": (
+                    "http://testserver/api/auth/sso/callback?response_mode=fragment"
+                ),
+            }
+        },
+    )
+
+    async def fake_exchange_oidc_code(*, code, redirect_uri, code_verifier):
+        return {"id_token": "id-token", "token_type": "Bearer"}
+
+    def fake_verify_oidc_id_token(id_token, *, nonce):
+        return {
+            "sub": "idp-html",
+            "email": "html@example.com",
+            "name": "Html User",
+            "groups": [],
+        }
+
+    monkeypatch.setattr(api_server, "_exchange_oidc_code", fake_exchange_oidc_code)
+    monkeypatch.setattr(api_server, "_verify_oidc_id_token", fake_verify_oidc_id_token)
+    client = TestClient(api_server.app)
+
+    response = client.get(
+        "/api/auth/sso/callback",
+        params={"code": "auth-code", "state": "state-html", "response_mode": "fragment"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "sessionStorage.setItem('api_token', 'sso_" in response.text
+    assert "window.location.replace('/')" in response.text
+
+
+def test_sso_session_token_survives_in_memory_cache_reset(monkeypatch, tmp_path):
+    _set_remote_mode(monkeypatch)
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setattr(
+        api_server,
+        "_sso_session_store",
+        SQLiteSsoSessionStore(db_path=str(tmp_path / "sso-sessions.db")),
+    )
+    monkeypatch.setattr(api_server, "_sso_sessions", {})
+    monkeypatch.setattr(api_server, "SSO_DEFAULT_ROLE", "viewer")
+    client = TestClient(api_server.app)
+
+    issued = api_server._issue_sso_session_token(
+        user_id="oidc:persisted-user",
+        role="viewer",
+    )
+    monkeypatch.setattr(api_server, "_sso_sessions", {})
+
+    whoami = client.get(
+        "/api/auth/whoami",
+        headers={"Authorization": f"Bearer {issued['token']}"},
+    )
+
+    assert whoami.status_code == 200
+    assert whoami.json()["user_id"] == "oidc:persisted-user"
+    assert whoami.json()["role"] == "viewer"
+    assert whoami.json()["auth_source"] == "sso_oidc"
+
+
 def test_legacy_auth_token_is_flagged_in_catalog(monkeypatch):
     _clear_auth_env(monkeypatch)
     _set_remote_mode(monkeypatch)
@@ -598,6 +1006,28 @@ def test_admin_can_cleanup_security_audit_events(monkeypatch, tmp_path):
         "get_security_status",
         "cleanup_security_audit_events",
     ]
+
+
+def test_admin_can_list_access_audit_action_catalog(monkeypatch):
+    _set_remote_mode(monkeypatch)
+    _set_auth_catalog(monkeypatch)
+    client = TestClient(api_server.app)
+
+    response = client.get(
+        "/api/security/audit-actions",
+        headers={"X-API-Token": "admin-token"},
+        params={"category": "access"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] >= 1
+    assert "access" in payload["categories"]
+    actions = {item["action"]: item for item in payload["actions"]}
+    assert "upsert_resource_grant" in actions
+    assert "delete_resource_grant" in actions
+    assert actions["resource_access_denied"]["category"] == "access"
+    assert actions["resource_access_denied"]["minimum_reader_role"] == "admin"
 
 
 def test_invalid_security_audit_history_limit_env_falls_back_safely(monkeypatch):

@@ -3,11 +3,13 @@
  * 根据 20260413plan.md P1 改进项实施
  */
 
+export type ErrorBannerAction = 'settings' | 'clear' | 'retry' | 'none'
+
 export interface ErrorMessage {
   title: string
   suggestion: string
   /** 建议显示的操作按钮 */
-  action?: 'settings' | 'clear' | 'retry' | 'none'
+  action?: ErrorBannerAction | ErrorBannerAction[]
 }
 
 export const ERROR_MESSAGES: Record<string, ErrorMessage> = {
@@ -15,19 +17,19 @@ export const ERROR_MESSAGES: Record<string, ErrorMessage> = {
   AUTH_FAILED: {
     title: '认证失败，无法连接到模型服务',
     suggestion: '请检查 API Key 是否正确，可在右上角设置中更新',
-    action: 'settings',
+    action: ['settings', 'retry'],
   },
   INVALID_API_KEY: {
     title: 'API Key 无效',
     suggestion: '请前往设置更新有效的 API Key',
-    action: 'settings',
+    action: ['settings', 'retry'],
   },
 
   // 模型相关
   MODEL_NOT_FOUND: {
     title: '找不到指定的模型',
     suggestion: '请确认模型名称拼写正确，或在面板中切换其他可用模型',
-    action: 'settings',
+    action: ['settings', 'retry'],
   },
   MODEL_OVERLOADED: {
     title: '模型服务繁忙',
@@ -44,7 +46,7 @@ export const ERROR_MESSAGES: Record<string, ErrorMessage> = {
   QUOTA_EXCEEDED: {
     title: 'API 配额已耗尽',
     suggestion: '本月 API 额度已用完，请前往服务商控制台充值或升级套餐',
-    action: 'settings',
+    action: ['settings', 'retry'],
   },
 
   // 上下文与长度

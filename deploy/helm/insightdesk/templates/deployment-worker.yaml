@@ -1,0 +1,70 @@
+{{- if .Values.worker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "insightdesk.fullname" . }}-worker
+  labels:
+    {{- include "insightdesk.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "insightdesk.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      annotations:
+        {{- if eq .Values.config.reloadStrategy "rolloutOnConfigChange" }}
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- end }}
+        config.insightdesk/reload-strategy: {{ .Values.config.reloadStrategy | quote }}
+      labels:
+        {{- include "insightdesk.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            {{- toYaml .Values.worker.command | nindent 12 }}
+          args:
+            {{- toYaml .Values.worker.args | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "insightdesk.fullname" . }}-config
+          env:
+            - name: TASK_BACKEND
+              value: arq
+            {{- toYaml .Values.env | nindent 12 }}
+          lifecycle:
+            {{- toYaml .Values.worker.lifecycle | nindent 12 }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          volumeMounts:
+            - name: runtime
+              mountPath: /app/runtime
+            {{- if .Values.config.hotReload.enabled }}
+            - name: runtime-config
+              mountPath: {{ .Values.config.hotReload.mountPath | quote }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: runtime
+          {{- if .Values.runtime.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "insightdesk.fullname" . }}-runtime
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        {{- if .Values.config.hotReload.enabled }}
+        - name: runtime-config
+          configMap:
+            name: {{ include "insightdesk.fullname" . }}-config
+            items:
+              - key: {{ .Values.config.hotReload.fileName | quote }}
+                path: {{ .Values.config.hotReload.fileName | quote }}
+        {{- end }}
+{{- end }}

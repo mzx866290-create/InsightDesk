@@ -93,6 +93,34 @@ LOW_TRUST_DOMAINS = (
     "zhihu.com",
     "weibo.com",
 )
+CONVERSATIONAL_PREFIX_PATTERNS = (
+    re.compile(
+        r"^(?:please\s+)?(?:can|could|would)\s+you\s+(?:please\s+)?"
+        r"(?:(?:help\s+me|help)\s+)?"
+        r"(?:find|look\s*up|search\s+for|tell\s+me\s+about|check)\s+",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:please\s+)?(?:(?:help\s+me|help)\s+)?"
+        r"(?:find|look\s*up|search\s+for|tell\s+me\s+about|i\s+want\s+to\s+know\s+about)\s+",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?:"
+        r"\u8bf7\u95ee|"
+        r"\u5e2e\u6211\u67e5\u4e00\u4e0b|"
+        r"\u5e2e\u6211\u627e\u4e00\u4e0b|"
+        r"\u5e2e\u6211\u641c\u4e00\u4e0b|"
+        r"\u67e5\u4e00\u4e0b|"
+        r"\u627e\u4e00\u4e0b|"
+        r"\u641c\u4e00\u4e0b|"
+        r"\u6211\u60f3\u4e86\u89e3|"
+        r"\u6211\u60f3\u77e5\u9053|"
+        r"\u5173\u4e8e"
+        r")\s*",
+        re.IGNORECASE,
+    ),
+)
 DOWNLOAD_SUFFIXES = (
     ".pdf",
     ".doc",
@@ -155,6 +183,7 @@ STOP_TERMS = {
 class SearchQueryPlan:
     original_query: str
     effective_query: str
+    query_candidates: tuple[str, ...]
     search_depth: str
     topic: str | None
     time_range: str | None
@@ -415,6 +444,106 @@ def _append_search_hints(query: str, hints: Sequence[str]) -> str:
     return result
 
 
+def _strip_conversational_prefixes(query: str) -> str:
+    cleaned = str(query or "").strip()
+    if not cleaned:
+        return ""
+
+    while cleaned:
+        updated = cleaned
+        for pattern in CONVERSATIONAL_PREFIX_PATTERNS:
+            updated = pattern.sub("", updated).strip()
+        updated = updated.strip(" ,，。:：;；!?！？-")
+        if updated == cleaned:
+            break
+        cleaned = updated
+
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _build_keyword_focus_query(text: str) -> str:
+    tokens = re.findall(
+        r"[A-Za-z][A-Za-z0-9_.:+/#-]{1,}|[\u4e00-\u9fff]{2,}|\d{4}",
+        str(text or ""),
+    )
+    selected: list[str] = []
+    seen: set[str] = set()
+    for item in tokens:
+        token = item.strip()
+        normalized = token.lower()
+        if len(token) < 2 or normalized in STOP_TERMS or normalized in seen:
+            continue
+        seen.add(normalized)
+        selected.append(token)
+        if len(selected) >= 8:
+            break
+    return " ".join(selected).strip()
+
+
+def _dedupe_query_candidates(candidates: Sequence[str]) -> tuple[str, ...]:
+    deduped: list[str] = []
+    for item in candidates:
+        normalized = re.sub(r"\s+", " ", str(item or "")).strip()
+        if normalized and normalized not in deduped:
+            deduped.append(normalized)
+    return tuple(deduped)
+
+
+def _apply_query_preferences(
+    query: str,
+    *,
+    prefer_official: bool,
+    prefer_news: bool,
+    include_domains: Sequence[str],
+) -> str:
+    effective_query = str(query or "").strip()
+    if prefer_news:
+        hints = (
+            ("latest news",)
+            if not _contains_cjk(effective_query)
+            else ("\u6700\u65b0", "\u65b0\u95fb")
+        )
+        return _append_search_hints(effective_query, hints)
+    return effective_query
+
+
+def _build_query_candidates(
+    *,
+    original_query: str,
+    base_query: str,
+    prefer_official: bool,
+    prefer_news: bool,
+    include_domains: Sequence[str],
+) -> tuple[str, tuple[str, ...]]:
+    normalized_base_query = _strip_conversational_prefixes(base_query) or str(base_query or "").strip()
+    effective_query = _apply_query_preferences(
+        normalized_base_query,
+        prefer_official=prefer_official,
+        prefer_news=prefer_news,
+        include_domains=include_domains,
+    )
+    keyword_focus_query = _build_keyword_focus_query(normalized_base_query)
+    keyword_effective_query = _apply_query_preferences(
+        keyword_focus_query,
+        prefer_official=prefer_official,
+        prefer_news=prefer_news,
+        include_domains=include_domains,
+    )
+    return effective_query, _dedupe_query_candidates(
+        (
+            effective_query,
+            keyword_effective_query,
+            normalized_base_query,
+            keyword_focus_query,
+            original_query,
+        )
+    )
+
+
+def _is_query_retryable_error(exc: Exception) -> bool:
+    return isinstance(exc, SearchProviderHTTPError) and exc.status_code in {400, 422}
+
+
 def _infer_time_range(query: str) -> str | None:
     lowered = str(query or "").lower()
     if any(keyword in lowered for keyword in ("today", "breaking", "live", "today's", "今天", "刚刚")):
@@ -503,17 +632,24 @@ def _build_query_plan(
     original_query = str(query or "").strip()
     include_domains, stripped_query = _extract_domain_filters(original_query)
     base_query = stripped_query or original_query
+    normalized_base_query = _strip_conversational_prefixes(base_query) or base_query
 
-    is_time_sensitive = _contains_any(base_query, TIME_SENSITIVE_KEYWORDS)
-    prefer_docs = _contains_any(base_query, DOC_INTENT_KEYWORDS)
-    prefer_official = prefer_docs or _contains_any(base_query, OFFICIAL_INTENT_KEYWORDS)
-    prefer_news = _contains_any(base_query, NEWS_INTENT_KEYWORDS) or is_time_sensitive
+    is_time_sensitive = _contains_any(normalized_base_query, TIME_SENSITIVE_KEYWORDS)
+    prefer_docs = _contains_any(normalized_base_query, DOC_INTENT_KEYWORDS)
+    prefer_official = prefer_docs or _contains_any(normalized_base_query, OFFICIAL_INTENT_KEYWORDS)
+    prefer_news = _contains_any(normalized_base_query, NEWS_INTENT_KEYWORDS) or is_time_sensitive
 
-    effective_query = base_query
-    if prefer_official and not include_domains:
+    effective_query, query_candidates = _build_query_candidates(
+        original_query=original_query,
+        base_query=base_query,
+        prefer_official=prefer_official,
+        prefer_news=prefer_news,
+        include_domains=include_domains,
+    )
+    if False and prefer_official and not include_domains:
         hints = ("official documentation", "release notes") if not _contains_cjk(base_query) else ("官网", "官方文档")
         effective_query = _append_search_hints(effective_query, hints)
-    elif prefer_news:
+    elif False and prefer_news:
         hints = ("latest news",) if not _contains_cjk(base_query) else ("最新", "新闻")
         effective_query = _append_search_hints(effective_query, hints)
 
@@ -523,7 +659,7 @@ def _build_query_plan(
 
     resolved_time_range = str(time_range or "").strip().lower() or None
     if resolved_time_range is None:
-        resolved_time_range = _infer_time_range(base_query)
+        resolved_time_range = _infer_time_range(normalized_base_query)
 
     resolved_search_depth = str(search_depth or "basic").strip().lower() or "basic"
     if resolved_search_depth == "basic" and (is_time_sensitive or prefer_docs or include_domains):
@@ -533,6 +669,7 @@ def _build_query_plan(
     return SearchQueryPlan(
         original_query=original_query,
         effective_query=effective_query,
+        query_candidates=query_candidates,
         search_depth=resolved_search_depth,
         topic=resolved_topic,
         time_range=resolved_time_range,
@@ -849,15 +986,39 @@ async def search_web(
                 if hasattr(provider_instance, "get_capabilities")
                 else SearchProviderCapabilities(name=provider_name)
             )
-            response = await provider_instance.search(
-                plan.effective_query,
-                max_results=max_results,
-                search_depth=plan.search_depth,
-                include_answer=include_answer,
-                topic=plan.topic,
-                time_range=plan.time_range,
-                include_raw_content=include_raw_content,
-            )
+            response = None
+            query_candidates = plan.query_candidates or (plan.effective_query,)
+            for index, candidate_query in enumerate(query_candidates):
+                try:
+                    candidate_response = await provider_instance.search(
+                        candidate_query,
+                        max_results=max_results,
+                        search_depth=plan.search_depth,
+                        include_answer=include_answer,
+                        topic=plan.topic,
+                        time_range=plan.time_range,
+                        include_raw_content=include_raw_content,
+                    )
+                except SearchRuntimeError as exc:
+                    if _is_query_retryable_error(exc) and index < len(query_candidates) - 1:
+                        continue
+                    raise
+
+                candidate_response.rewritten_query = candidate_query
+                for document in candidate_response.results:
+                    document.retrieval_query = candidate_query
+                response = candidate_response
+                if candidate_response.results or index == len(query_candidates) - 1:
+                    if candidate_query != plan.effective_query and candidate_response.results:
+                        fallback_note = (
+                            f"{provider_name} retried the search with a simplified query variant."
+                        )
+                        if fallback_note not in provider_caveats:
+                            provider_caveats.append(fallback_note)
+                    break
+
+            if response is None:
+                continue
         except SearchRuntimeError as exc:
             logger.warning("search_web runtime issue provider=%s error=%s", provider_name, exc)
             errors.append(exc)
@@ -890,7 +1051,7 @@ async def search_web(
             provider="+".join(provider_names),
             results=[],
             search_depth=plan.search_depth,
-            rewritten_query=plan.effective_query,
+            rewritten_query=(plan.query_candidates[0] if plan.query_candidates else plan.effective_query),
             topic=plan.topic,
             time_range=plan.time_range,
             include_domains=list(plan.include_domains),
@@ -911,13 +1072,21 @@ async def search_web(
     ranked_results = _prepare_search_documents(merged_results, plan=plan)
 
     max_per_domain = None if plan.include_domains else 2
+    rewritten_query = next(
+        (
+            response.rewritten_query
+            for response in responses
+            if response.results and response.rewritten_query
+        ),
+        plan.query_candidates[0] if plan.query_candidates else plan.effective_query,
+    )
     return SearchResponse(
         query=query,
         provider=" + ".join(dict.fromkeys(provider_labels)),
         results=dedupe_search_documents(ranked_results, limit=max_results, max_per_domain=max_per_domain),
         answer=answer,
         search_depth=plan.search_depth,
-        rewritten_query=plan.effective_query,
+        rewritten_query=rewritten_query,
         topic=plan.topic,
         time_range=plan.time_range,
         include_domains=list(plan.include_domains),
@@ -1124,6 +1293,7 @@ async def run_web_research(
         provider_summary=response.provider or normalize_provider_name(provider),
         answer=response.answer,
         summary=summary,
+        rewritten_query=response.rewritten_query,
         sources=response.results,
         highlights=highlights,
         provider_capabilities=response.provider_capabilities,

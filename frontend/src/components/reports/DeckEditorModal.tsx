@@ -11,8 +11,23 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import { createDeckShareLink, exportDeck, regenerateDeckSlide, updateDeck } from '../../api/client'
-import type { DeckBlock, DeckSlide, DeckSpec, ModelConfig } from '../../api/client'
+import {
+  createDeckShareLink,
+  exportDeck,
+  regenerateDeckSlide,
+  updateDeck,
+  updateDeckBlockRefs,
+} from '../../api/client'
+import type {
+  DeckBlock,
+  DeckCitationValidation,
+  DeckEvidenceCoverage,
+  DeckEvidenceReview,
+  DeckEvidenceReviewActionItem,
+  DeckSlide,
+  DeckSpec,
+  ModelConfig,
+} from '../../api/client'
 import { EChartsRenderer, type ChartData } from '../charts/EChartsRenderer'
 import { buildDeckDownloadFilename, buildDeckMarkdown, buildDeckPrintHtml } from './deckMarkdown'
 
@@ -66,6 +81,8 @@ const BLOCK_ROLE_LABELS: Record<string, string> = {
   callout: '提示',
   speaker_notes: '备注',
 }
+
+const EVIDENCE_COVERAGE_EXCLUDED_SLIDE_TYPES = new Set(['cover', 'outline', 'appendix_sources'])
 
 function cloneDeck(deck: DeckSpec): DeckSpec {
   return JSON.parse(JSON.stringify(deck)) as DeckSpec
@@ -261,6 +278,252 @@ function previewCardClass(theme: DeckSpec['meta']['theme']): string {
   }
 }
 
+function isEvidenceCoverableSlide(slide: DeckSlide, evidenceRefCount: number): boolean {
+  if (evidenceRefCount > 0) return true
+  return !EVIDENCE_COVERAGE_EXCLUDED_SLIDE_TYPES.has(slide.type)
+}
+
+function buildFallbackDeckEvidenceCoverage(deck: DeckSpec): DeckEvidenceCoverage {
+  let coverableSlideCount = 0
+  let slidesWithEvidence = 0
+  let totalEvidenceRefs = 0
+  const unsupportedSlideIds: string[] = []
+
+  const slides = deck.slides.map((slide) => {
+    const evidenceRefCount = slide.evidence_refs.length
+    const hasEvidence = evidenceRefCount > 0
+    const isCoverable = isEvidenceCoverableSlide(slide, evidenceRefCount)
+
+    totalEvidenceRefs += evidenceRefCount
+    if (isCoverable) {
+      coverableSlideCount += 1
+      if (hasEvidence) {
+        slidesWithEvidence += 1
+      } else {
+        unsupportedSlideIds.push(slide.id)
+      }
+    }
+
+    return {
+      slide_id: slide.id,
+      slide_type: slide.type,
+      evidence_ref_count: evidenceRefCount,
+      has_evidence: hasEvidence,
+      is_coverable: isCoverable,
+      quality_state: slide.quality_state,
+    }
+  })
+
+  return {
+    total_slides: deck.slides.length,
+    coverable_slide_count: coverableSlideCount,
+    slides_with_evidence: slidesWithEvidence,
+    total_evidence_refs: totalEvidenceRefs,
+    coverage_ratio: coverableSlideCount ? Number((slidesWithEvidence / coverableSlideCount).toFixed(4)) : 0,
+    unsupported_slide_ids: unsupportedSlideIds,
+    slides,
+  }
+}
+
+function resolveDeckEvidenceCoverage(deck: DeckSpec): DeckEvidenceCoverage {
+  return deck.generation.evidence_coverage ?? buildFallbackDeckEvidenceCoverage(deck)
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)))
+}
+
+function buildFallbackDeckEvidenceReview(
+  deck: DeckSpec,
+  evidenceCoverage: DeckEvidenceCoverage,
+): DeckEvidenceReview {
+  const slidesById = new Map(deck.slides.map((slide) => [slide.id, slide]))
+  const sourceTitlesById = new Map(
+    deck.source_registry.map((source) => [source.id, source.title.trim()]),
+  )
+  const needsReviewSlideIds: string[] = []
+
+  const slides = evidenceCoverage.slides.map((item) => {
+    const slide = slidesById.get(item.slide_id)
+    const refs = slide?.evidence_refs ?? []
+    const sourceIds = uniqueStrings(refs.map((ref) => ref.source_id))
+    const sourceTitles = uniqueStrings(
+      refs.map((ref) => ref.source_title || sourceTitlesById.get(ref.source_id) || ''),
+    )
+    const needsReview =
+      item.is_coverable && (!item.has_evidence || item.quality_state === 'weak_support')
+
+    if (needsReview) {
+      needsReviewSlideIds.push(item.slide_id)
+    }
+
+    return {
+      slide_id: item.slide_id,
+      title: slide?.title ?? '',
+      slide_type: item.slide_type,
+      is_coverable: item.is_coverable,
+      has_evidence: item.has_evidence,
+      evidence_ref_count: item.evidence_ref_count,
+      quality_state: item.quality_state,
+      needs_review: needsReview,
+      source_ids: sourceIds,
+      source_titles: sourceTitles,
+    }
+  })
+
+  const actionItems: DeckEvidenceReviewActionItem[] = []
+  if (evidenceCoverage.unsupported_slide_ids.length > 0) {
+    actionItems.push({
+      code: 'add_missing_slide_evidence',
+      severity: 'warning',
+      message: 'Add evidence references to unsupported slides.',
+      slide_ids: evidenceCoverage.unsupported_slide_ids,
+    })
+  }
+  if (evidenceCoverage.coverable_slide_count > 0 && evidenceCoverage.total_evidence_refs === 0) {
+    actionItems.push({
+      code: 'attach_deck_sources',
+      severity: 'warning',
+      message: 'Attach at least one source before final export.',
+      slide_ids: evidenceCoverage.unsupported_slide_ids,
+    })
+  }
+
+  const weakSupportedIds = slides
+    .filter((item) => item.is_coverable && item.has_evidence && item.quality_state === 'weak_support')
+    .map((item) => item.slide_id)
+  if (weakSupportedIds.length > 0) {
+    actionItems.push({
+      code: 'review_weak_support',
+      severity: 'info',
+      message: 'Review slides marked as weakly supported.',
+      slide_ids: weakSupportedIds,
+    })
+  }
+
+  const status =
+    evidenceCoverage.coverable_slide_count === 0
+      ? 'not_applicable'
+      : evidenceCoverage.unsupported_slide_ids.length === 0 && evidenceCoverage.coverage_ratio >= 1
+        ? 'supported'
+        : 'needs_review'
+
+  return {
+    status,
+    coverage_ratio: evidenceCoverage.coverage_ratio,
+    coverable_slide_count: evidenceCoverage.coverable_slide_count,
+    slides_with_evidence: evidenceCoverage.slides_with_evidence,
+    unsupported_slide_ids: evidenceCoverage.unsupported_slide_ids,
+    needs_review_slide_ids: uniqueStrings(needsReviewSlideIds),
+    action_count: actionItems.length,
+    action_items: actionItems,
+    slides,
+  }
+}
+
+function resolveDeckEvidenceReview(
+  deck: DeckSpec,
+  evidenceCoverage: DeckEvidenceCoverage,
+): DeckEvidenceReview {
+  return deck.generation.evidence_review ?? buildFallbackDeckEvidenceReview(deck, evidenceCoverage)
+}
+
+function formatCoveragePercent(value: number): string {
+  const ratio = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0
+  return `${Math.round(ratio * 100)}%`
+}
+
+function evidenceReviewStatusLabel(status: DeckEvidenceReview['status']): string {
+  switch (status) {
+    case 'supported':
+      return 'supported'
+    case 'not_applicable':
+      return 'not applicable'
+    default:
+      return 'needs review'
+  }
+}
+
+function resolveDeckCitationValidation(deck: DeckSpec): DeckCitationValidation | null {
+  return (
+    deck.citation_validation ??
+    deck.generation.citation_validation ??
+    deck.generation.evidence_review?.citation_validation ??
+    null
+  )
+}
+
+function citationValidationLabel(validation: DeckCitationValidation | null): string {
+  if (!validation) return 'unknown'
+  return validation.status === 'passed' ? 'passed' : 'failed'
+}
+
+function citationValidationClass(validation: DeckCitationValidation | null): string {
+  if (!validation) return 'border-bg-border bg-bg-tertiary text-text-secondary'
+  return validation.can_export
+    ? 'border-accent-green/30 bg-accent-green/10 text-accent-green'
+    : 'border-accent-red/30 bg-accent-red/10 text-accent-red'
+}
+
+interface DeckBlockEvidenceBinding {
+  blockId: string
+  label: string
+  sourceTitles: string[]
+  evidenceRefIds: string[]
+}
+
+interface DeckExportGateDecision {
+  allowed: boolean
+  allowUnsafeExport: boolean
+  overrideReason?: string
+}
+
+function buildDeckExportGateIssues(deck: DeckSpec): string[] {
+  const issues: string[] = []
+  const validation = resolveDeckCitationValidation(deck)
+  if (validation && !validation.can_export) {
+    issues.push(`Citation validation failed with ${validation.issue_count} issue(s).`)
+  }
+  if (deck.meta.source_mode === 'chat_only') {
+    issues.push('Deck uses chat-only source mode and has no knowledge-base evidence validation.')
+  }
+  const weakSlides = deck.slides.filter((slide) => slideNeedsAttention(slide))
+  if (weakSlides.length > 0) {
+    issues.push(`${weakSlides.length} slide(s) still have weak evidence or need manual confirmation.`)
+  }
+  return issues
+}
+
+function blockEvidenceRefIds(block: DeckBlock, slide: DeckSlide): string[] {
+  const explicitRefIds = new Set(block.content.evidence_ref_ids ?? [])
+  const explicitSourceIds = new Set(block.content.evidence_source_ids ?? [])
+  const explicitExcerptIds = new Set(block.content.evidence_excerpt_ids ?? [])
+  const matchedIds = slide.evidence_refs
+    .filter((ref) => {
+      if (explicitRefIds.has(ref.id)) return true
+      if (explicitSourceIds.has(ref.source_id)) return true
+      return Boolean(ref.excerpt_id && explicitExcerptIds.has(ref.excerpt_id))
+    })
+    .map((ref) => ref.id)
+  return uniqueStrings([...explicitRefIds, ...matchedIds])
+}
+
+function buildBlockEvidenceBindings(slide: DeckSlide): DeckBlockEvidenceBinding[] {
+  const refsById = new Map(slide.evidence_refs.map((ref) => [ref.id, ref]))
+  return slide.blocks.map((block) => {
+    const evidenceRefIds = blockEvidenceRefIds(block, slide)
+    const sourceTitles = uniqueStrings(
+      evidenceRefIds.map((refId) => refsById.get(refId)?.source_title ?? ''),
+    )
+    return {
+      blockId: block.id,
+      label: `${blockKindLabel(block.kind)} / ${blockRoleLabel(block.role)}`,
+      sourceTitles,
+      evidenceRefIds,
+    }
+  })
+}
+
 export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
   open,
   onClose,
@@ -274,6 +537,7 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
   const [exporting, setExporting] = useState(false)
   const [exportingPdf, setExportingPdf] = useState(false)
   const [regenerating, setRegenerating] = useState(false)
+  const [syncingBlockRefId, setSyncingBlockRefId] = useState<string | null>(null)
   const [sharing, setSharing] = useState(false)
   const [shareCopied, setShareCopied] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -302,6 +566,25 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
     [workingDeck.slides],
   )
 
+  const evidenceCoverage = useMemo(
+    () => resolveDeckEvidenceCoverage(workingDeck),
+    [workingDeck],
+  )
+
+  const evidenceReview = useMemo(
+    () => resolveDeckEvidenceReview(workingDeck, evidenceCoverage),
+    [evidenceCoverage, workingDeck],
+  )
+
+  const citationValidation = useMemo(
+    () => resolveDeckCitationValidation(workingDeck),
+    [workingDeck],
+  )
+  const exportGateIssues = useMemo(
+    () => buildDeckExportGateIssues(workingDeck),
+    [workingDeck],
+  )
+
   const regenerationPanel = useMemo(
     () =>
       panels.find((panel) => panel.id === workingDeck.meta.generator_panel_id) ??
@@ -315,6 +598,19 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
   const slides = workingDeck.slides
   const activeSlide = slides[currentSlide] ?? slides[0]
   if (!activeSlide) return null
+  const activeSlideCoverage = evidenceCoverage.slides.find(
+    (slide) => slide.slide_id === activeSlide.id,
+  )
+  const activeSlideReview = evidenceReview.slides.find(
+    (slide) => slide.slide_id === activeSlide.id,
+  )
+  const coveragePercent = formatCoveragePercent(evidenceCoverage.coverage_ratio)
+  const unsupportedSlideIds = evidenceCoverage.unsupported_slide_ids
+  const activeBlockEvidenceBindings = buildBlockEvidenceBindings(activeSlide)
+  const activeBlockEvidenceBindingsById = new Map(
+    activeBlockEvidenceBindings.map((binding) => [binding.blockId, binding]),
+  )
+  const citationGateLabel = citationValidationLabel(citationValidation)
 
   const replaceActiveSlide = (updater: (slide: DeckSlide) => DeckSlide) => {
     setWorkingDeck((prev) => ({
@@ -326,6 +622,70 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
       },
     }))
     setSaveMessage('')
+  }
+
+  const applyBlockEvidenceRefs = (blockId: string, evidenceRefIds: string[]) => {
+    replaceActiveSlide((slide) => {
+      const normalizedRefIds = uniqueStrings(evidenceRefIds)
+      const selectedRefs = slide.evidence_refs.filter((ref) => normalizedRefIds.includes(ref.id))
+      return {
+        ...slide,
+        blocks: slide.blocks.map((block) =>
+          block.id === blockId
+            ? {
+                ...block,
+                content: {
+                  ...block.content,
+                  evidence_ref_ids: normalizedRefIds,
+                  evidence_source_ids: uniqueStrings(selectedRefs.map((ref) => ref.source_id)),
+                  evidence_excerpt_ids: uniqueStrings(
+                    selectedRefs.map((ref) => ref.excerpt_id ?? ''),
+                  ),
+                },
+              }
+            : block,
+        ),
+        status: {
+          ...slide.status,
+          dirty: true,
+          review_state: 'draft',
+        },
+      }
+    })
+  }
+
+  const syncBlockEvidenceRefs = async (blockId: string, evidenceRefIds: string[]) => {
+    const normalizedRefIds = uniqueStrings(evidenceRefIds)
+    const selectedRefs = activeSlide.evidence_refs.filter((ref) =>
+      normalizedRefIds.includes(ref.id),
+    )
+    applyBlockEvidenceRefs(blockId, normalizedRefIds)
+    setSyncingBlockRefId(blockId)
+    setError(null)
+    try {
+      const response = await updateDeckBlockRefs(
+        workingDeck.deck_id,
+        activeSlide.id,
+        blockId,
+        {
+          evidence_ref_ids: normalizedRefIds,
+          evidence_source_ids: uniqueStrings(selectedRefs.map((ref) => ref.source_id)),
+          evidence_excerpt_ids: uniqueStrings(selectedRefs.map((ref) => ref.excerpt_id ?? '')),
+        },
+      )
+      const cloned = cloneDeck(response.deck)
+      setWorkingDeck(cloned)
+      onDeckChange(response.deck)
+      const nextIndex = cloned.slides.findIndex((slide) => slide.id === activeSlide.id)
+      if (nextIndex >= 0) {
+        setCurrentSlide(nextIndex)
+      }
+      setSaveMessage('Citation bindings synced.')
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setSyncingBlockRefId(null)
+    }
   }
 
   const persistDeck = async (): Promise<DeckSpec | null> => {
@@ -350,17 +710,27 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
     }
   }
 
-  const confirmRiskyExport = (latestDeck: DeckSpec) => {
-    const issues: string[] = []
-    if (latestDeck.meta.source_mode === 'chat_only') {
-      issues.push('当前为仅聊天模式，缺少知识库证据校验。')
+  const confirmRiskyExport = (latestDeck: DeckSpec): DeckExportGateDecision => {
+    const issues = buildDeckExportGateIssues(latestDeck)
+    if (issues.length === 0) {
+      return { allowed: true, allowUnsafeExport: false }
     }
-    const weakSlides = latestDeck.slides.filter((slide) => slideNeedsAttention(slide))
-    if (weakSlides.length > 0) {
-      issues.push(`当前还有 ${weakSlides.length} 页处于证据偏弱或需人工确认状态。`)
+
+    const allowed = window.confirm(
+      [
+        'Export is blocked by citation/evidence checks unless you explicitly override it.',
+        '',
+        ...issues.map((issue) => `- ${issue}`),
+        '',
+        'Continue with an unsafe PPTX export?',
+      ].join('\n'),
+    )
+
+    return {
+      allowed,
+      allowUnsafeExport: allowed,
+      overrideReason: allowed ? issues.join(' | ') : undefined,
     }
-    if (issues.length === 0) return true
-    return window.confirm(`${issues.join('\n')}\n\n仍要继续导出 PPTX 吗？`)
   }
 
   const handleExport = async () => {
@@ -373,9 +743,13 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
         if (!saved) return
         latestDeck = saved
       }
-      if (!confirmRiskyExport(latestDeck)) return
+      const exportGateDecision = confirmRiskyExport(latestDeck)
+      if (!exportGateDecision.allowed) return
 
-      const blob = await exportDeck(latestDeck.deck_id)
+      const blob = await exportDeck(latestDeck.deck_id, 'pptx', {
+        allowUnsafeExport: exportGateDecision.allowUnsafeExport,
+        overrideReason: exportGateDecision.overrideReason,
+      })
       const url = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
       anchor.href = url
@@ -411,7 +785,7 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
         if (!saved) return
         latestDeck = saved
       }
-      if (!confirmRiskyExport(latestDeck)) return
+      if (!confirmRiskyExport(latestDeck).allowed) return
 
       const printWindow = window.open('', '_blank', 'noopener,noreferrer')
       if (!printWindow) {
@@ -542,6 +916,15 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
             </span>
             <span className="rounded-full border border-bg-border px-2 py-0.5">
               {sourceModeLabel(workingDeck.meta.source_mode)}
+            </span>
+            <span className="rounded-full border border-bg-border px-2 py-0.5">
+              证据覆盖: {coveragePercent}
+            </span>
+            <span
+              className={`rounded-full border px-2 py-0.5 ${citationValidationClass(citationValidation)}`}
+              data-testid="deck-citation-gate-status"
+            >
+              Citation gate: {citationGateLabel}
             </span>
             <span className="rounded-full border border-bg-border px-2 py-0.5">
               主题: {deckThemeLabel(workingDeck.meta.theme)}
@@ -763,7 +1146,10 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
             </div>
             <div className="min-h-[18rem] flex-1 space-y-5 overflow-y-auto px-4 py-4 lg:min-h-0">
               {error && (
-                <div className="rounded-xl border border-accent-red/30 bg-accent-red/10 px-3 py-2 text-sm text-accent-red">
+                <div
+                  className="rounded-xl border border-accent-red/30 bg-accent-red/10 px-3 py-2 text-sm text-accent-red"
+                  data-testid="deck-export-blocked-message"
+                >
                   {error}
                 </div>
               )}
@@ -774,6 +1160,20 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
                   data-testid="deck-editor-save-message"
                 >
                   {saveMessage}
+                </div>
+              )}
+
+              {exportGateIssues.length > 0 && !error && (
+                <div
+                  className="rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs leading-5 text-amber-200"
+                  data-testid="deck-export-gate-warning"
+                >
+                  <p className="font-medium text-amber-100">PPTX export requires an explicit unsafe-export override.</p>
+                  <ul className="mt-2 list-disc space-y-1 pl-4">
+                    {exportGateIssues.map((issue) => (
+                      <li key={issue}>{issue}</li>
+                    ))}
+                  </ul>
                 </div>
               )}
 
@@ -933,13 +1333,236 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
                 />
               </div>
 
-              <div className="space-y-3 rounded-2xl border border-bg-border bg-bg-primary/50 p-4">
+              <div
+                className="space-y-4 rounded-2xl border border-bg-border bg-bg-primary/50 p-4"
+                data-testid="deck-evidence-coverage"
+              >
                 <div className="flex items-center gap-2">
                   <AlertTriangle size={14} className="text-amber-400" />
                   <p className="text-xs font-medium text-text-primary">证据与提示</p>
                 </div>
 
-                <div className="rounded-xl border border-bg-border px-3 py-2 text-sm text-text-secondary">
+                <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
+                  <div>
+                    <p className="text-[11px] text-text-secondary">覆盖率</p>
+                    <p
+                      className="mt-1 text-lg font-semibold text-text-primary"
+                      data-testid="deck-evidence-coverage-ratio"
+                    >
+                      {coveragePercent}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] text-text-secondary">已覆盖页数</p>
+                    <p
+                      className="mt-1 text-lg font-semibold text-text-primary"
+                      data-testid="deck-evidence-covered-slides"
+                    >
+                      {evidenceCoverage.slides_with_evidence} / {evidenceCoverage.coverable_slide_count}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] text-text-secondary">引用总数</p>
+                    <p
+                      className="mt-1 text-lg font-semibold text-text-primary"
+                      data-testid="deck-evidence-total-refs"
+                    >
+                      {evidenceCoverage.total_evidence_refs}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[11px] text-text-secondary">当前页引用</p>
+                    <p className="mt-1 text-lg font-semibold text-text-primary">
+                      {activeSlideCoverage?.evidence_ref_count ?? activeSlide.evidence_refs.length}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="border-t border-bg-border pt-3">
+                  <div className="grid grid-cols-4 gap-3 text-xs">
+                    <div>
+                      <p className="text-[11px] text-text-secondary">review status</p>
+                      <p
+                        className="mt-1 font-medium text-text-primary"
+                        data-testid="deck-evidence-review-status"
+                      >
+                        {evidenceReviewStatusLabel(evidenceReview.status)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] text-text-secondary">actions</p>
+                      <p
+                        className="mt-1 font-medium text-text-primary"
+                        data-testid="deck-evidence-review-action-count"
+                      >
+                        {evidenceReview.action_count}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] text-text-secondary">review slides</p>
+                      <p
+                        className="mt-1 font-medium text-text-primary"
+                        data-testid="deck-evidence-review-slide-count"
+                      >
+                        {evidenceReview.needs_review_slide_ids.length}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[11px] text-text-secondary">export gate</p>
+                      <p
+                        className={`mt-1 inline-flex rounded-full border px-2 py-0.5 font-medium ${citationValidationClass(citationValidation)}`}
+                        data-testid="deck-citation-validation-status"
+                      >
+                        {citationGateLabel}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div
+                    className="mt-3 space-y-2 text-xs leading-5 text-text-secondary"
+                    data-testid="deck-citation-validation-details"
+                  >
+                    {citationValidation ? (
+                      <>
+                        <p>
+                          can export:
+                          <span className="ml-2 text-text-primary">
+                            {citationValidation.can_export ? 'yes' : 'no'}
+                          </span>
+                          <span className="ml-3">
+                            issues:
+                            <span className="ml-2 text-text-primary">
+                              {citationValidation.issue_count}
+                            </span>
+                          </span>
+                        </p>
+                        {citationValidation.missing_source_ids.length > 0 && (
+                          <p>
+                            missing sources:
+                            <span className="ml-2 break-all text-text-primary">
+                              {citationValidation.missing_source_ids.join(', ')}
+                            </span>
+                          </p>
+                        )}
+                        {citationValidation.missing_block_evidence_ref_ids.length > 0 && (
+                          <p>
+                            missing block refs:
+                            <span className="ml-2 break-all text-text-primary">
+                              {citationValidation.missing_block_evidence_ref_ids.join(', ')}
+                            </span>
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      <p>No citation validation payload.</p>
+                    )}
+                  </div>
+
+                  <div
+                    className="mt-3 space-y-2 text-xs leading-5 text-text-secondary"
+                    data-testid="deck-evidence-review-action-items"
+                  >
+                    {evidenceReview.action_items.length > 0 ? (
+                      evidenceReview.action_items.map((item) => (
+                        <div key={`${item.code}-${item.slide_ids.join('-')}`} className="border-l border-bg-border pl-3">
+                          <span className="font-medium text-text-primary">{item.message}</span>
+                          {item.slide_ids.length > 0 && (
+                            <span className="ml-2 break-all">({item.slide_ids.join(', ')})</span>
+                          )}
+                        </div>
+                      ))
+                    ) : (
+                      <p>No evidence review actions.</p>
+                    )}
+                  </div>
+
+                  <div className="mt-3 text-xs leading-5 text-text-secondary">
+                    current sources:
+                    <span
+                      className="ml-2 break-all text-text-primary"
+                      data-testid="deck-evidence-review-active-sources"
+                    >
+                      {activeSlideReview && activeSlideReview.source_titles.length > 0
+                        ? activeSlideReview.source_titles.join(', ')
+                        : 'none'}
+                    </span>
+                  </div>
+
+                  <div
+                    className="mt-3 space-y-2 text-xs leading-5 text-text-secondary"
+                    data-testid="deck-evidence-block-bindings"
+                  >
+                    <p className="text-[11px] font-medium text-text-secondary">content bindings</p>
+                    {activeSlide.blocks.length > 0 ? (
+                      activeSlide.blocks.map((block) => {
+                        const binding = activeBlockEvidenceBindingsById.get(block.id)
+                        const selectedRefIds = new Set(binding?.evidenceRefIds ?? [])
+                        const isSyncingBlockRefs = syncingBlockRefId === block.id
+                        return (
+                          <div
+                            key={block.id}
+                            className="space-y-2 border-l border-bg-border pl-3"
+                            data-testid="deck-block-ref-editor"
+                          >
+                            <div>
+                              <span className="font-medium text-text-primary">{block.id}</span>
+                              <span className="ml-2">{binding?.label ?? `${blockKindLabel(block.kind)} / ${blockRoleLabel(block.role)}`}</span>
+                              <span className="ml-2 break-all text-text-primary">
+                                {binding && binding.sourceTitles.length > 0
+                                  ? binding.sourceTitles.join(', ')
+                                  : 'unbound'}
+                              </span>
+                              {isSyncingBlockRefs && (
+                                <span className="ml-2 text-accent-blue">syncing...</span>
+                              )}
+                            </div>
+                            {activeSlide.evidence_refs.length > 0 ? (
+                              <div className="flex flex-wrap gap-2">
+                                {activeSlide.evidence_refs.map((evidence) => (
+                                  <label
+                                    key={`${block.id}-${evidence.id}`}
+                                    className="inline-flex items-center gap-1.5 rounded-lg border border-bg-border px-2 py-1 text-[11px] text-text-secondary"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      disabled={isSyncingBlockRefs}
+                                      checked={selectedRefIds.has(evidence.id)}
+                                      onChange={(event) => {
+                                        const currentIds = binding?.evidenceRefIds ?? []
+                                        const nextIds = event.target.checked
+                                          ? uniqueStrings([...currentIds, evidence.id])
+                                          : currentIds.filter((refId) => refId !== evidence.id)
+                                        void syncBlockEvidenceRefs(block.id, nextIds)
+                                      }}
+                                      className="h-3 w-3 accent-accent-blue"
+                                    />
+                                    <span>{evidence.source_title || evidence.id}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            ) : (
+                              <p>No slide evidence refs to bind.</p>
+                            )}
+                          </div>
+                        )
+                      })
+                    ) : (
+                      <p>No content blocks.</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="border-t border-bg-border pt-3 text-xs leading-5 text-text-secondary">
+                  unsupported slide ids:
+                  <span
+                    className="ml-2 break-all text-text-primary"
+                    data-testid="deck-evidence-unsupported-slide-ids"
+                  >
+                    {unsupportedSlideIds.length > 0 ? unsupportedSlideIds.join(', ') : '无'}
+                  </span>
+                </div>
+
+                <div className="border-t border-bg-border pt-3 text-sm text-text-secondary">
                   当前页状态
                   <span className={`ml-2 inline-flex rounded-full border px-2 py-0.5 text-xs ${qualityBadgeClass(activeSlide)}`}>
                     {qualityLabel(activeSlide)}
@@ -947,7 +1570,7 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
                 </div>
 
                 {activeSlide.quality_state !== 'supported' && (
-                  <div className="rounded-xl border border-bg-border px-3 py-3 text-sm text-text-secondary">
+                  <div className="border-t border-bg-border pt-3 text-sm text-text-secondary">
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <p className="text-sm text-text-primary">
@@ -972,15 +1595,15 @@ export const DeckEditorModal: React.FC<DeckEditorModalProps> = ({
                   </div>
                 )}
 
-                <div className="rounded-xl border border-bg-border px-3 py-2 text-sm text-text-secondary">
+                <div className="border-t border-bg-border pt-3 text-sm text-text-secondary">
                   风险页数
                   <span className="ml-2 font-medium text-text-primary">{riskySlides.length}</span>
                 </div>
 
                 {activeSlide.evidence_refs.length > 0 ? (
-                  <div className="space-y-2">
+                  <div className="space-y-3 border-t border-bg-border pt-3">
                     {activeSlide.evidence_refs.map((evidence) => (
-                      <div key={evidence.id} className="rounded-xl border border-bg-border px-3 py-2">
+                      <div key={evidence.id} className="border-l border-bg-border pl-3">
                         <div className="flex items-center justify-between gap-2">
                           <p className="text-xs font-medium text-text-primary">{evidence.source_title}</p>
                           <span className="text-[11px] text-text-secondary">

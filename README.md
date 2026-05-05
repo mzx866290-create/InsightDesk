@@ -122,21 +122,26 @@ npm run dev -- --host 0.0.0.0 --port 5173
 
 ```bash
 copy .env.example .env
-docker compose up --build -d
+docker compose up --build -d api
 ```
 
 说明：
 
-- `docker compose` 默认会启动 `app`、`ollama` 和 `searxng`
-- 容器内后端默认优先使用 `SEARXNG_URL=http://searxng:8080`
-- 如果同时配置了可用的 `TAVILY_API_KEY`，运行时仍会优先使用 `tavily`
+- 默认推荐的联网搜索路径是不使用 Docker，直接配置 `TAVILY_API_KEY`
+- `docker compose` 默认只启动 `api` 和 `ollama`
+- 启用 ARQ 队列时，将 `TASK_BACKEND=arq` 写入 `.env`，再运行 `docker compose --profile tasks up --build -d api redis worker`
+- 启用 Qdrant 时，将 `VECTOR_STORE_PROVIDER=qdrant` 写入 `.env`，再运行 `docker compose --profile storage up --build -d api qdrant`
+- 本地 `SearXNG` 改为可选能力，仅在显式启用 `search` profile 时启动
+- 例如：`docker compose --profile search up -d searxng`
+- 如果同时配置了可用的 `TAVILY_API_KEY`，运行时会优先使用 `tavily`
+- 更完整的部署与运维命令见 [docs/DEPLOYMENT_OPERATIONS.md](./docs/DEPLOYMENT_OPERATIONS.md)
 
 ## 配置说明
 
 常用环境变量可在 [`.env.example`](./.env.example) 中查看，重点包括：
 
 - 模型配置：`OLLAMA_BASE_URL`、`OPENAI_API_KEY`、OpenRouter 相关项
-- 联网搜索：`TAVILY_API_KEY`、`SEARXNG_URL`
+- 联网搜索：`TAVILY_API_KEY`（推荐，非 Docker 默认方案）、`SEARXNG_URL`（可选，仅在手动启动本地 SearXNG 时使用）
 - 远程访问保护：`APP_AUTH_TOKENS_JSON`、`ADMIN_API_TOKEN` 等
 - 分享与安全：`SHARE_LINK_SECRET`、审计与安全状态相关配置
 
@@ -156,6 +161,16 @@ docker compose up --build -d
   产品路线图与后续演进方向
 - [docs/DECK_DELIVERY_PLAN.md](./docs/DECK_DELIVERY_PLAN.md)
   报告与 PPT 交付能力规划
+- [docs/BACKEND_ARCHITECTURE.md](./docs/BACKEND_ARCHITECTURE.md)
+  后端分层、入口职责与 `api_*` 兼容层边界
+- [docs/STORAGE_RUNTIME.md](./docs/STORAGE_RUNTIME.md)
+  SQLite ???????????? PostgreSQL ????
+- [docs/DEPLOYMENT_OPERATIONS.md](./docs/DEPLOYMENT_OPERATIONS.md)
+  Docker Compose、API、worker、Redis 与 Qdrant 部署运维说明
+- [docs/IDENTITY_AND_ORGS.md](./docs/IDENTITY_AND_ORGS.md)
+  ????????????
+- [docs/RESOURCE_ACCESS.md](./docs/RESOURCE_ACCESS.md)
+  ????????API ???????
 - [docs/VALIDATION.md](./docs/VALIDATION.md)
   冒烟、回归与发布前检查
 
@@ -167,7 +182,7 @@ docker compose up --build -d
 
 - 默认仍以 `SQLite + 本地文件 + 本地 FAISS` 为主
 - 已具备 token 鉴权、RBAC lite 与安全审计基础能力，但还不是完整用户体系
-- 检索、任务和文件处理目前仍以单服务进程部署为主
+- 默认部署仍以单 API 进程为主；ARQ worker、Redis 与 Qdrant 已可通过 Compose profile 启用
 - 更完整的组织级权限、监控告警、分布式任务与外部系统集成仍在持续演进
 
 ## 建议阅读顺序
@@ -182,3 +197,4 @@ docker compose up --build -d
 
 InsightDesk 的重点不是“再做一个聊天机器人”，而是把企业知识问答、附件分析、会话沉淀、任务执行与交付输出串成一个更完整的工作闭环。  
 如果你需要一个可本地部署、可继续工程化演进的 AI 工作台，这个项目已经具备不错的基础。
+

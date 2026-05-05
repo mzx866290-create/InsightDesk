@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "insightdesk.fullname" . }}-config
+  labels:
+    {{- include "insightdesk.labels" . | nindent 4 }}
+data:
+  CONFIG_RELOAD_STRATEGY: {{ .Values.config.reloadStrategy | quote }}
+  CONFIG_HOT_RELOAD_ENABLED: {{ ternary "true" "false" .Values.config.hotReload.enabled | quote }}
+  CONFIG_HOT_RELOAD_PATH: {{ printf "%s/%s" .Values.config.hotReload.mountPath .Values.config.hotReload.fileName | quote }}
+  CONFIG_HOT_RELOAD_CHECK_INTERVAL_SECONDS: {{ .Values.config.hotReload.checkIntervalSeconds | quote }}
+  SERVER_HOST: {{ .Values.config.serverHost | quote }}
+  SERVER_PORT: {{ .Values.config.serverPort | quote }}
+  APP_DB_PATH: {{ .Values.config.appDbPath | quote }}
+  CHAT_HISTORY_DB_PATH: {{ .Values.config.appDbPath | quote }}
+  VECTOR_STORE_PATH: {{ .Values.config.vectorStorePath | quote }}
+  TASK_BACKEND: {{ .Values.config.taskBackend | quote }}
+  DATABASE_PROVIDER: {{ .Values.config.databaseProvider | quote }}
+  DATABASE_URL: {{ .Values.config.databaseUrl | quote }}
+  VECTOR_STORE_PROVIDER: {{ .Values.config.vectorStoreProvider | quote }}
+  QDRANT_URL: {{ .Values.config.qdrantUrl | quote }}
+  QDRANT_COLLECTION: {{ .Values.config.qdrantCollection | quote }}
+  OLLAMA_BASE_URL: {{ .Values.config.ollamaBaseUrl | quote }}
+  REDIS_URL: {{ .Values.config.redisUrl | quote }}
+  ARQ_QUEUE_NAME: {{ .Values.config.arqQueueName | quote }}
+  ARQ_WORKER_MAX_JOBS: {{ .Values.config.arqWorkerMaxJobs | quote }}
+  ARQ_KEEP_RESULT_SECONDS: {{ .Values.config.arqKeepResultSeconds | quote }}
+  {{ .Values.config.hotReload.fileName }}: |-
+    CONFIG_RELOAD_STRATEGY={{ .Values.config.reloadStrategy }}
+    SERVER_HOST={{ .Values.config.serverHost }}
+    SERVER_PORT={{ .Values.config.serverPort }}
+    APP_DB_PATH={{ .Values.config.appDbPath }}
+    TASK_BACKEND={{ .Values.config.taskBackend }}
+    DATABASE_PROVIDER={{ .Values.config.databaseProvider }}
+    VECTOR_STORE_PROVIDER={{ .Values.config.vectorStoreProvider }}
+    QDRANT_COLLECTION={{ .Values.config.qdrantCollection }}
+    ARQ_QUEUE_NAME={{ .Values.config.arqQueueName }}

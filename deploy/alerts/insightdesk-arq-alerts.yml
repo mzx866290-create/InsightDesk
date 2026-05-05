@@ -1,0 +1,68 @@
+groups:
+  - name: insightdesk-arq
+    rules:
+      - alert: InsightDeskArqQueueBacklog
+        expr: insightdesk_task_queue_health{code="arq_queue_backlog"} > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: insightdesk
+          component: arq
+        annotations:
+          summary: InsightDesk ARQ queue backlog is above threshold
+          description: The ARQ queue length exceeded ARQ_QUEUE_WARNING_LENGTH for at least 5 minutes. Check worker capacity and Redis queue length.
+
+      - alert: InsightDeskArqWorkerHeartbeatMissing
+        expr: insightdesk_task_queue_health{code="arq_worker_heartbeat_missing"} > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: insightdesk
+          component: arq
+        annotations:
+          summary: InsightDesk ARQ worker heartbeat is missing
+          description: The worker heartbeat key is absent while heartbeat monitoring is enabled. Verify worker processes and Redis connectivity.
+
+      - alert: InsightDeskTaskPendingStale
+        expr: insightdesk_task_queue_health{code="task_pending_stale"} > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: insightdesk
+          component: tasks
+        annotations:
+          summary: InsightDesk task has been pending for too long
+          description: A pending task exceeded ARQ_PENDING_STALE_SECONDS. Check queue backlog, worker availability, and task dispatch errors.
+
+      - alert: InsightDeskTaskRunningStale
+        expr: insightdesk_task_queue_health{code="task_running_stale"} > 0
+        for: 15m
+        labels:
+          severity: warning
+          service: insightdesk
+          component: tasks
+        annotations:
+          summary: InsightDesk task has been running without progress
+          description: A running task exceeded ARQ_RUNNING_STALE_SECONDS without an update. Inspect worker logs and task-specific dependencies.
+
+      - alert: InsightDeskTaskQueueHealthUnavailable
+        expr: insightdesk_task_queue_health{code="arq_queue_health_unavailable"} > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: insightdesk
+          component: arq
+        annotations:
+          summary: InsightDesk cannot read ARQ queue health
+          description: The API could not read Redis-backed ARQ queue health. Verify REDIS_URL, Redis availability, and network policy.
+
+      - alert: InsightDeskOperationsAlertsPresent
+        expr: insightdesk_operations_alerts > 0
+        for: 5m
+        labels:
+          severity: info
+          service: insightdesk
+          component: operations
+        annotations:
+          summary: InsightDesk operations summary contains active alerts
+          description: The operations summary reports active alerts. Use /api/operations/runtime and /api/tasks to inspect warning codes.

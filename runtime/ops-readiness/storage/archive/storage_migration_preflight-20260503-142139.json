@@ -1,0 +1,430 @@
+{
+  "actions": {
+    "executed": false,
+    "mode": "preflight",
+    "postgres": {
+      "checked": false,
+      "skipped": true
+    },
+    "qdrant": {
+      "checked": false,
+      "skipped": true
+    }
+  },
+  "contracts": {
+    "evidence": {
+      "archive_dir": "runtime\\ops-readiness\\storage\\archive",
+      "history_path": "runtime\\ops-readiness\\storage\\history.json",
+      "report_path": "runtime\\ops-readiness\\storage\\manual-preflight.json"
+    },
+    "readiness": {
+      "commands": {
+        "execute_migration": [
+          "python",
+          "deploy/validate_storage_migration.py",
+          "--execute",
+          "--json"
+        ],
+        "offline_preflight": [
+          "python",
+          "deploy/validate_storage_migration.py",
+          "--json"
+        ],
+        "real_integration": [
+          "python",
+          "deploy/run_storage_integration_check.py"
+        ]
+      },
+      "gates": {
+        "STORAGE_INTEGRATION_TEST": false,
+        "STORAGE_MIGRATION_EXECUTE": false
+      },
+      "id": "storage_readiness_contract",
+      "required_env": {
+        "execute_migration": [
+          "STORAGE_MIGRATION_EXECUTE",
+          "DATABASE_URL",
+          "QDRANT_URL"
+        ],
+        "real_integration": [
+          "STORAGE_INTEGRATION_TEST",
+          "DATABASE_URL",
+          "QDRANT_URL"
+        ]
+      }
+    },
+    "rollback": {
+      "commands": {
+        "execute_rollback": [
+          "python",
+          "deploy/validate_storage_migration.py",
+          "--rollback",
+          "--json"
+        ],
+        "rollback_plan": [
+          "python",
+          "deploy/validate_storage_migration.py",
+          "--rollback-plan",
+          "--json"
+        ]
+      },
+      "gates": {
+        "STORAGE_MIGRATION_ROLLBACK": false
+      },
+      "id": "storage_rollback_contract",
+      "required_env": {
+        "execute_rollback": [
+          "STORAGE_MIGRATION_ROLLBACK",
+          "DATABASE_URL"
+        ]
+      },
+      "safety": {
+        "postgres": "Rollback is destructive and requires --confirm-drop-postgres-adapter-tables.",
+        "qdrant": "Qdrant rollback only deletes collections with the insightdesk_test_ prefix unless explicitly confirmed."
+      }
+    }
+  },
+  "coverage": {
+    "pending_postgres_adapter_tables": [],
+    "postgres_adapter_coverage_ratio": 1.0,
+    "postgres_adapter_tables": [
+      "messages",
+      "message_search",
+      "app_config",
+      "tasks",
+      "sessions",
+      "workspaces",
+      "session_memory",
+      "session_panels",
+      "retrieval_feedback",
+      "bookmarks",
+      "system_prompts",
+      "attachment_promotions",
+      "artifacts",
+      "decks",
+      "security_audit_events",
+      "organizations",
+      "users",
+      "memberships",
+      "share_links",
+      "sso_sessions",
+      "resource_grants"
+    ]
+  },
+  "environment": {
+    "APP_DB_PATH": "chat_history.db",
+    "DATABASE_PROVIDER": "sqlite",
+    "DATABASE_URL_configured": false,
+    "POSTGRES_DSN_configured": false,
+    "QDRANT_COLLECTION": "insightdesk_kb",
+    "QDRANT_URL": "http://localhost:6333",
+    "VECTOR_STORE_PROVIDER": "faiss"
+  },
+  "errors": [],
+  "evidence": {
+    "archive_dir": "runtime\\ops-readiness\\storage\\archive",
+    "archive_path": "runtime\\ops-readiness\\storage\\archive\\storage_migration_preflight-20260503-142139.json",
+    "history_path": "runtime\\ops-readiness\\storage\\history.json",
+    "id": "storage_migration_preflight",
+    "report_path": "runtime\\ops-readiness\\storage\\manual-preflight.json"
+  },
+  "ok": true,
+  "qdrant_backfill_plan": {
+    "command": [
+      "python",
+      "deploy/run_qdrant_backfill.py",
+      "--execute",
+      "--allow-dangerous-faiss-deserialization",
+      "--qdrant-vector-size",
+      "1536",
+      "--json"
+    ],
+    "destructive": false,
+    "dry_run_default": true,
+    "execute_env": "QDRANT_BACKFILL_EXECUTE",
+    "source": {
+      "provider": "faiss",
+      "vector_store_path": "./vector_store"
+    },
+    "target": {
+      "api_key_configured": false,
+      "collection_name": "insightdesk_kb",
+      "url": "http://localhost:6333"
+    }
+  },
+  "rollback_plan": {
+    "postgres": {
+      "command": [
+        "python",
+        "deploy/validate_storage_migration.py",
+        "--rollback",
+        "--confirm-drop-postgres-adapter-tables",
+        "--json"
+      ],
+      "destructive": true,
+      "tables": [
+        "messages",
+        "message_search",
+        "app_config",
+        "tasks",
+        "sessions",
+        "workspaces",
+        "session_memory",
+        "session_panels",
+        "retrieval_feedback",
+        "bookmarks",
+        "system_prompts",
+        "attachment_promotions",
+        "artifacts",
+        "decks",
+        "security_audit_events",
+        "organizations",
+        "users",
+        "memberships",
+        "share_links",
+        "sso_sessions",
+        "resource_grants"
+      ],
+      "target": {
+        "dsn_configured": false,
+        "dsn_preview": "",
+        "scheme": ""
+      }
+    },
+    "qdrant": {
+      "collection": "insightdesk_kb",
+      "command": [
+        "python",
+        "deploy/validate_storage_migration.py",
+        "--rollback",
+        "--confirm-delete-qdrant-collection",
+        "--json"
+      ],
+      "destructive": true,
+      "target": {
+        "api_key_configured": false,
+        "collection_name": "insightdesk_kb",
+        "url": "http://localhost:6333"
+      }
+    }
+  },
+  "runtime": {
+    "database": {
+      "availability": {
+        "available": true,
+        "connectivity_checked": false,
+        "status": "file_exists"
+      },
+      "configured": true,
+      "kind": "database",
+      "operations": {
+        "clear_supported": false,
+        "delete_supported": false
+      },
+      "provider": "sqlite",
+      "risks": [],
+      "target": {
+        "absolute_path": "F:\\项目\\AI智能体\\chat_history.db",
+        "exists": true,
+        "is_dir": false,
+        "is_file": true,
+        "parent": ".",
+        "parent_exists": true,
+        "parent_writable": true,
+        "path": "./chat_history.db"
+      },
+      "warnings": []
+    },
+    "vector_store": {
+      "availability": {
+        "available": false,
+        "connectivity_checked": false,
+        "index_files": {
+          "index.faiss": false,
+          "index.pkl": false
+        },
+        "path_exists": false,
+        "status": "path_missing"
+      },
+      "configured": true,
+      "kind": "vector_store",
+      "operations": {
+        "clear_supported": true,
+        "delete_supported": true
+      },
+      "provider": "faiss",
+      "risks": [
+        "faiss_load_uses_dangerous_deserialization"
+      ],
+      "target": {
+        "absolute_path": "F:\\项目\\AI智能体\\vector_store",
+        "exists": false,
+        "is_dir": false,
+        "is_file": false,
+        "parent": ".",
+        "parent_exists": true,
+        "parent_writable": true,
+        "path": "./vector_store"
+      },
+      "warnings": [
+        "faiss_path_missing"
+      ]
+    }
+  },
+  "source": {
+    "sqlite": {
+      "absolute_path": "F:\\项目\\AI智能体\\chat_history.db",
+      "errors": [],
+      "exists": true,
+      "missing_core_tables": [],
+      "path": "chat_history.db",
+      "readable": true,
+      "tables": {
+        "app_config": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 0
+        },
+        "artifacts": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 186
+        },
+        "attachment_promotions": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 0
+        },
+        "bookmarks": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 0
+        },
+        "decks": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 23
+        },
+        "memberships": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 0
+        },
+        "message_search": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": null
+        },
+        "messages": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 41
+        },
+        "organizations": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 0
+        },
+        "resource_grants": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 0
+        },
+        "retrieval_feedback": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 0
+        },
+        "security_audit_events": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 373
+        },
+        "session_memory": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 0
+        },
+        "session_panels": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 24
+        },
+        "sessions": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 29
+        },
+        "share_links": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 0
+        },
+        "sso_sessions": {
+          "exists": false,
+          "postgres_adapter_available": true,
+          "row_count": null
+        },
+        "system_prompts": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 5
+        },
+        "tasks": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 2
+        },
+        "users": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 0
+        },
+        "workspaces": {
+          "exists": true,
+          "postgres_adapter_available": true,
+          "row_count": 2
+        }
+      },
+      "warnings": []
+    }
+  },
+  "targets": {
+    "postgres": {
+      "availability": {
+        "available": false,
+        "connectivity_checked": false,
+        "status": "missing_dsn"
+      },
+      "configured": false,
+      "target": {
+        "dsn_configured": false,
+        "dsn_preview": "",
+        "scheme": ""
+      },
+      "valid": false,
+      "warnings": [
+        "postgres_dsn_missing"
+      ]
+    },
+    "qdrant": {
+      "availability": {
+        "available": true,
+        "collection_configured": true,
+        "connectivity_checked": false,
+        "status": "configured_not_connected"
+      },
+      "configured": true,
+      "target": {
+        "api_key_configured": false,
+        "collection_name": "insightdesk_kb",
+        "url": "http://localhost:6333"
+      },
+      "valid": true,
+      "warnings": []
+    }
+  },
+  "warnings": [
+    "postgres:postgres_dsn_missing"
+  ]
+}

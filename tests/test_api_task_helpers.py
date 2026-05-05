@@ -1,6 +1,6 @@
 import asyncio
 
-from backend.api_task_helpers import (
+from backend.helpers.task_helpers import (
     contains_dashboard_card,
     create_inline_task_record,
     prune_task_records,

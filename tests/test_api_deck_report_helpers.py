@@ -1,6 +1,7 @@
 import io
 from types import SimpleNamespace
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from pptx import Presentation
 from pptx.util import Pt
@@ -191,6 +192,285 @@ def test_export_deck_payload_delegates_to_exporter_and_filename_builder():
     assert payload == {
         "content": b"pptx:deck-helper",
         "filename": "deck-helper.pptx",
+        "evidence_coverage": {
+            "total_slides": 2,
+            "coverable_slide_count": 1,
+            "slides_with_evidence": 0,
+            "total_evidence_refs": 0,
+            "coverage_ratio": 0.0,
+            "unsupported_slide_ids": ["content-1"],
+            "slides": [
+                {
+                    "slide_id": "cover",
+                    "slide_type": "cover",
+                    "evidence_ref_count": 0,
+                    "has_evidence": False,
+                    "is_coverable": False,
+                    "quality_state": "weak_support",
+                },
+                {
+                    "slide_id": "content-1",
+                    "slide_type": "content",
+                    "evidence_ref_count": 0,
+                    "has_evidence": False,
+                    "is_coverable": True,
+                    "quality_state": "weak_support",
+                },
+            ],
+        },
+        "evidence_review": {
+            "status": "needs_review",
+            "coverage_ratio": 0.0,
+            "coverable_slide_count": 1,
+            "slides_with_evidence": 0,
+            "unsupported_slide_ids": ["content-1"],
+            "needs_review_slide_ids": ["content-1"],
+            "action_count": 2,
+            "action_items": [
+                {
+                    "code": "add_missing_slide_evidence",
+                    "severity": "warning",
+                    "message": "Add evidence references to unsupported slides.",
+                    "slide_ids": ["content-1"],
+                },
+                {
+                    "code": "attach_deck_sources",
+                    "severity": "warning",
+                    "message": "Attach at least one source before final export.",
+                    "slide_ids": ["content-1"],
+                },
+            ],
+            "slides": [
+                {
+                    "slide_id": "cover",
+                    "title": "Board Update",
+                    "slide_type": "cover",
+                    "is_coverable": False,
+                    "has_evidence": False,
+                    "evidence_ref_count": 0,
+                    "quality_state": "weak_support",
+                    "needs_review": False,
+                    "source_ids": [],
+                    "source_titles": [],
+                },
+                {
+                    "slide_id": "content-1",
+                    "title": "Growth",
+                    "slide_type": "content",
+                    "is_coverable": True,
+                    "has_evidence": False,
+                    "evidence_ref_count": 0,
+                    "quality_state": "weak_support",
+                    "needs_review": True,
+                    "source_ids": [],
+                    "source_titles": [],
+                },
+            ],
+            "citation_validation": {
+                "status": "passed",
+                "can_export": True,
+                "issue_count": 0,
+                "missing_source_ids": [],
+                "missing_block_evidence_ref_ids": [],
+                "issues": [],
+            },
+        },
+        "citation_validation": {
+            "status": "passed",
+            "can_export": True,
+            "issue_count": 0,
+            "missing_source_ids": [],
+            "missing_block_evidence_ref_ids": [],
+            "issues": [],
+        },
+        "export_gate": {
+            "blocked": False,
+            "overridden": False,
+            "can_export": True,
+            "reason": "",
+            "message": "",
+        },
+    }
+
+
+def test_build_deck_evidence_review_payload_reports_supported_sources():
+    deck = _deck()
+    deck.source_registry = [
+        deck_service.DeckSourceItem(
+            id="src-1",
+            type="doc",
+            title="Q2 Board Memo",
+        )
+    ]
+    deck.slides[1].evidence_refs = [
+        deck_service.DeckEvidenceRef(
+            id="ev-1",
+            source_id="src-1",
+            source_title="Q2 Board Memo",
+            snippet="Revenue rose in Q2.",
+            confidence=0.92,
+        )
+    ]
+    deck.slides[1].quality_state = "supported"
+
+    payload = api_deck_report_helpers.build_deck_evidence_review_payload(deck)
+
+    assert payload["status"] == "supported"
+    assert payload["coverage_ratio"] == 1.0
+    assert payload["unsupported_slide_ids"] == []
+    assert payload["action_items"] == []
+    content_review = payload["slides"][1]
+    assert content_review["slide_id"] == "content-1"
+    assert content_review["source_ids"] == ["src-1"]
+    assert content_review["source_titles"] == ["Q2 Board Memo"]
+    assert content_review["needs_review"] is False
+    assert payload["citation_validation"]["status"] == "passed"
+
+
+def test_deck_citation_validation_reports_missing_sources_and_block_refs():
+    deck = _deck()
+    deck.slides[1].evidence_refs = [
+        deck_service.DeckEvidenceRef(
+            id="ev-1",
+            source_id="missing-src",
+            source_title="Missing Source",
+            snippet="Revenue rose in Q2.",
+            confidence=0.92,
+        )
+    ]
+    deck.slides[1].blocks = [
+        deck_service.DeckBlock(
+            id="block-1",
+            kind="bullet_list",
+            role="main_points",
+            content={
+                "items": ["Revenue rose"],
+                "evidence_ref_ids": ["ev-1", "ev-missing"],
+            },
+        )
+    ]
+
+    validation = deck_service.validate_deck_citation_consistency(deck)
+
+    assert validation.status == "failed"
+    assert validation.can_export is False
+    assert validation.missing_source_ids == ["missing-src"]
+    assert validation.missing_block_evidence_ref_ids == ["ev-missing"]
+    assert [issue.code for issue in validation.issues] == [
+        "missing_source_registry_entry",
+        "missing_slide_evidence_ref",
+    ]
+
+
+def test_update_deck_block_refs_refreshes_citation_gate_payload():
+    deck = _deck()
+    deck.source_registry = [
+        deck_service.DeckSourceItem(id="src-1", type="doc", title="Q2 Board Memo")
+    ]
+    deck.slides[1].evidence_refs = [
+        deck_service.DeckEvidenceRef(
+            id="ev-1",
+            source_id="src-1",
+            source_title="Q2 Board Memo",
+            snippet="Revenue rose in Q2.",
+            confidence=0.92,
+        )
+    ]
+    deck.slides[1].blocks = [
+        deck_service.DeckBlock(
+            id="block-1",
+            kind="paragraph",
+            role="summary",
+            content={"text": "Revenue rose", "evidence_ref_ids": ["ev-missing"]},
+        )
+    ]
+
+    before = deck_service.validate_deck_citation_consistency(deck)
+    result = api_deck_report_helpers.update_deck_block_refs(
+        deck,
+        "content-1",
+        "block-1",
+        {
+            "evidence_ref_ids": ["ev-1", "ev-1", ""],
+            "source_ref_ids": ["src-1"],
+        },
+    )
+
+    assert before.status == "failed"
+    assert deck.slides[1].blocks[0].content["evidence_ref_ids"] == ["ev-1"]
+    assert deck.slides[1].blocks[0].content["evidence_source_ids"] == ["src-1"]
+    assert deck.slides[1].status.dirty is True
+    assert result["citation_validation"]["status"] == "passed"
+    assert result["export_gate"] == {
+        "blocked": False,
+        "overridden": False,
+        "can_export": True,
+        "reason": "",
+        "message": "",
+    }
+    assert result["evidence_review"]["citation_validation"]["status"] == "passed"
+
+
+def test_export_deck_payload_blocks_failed_citation_validation_by_default():
+    deck = _deck()
+    deck.slides[1].blocks = [
+        deck_service.DeckBlock(
+            id="block-1",
+            kind="paragraph",
+            role="summary",
+            content={"text": "Revenue rose", "evidence_ref_ids": ["ev-missing"]},
+        )
+    ]
+
+    with pytest.raises(api_deck_report_helpers.DeckExportGateError) as exc_info:
+        api_deck_report_helpers.export_deck_payload(
+            deck,
+            export_deck_to_pptx=lambda deck_obj: f"pptx:{deck_obj.deck_id}".encode("utf-8"),
+            build_export_filename=lambda deck_obj, extension: f"{deck_obj.deck_id}.{extension}",
+        )
+
+    payload = exc_info.value.payload
+    validation = payload["citation_validation"]
+    assert validation["status"] == "failed"
+    assert validation["can_export"] is False
+    assert validation["missing_block_evidence_ref_ids"] == ["ev-missing"]
+    assert payload["evidence_review"]["citation_validation"] == validation
+    assert payload["export_gate"] == {
+        "blocked": True,
+        "overridden": False,
+        "can_export": False,
+        "reason": "",
+        "message": "Deck export is blocked because citation validation failed.",
+    }
+
+
+def test_export_deck_payload_allows_explicit_unsafe_override_with_metadata():
+    deck = _deck()
+    deck.slides[1].blocks = [
+        deck_service.DeckBlock(
+            id="block-1",
+            kind="paragraph",
+            role="summary",
+            content={"text": "Revenue rose", "evidence_ref_ids": ["ev-missing"]},
+        )
+    ]
+
+    payload = api_deck_report_helpers.export_deck_payload(
+        deck,
+        export_deck_to_pptx=lambda deck_obj: f"pptx:{deck_obj.deck_id}".encode("utf-8"),
+        build_export_filename=lambda deck_obj, extension: f"{deck_obj.deck_id}.{extension}",
+        allow_unsafe_export=True,
+        override_reason="manual legal review",
+    )
+
+    assert payload["content"] == b"pptx:deck-helper"
+    assert payload["citation_validation"]["can_export"] is False
+    assert payload["export_gate"] == {
+        "blocked": False,
+        "overridden": True,
+        "can_export": False,
+        "reason": "manual legal review",
+        "message": "",
     }
 
 
@@ -328,3 +608,52 @@ def test_build_scoped_report_messages_prefers_web_research_when_panel_is_omitted
     assert messages[0].content == "Trend scan"
     assert "Research-first answer." in messages[1].content
     assert "Generic answer." not in messages[1].content
+
+
+def test_build_scoped_report_messages_preserves_structured_evidence_metadata():
+    records = [
+        {
+            "type": "human",
+            "content": "Build a deck",
+            "answer_group_id": "group-evidence",
+            "timestamp": 1,
+        },
+        {
+            "type": "ai",
+            "content": "Evidence-backed answer.",
+            "panel_id": "panel-main",
+            "answer_group_id": "group-evidence",
+            "timestamp": 2,
+            "sources": [
+                {
+                    "title": "Primary source",
+                    "url": "https://example.com/source",
+                    "snippet": "Important cited fact.",
+                }
+            ],
+            "claim_evidence_chains": [
+                {
+                    "claim_id": "claim-1",
+                    "claim_text": "Important cited fact.",
+                    "evidence_strength": "high",
+                    "sources": [{"title": "Primary source"}],
+                }
+            ],
+            "task_type": "web_research",
+            "model_id": "web_research",
+        },
+    ]
+
+    messages = api_deck_report_helpers.build_scoped_report_messages(
+        records,
+        answer_group_id="group-evidence",
+        panel_id="panel-main",
+        human_message_factory=lambda content: HumanMessage(content=content),
+        ai_message_factory=lambda content: AIMessage(content=content),
+    )
+
+    assert messages[1].additional_kwargs["sources"][0]["title"] == "Primary source"
+    assert (
+        messages[1].additional_kwargs["claim_evidence_chains"][0]["claim_text"]
+        == "Important cited fact."
+    )

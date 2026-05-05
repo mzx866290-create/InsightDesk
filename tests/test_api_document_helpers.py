@@ -8,8 +8,10 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pptx import Presentation
 from pptx.util import Pt
 
-import backend.api_document_helpers as api_document_helpers
-from backend.api_task_store import TaskStatus
+import backend.helpers.document_helpers as document_helpers
+from backend.stores.task_store import TaskStatus
+
+api_document_helpers = document_helpers
 
 
 class FakeUpload:
@@ -27,13 +29,19 @@ class FakeUpload:
 def _install_tempfile_factory(monkeypatch, tmp_path: Path) -> None:
     counter = {"value": 0}
 
-    def fake_mkstemp(*, suffix: str = "") -> tuple[int, str]:
+    def fake_mkstemp(
+        *,
+        suffix: str = "",
+        dir: str | os.PathLike[str] | None = None,
+    ) -> tuple[int, str]:
         counter["value"] += 1
-        path = tmp_path / f"upload-{counter['value']}{suffix}"
+        base_dir = Path(dir) if dir is not None else tmp_path
+        base_dir.mkdir(parents=True, exist_ok=True)
+        path = base_dir / f"upload-{counter['value']}{suffix}"
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_TRUNC)
         return fd, str(path)
 
-    monkeypatch.setattr(api_document_helpers.tempfile, "mkstemp", fake_mkstemp)
+    monkeypatch.setattr(document_helpers.tempfile, "mkstemp", fake_mkstemp)
 
 
 def test_upload_file_suffix_handles_missing_and_nested_names():
@@ -69,6 +77,35 @@ def test_stage_upload_files_writes_payloads(monkeypatch, tmp_path):
         assert [Path(path).read_bytes() for path in temp_paths] == [b"alpha", b"# brief"]
     finally:
         api_document_helpers.cleanup_temp_paths(temp_paths)
+
+
+def test_stage_upload_files_with_limits_uses_configured_staging_dir(monkeypatch, tmp_path):
+    _install_tempfile_factory(monkeypatch, tmp_path)
+    staging_dir = tmp_path / "shared"
+    uploads = [
+        FakeUpload("alpha.txt", b"alpha"),
+        FakeUpload("brief.md", b"# brief"),
+    ]
+
+    temp_paths, file_names = asyncio.run(
+        api_document_helpers.stage_upload_files_with_limits(
+            uploads,
+            staging_dir=staging_dir,
+        )
+    )
+
+    try:
+        assert staging_dir.exists()
+        assert file_names == ["alpha.txt", "brief.md"]
+        assert all(
+            Path(path).resolve().is_relative_to(staging_dir.resolve())
+            for path in temp_paths
+        )
+        assert [Path(path).read_bytes() for path in temp_paths] == [b"alpha", b"# brief"]
+    finally:
+        api_document_helpers.cleanup_temp_paths(temp_paths)
+
+    assert all(not Path(path).exists() for path in temp_paths)
 
 
 def test_stage_upload_files_cleans_up_when_read_fails(monkeypatch, tmp_path):

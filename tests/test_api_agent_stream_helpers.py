@@ -2,7 +2,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-from backend.api_agent_stream_helpers import (
+from backend.helpers.agent_stream_helpers import (
     MAX_ITERATIONS_DASHBOARD_ERROR,
     dashboard_prompt_excerpt,
     fail_dashboard_task,

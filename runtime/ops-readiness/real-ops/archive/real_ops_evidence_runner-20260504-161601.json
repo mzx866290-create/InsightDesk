@@ -1,0 +1,141 @@
+{
+  "continue_on_error": false,
+  "evidence": {
+    "archive_dir": "runtime\\ops-readiness\\real-ops\\archive",
+    "archive_path": "runtime\\ops-readiness\\real-ops\\archive\\real_ops_evidence_runner-20260504-161601.json",
+    "history_path": "runtime\\ops-readiness\\real-ops\\history.json",
+    "id": "real_ops_evidence_runner",
+    "report_path": "runtime\\ops-readiness\\real-ops\\arq-smoke-runner.json"
+  },
+  "execute": true,
+  "mode": "execute",
+  "ok": true,
+  "plan": {
+    "checks": [
+      {
+        "archive_dir": "runtime\\ops-readiness\\arq\\archive",
+        "area": "1.2_async_queue",
+        "blockers": [],
+        "checklist": [
+          "docker_cli",
+          "docker_daemon",
+          "redis_service",
+          "arq_worker_started",
+          "persisted_task_completed",
+          "evidence_archive"
+        ],
+        "command": [
+          "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+          "deploy/run_arq_e2e_smoke.py",
+          "--timeout-seconds",
+          "90",
+          "--compose-timeout-seconds",
+          "600",
+          "--json",
+          "--report-path",
+          "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+          "--archive-dir",
+          "runtime\\ops-readiness\\arq\\archive",
+          "--history-path",
+          "runtime\\ops-readiness\\arq\\history.json",
+          "--manifest-path",
+          "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+          "--docker-start-hint",
+          "--skip-if-unavailable"
+        ],
+        "description": "Run Redis/ARQ worker E2E smoke and confirm persisted task completion.",
+        "evidence_manifest_path": "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+        "history_path": "runtime\\ops-readiness\\arq\\history.json",
+        "id": "arq_long_running_smoke",
+        "included": true,
+        "probes": {
+          "docker": {
+            "blocker": "docker_daemon_unavailable",
+            "detail": "\"29.2.1\"",
+            "ok": true,
+            "returncode": 0
+          }
+        },
+        "real_environment": true,
+        "report_fields": [
+          "ok",
+          "skipped",
+          "blockers",
+          "task_id",
+          "job_id",
+          "evidence.decision",
+          "archive_path"
+        ],
+        "report_path": "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+        "required_env": [],
+        "required_tools": [
+          "docker"
+        ],
+        "runnable": true,
+        "safe_to_run": false,
+        "status": "ready"
+      }
+    ],
+    "execute": false,
+    "mode": "plan",
+    "ok": true,
+    "probe_tools": true,
+    "summary": {
+      "all_runnable": true,
+      "blocked": 0,
+      "runnable": 1,
+      "selected": 1
+    },
+    "unknown_ids": []
+  },
+  "probe_tools": true,
+  "results": [
+    {
+      "area": "1.2_async_queue",
+      "command": [
+        "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+        "deploy/run_arq_e2e_smoke.py",
+        "--timeout-seconds",
+        "90",
+        "--compose-timeout-seconds",
+        "600",
+        "--json",
+        "--report-path",
+        "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+        "--archive-dir",
+        "runtime\\ops-readiness\\arq\\archive",
+        "--history-path",
+        "runtime\\ops-readiness\\arq\\history.json",
+        "--manifest-path",
+        "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+        "--docker-start-hint",
+        "--skip-if-unavailable"
+      ],
+      "execution": {
+        "duration_ms": 69656,
+        "error": "",
+        "ok": true,
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "#1 [internal] load local bake definitions\n#1 reading from stdin 532B 0.0s done\n#1 DONE 0.0s\n\n#2 [internal] load build definition from Dockerfile.arq-worker\n#2 transferring dockerfile: 385B 0.1s done\n#2 DONE 0.2s\n\n#3 resolve image config for docker-image://docker.io/docker/dockerfile:1.7\n#3 DONE 2.0s\n\n#4 docker-image://docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e\n#4 CACHED\n\n#5 [internal] load metadata for docker.io/library/python:3.12-slim\n#5 DONE 1.2s\n\n#6 [internal] load .dockerignore\n#6 transferring context: 240B done\n#6 DONE 0.0s\n\n#7 [1/5] FROM docker.io/library/python:3.12-slim@sha256:46cb7cc2877e60fbd5e21a9ae6115c30ace7a077b9f8772da879e4590c18c2e3\n#7 DONE 0.0s\n\n#8 [internal] load build context\n#8 transferring context: 50.20kB 0.0s done\n#8 DONE 0.1s\n\n#9 [2/5] WORKDIR /app\n#9 CACHED\n\n#10 [3/5] RUN pip install --upgrade pip     && pip install \"arq>=0.26.0\"\n#10 CACHED\n\n#11 [4/5] COPY backend ./backend\n#11 DONE 0.2s\n\n#12 [5/5] COPY deploy ./deploy\n#12 DONE 0.1s\n\n#13 exporting to image\n#13 exporting layers\n#13 exporting layers 0.2s done\n#13 writing image sha256:37025b3f17b77ffd366205bbdb478ddedb825e4ce0e33dd653053f358232ea3d done\n#13 naming to docker.io/library/deploy-arq-worker done\n#13 DONE 0.3s\n\n#14 resolving provenance for metadata file\n#14 DONE 0.0s\n Image deploy-arq-worker Built \n Network deploy_default Creating \n Network deploy_default Created \n Container deploy-redis-1 Creating \n Container deploy-redis-1 Created \n Container deploy-arq-worker-1 Creating \n Container deploy-arq-worker-1 Created \n Container deploy-redis-1 Starting \n Container deploy-redis-1 Started \n Container deploy-redis-1 Waiting \n Container deploy-redis-1 Healthy \n Container deploy-arq-worker-1 Starting \n Container deploy-arq-worker-1 Started \n+ docker compose -f F:\\项目\\AI智能体\\deploy\\compose.arq-worker.yml run --rm -e TASK_STORE_FAIL_INCOMPLETE_ON_START=false -e TASK_BACKEND=arq arq-worker python /app/deploy/arq_e2e_probe.py --timeout-seconds 90\n Container deploy-redis-1 Running \n Container deploy-redis-1 Waiting \n Container deploy-redis-1 Healthy \n Container deploy-arq-worker-run-17b28170437d Creating \n Container deploy-arq-worker-run-17b28170437d Created \nTASK_ID=arq-e2e-3a1718f5d3cf4102a78d9590cf7a8152\nJOB_ID=task:arq-e2e-3a1718f5d3cf4102a78d9590cf7a8152\nOK: task completed task_id=arq-e2e-3a1718f5d3cf4102a78d9590cf7a8152 progress=100\n+ docker compose -f F:\\项目\\AI智能体\\deploy\\compose.arq-worker.yml down\n Container deploy-arq-worker-1 Stopping \n Container deploy-arq-worker-1 Stopped \n Container deploy-arq-worker-1 Removing \n Container deploy-arq-worker-1 Removed \n Container deploy-redis-1 Stopping \n Container deploy-redis-1 Stopped \n Container deploy-redis-1 Removing \n Container deploy-redis-1 Removed \n Network deploy_default Removing \n Network deploy_default Removed \n{\n  \"archive_path\": \"runtime\\\\ops-readiness\\\\arq\\\\archive\\\\arq_long_running_smoke-20260504-161601.json\",\n  \"blockers\": [],\n  \"cleanup_completed\": true,\n  \"docker_start_contract\": {},\n  \"evidence\": {\n    \"archive_ready\": true,\n    \"blockers\": [],\n    \"compose_file\": \"F:\\\\项目\\\\AI智能体\\\\deploy\\\\compose.arq-worker.yml\",\n    \"decision\": \"smoke_passed\",\n    \"manifest_path\": \"runtime\\\\ops-readiness\\\\arq\\\\evidence-manifest.json\",\n    \"probe_path\": \"/app/deploy/arq_e2e_probe.py\",\n    \"schema_version\": 1\n  },\n  \"exit_code\": 0,\n  \"finished_at\": 1777882514.4044151,\n  \"id\": \"arq_long_running_smoke\",\n  \"ok\": true,\n  \"probe_output_tail\": \"Container deploy-redis-1 Running \\n Container deploy-redis-1 Waiting \\n Container deploy-redis-1 Healthy \\n Container deploy-arq-worker-run-17b28170437d Creating \\n Container deploy-arq-worker-run-17b28170437d Created \\nTASK_ID=arq-e2e-3a1718f5d3cf4102a78d9590cf7a8152\\nJOB_ID=task:arq-e2e-3a1718f5d3cf4102a78d9590cf7a8152\\nOK: task completed task_id=arq-e2e-3a1718f5d3cf4102a78d9590cf7a8152 progress=100\",\n  \"queue_name\": \"insightdesk:tasks\",\n  \"skipped\": false,\n  \"started_at\": 1777882492.0834942,\n  \"task_backend\": \"arq\"\n}"
+      },
+      "id": "arq_long_running_smoke",
+      "ok": true
+    }
+  ],
+  "strict_plan": true,
+  "strict_verifier": false,
+  "summary": {
+    "all_runnable": true,
+    "blocked": 0,
+    "blocked_ids": [],
+    "executed": 1,
+    "failed": 0,
+    "passed": 1,
+    "runnable": 1,
+    "selected": 1,
+    "unknown_ids": []
+  },
+  "timeout_seconds": 1800,
+  "verifier": null
+}

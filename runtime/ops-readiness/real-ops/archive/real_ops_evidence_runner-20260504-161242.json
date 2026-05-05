@@ -1,0 +1,141 @@
+{
+  "continue_on_error": false,
+  "evidence": {
+    "archive_dir": "runtime\\ops-readiness\\real-ops\\archive",
+    "archive_path": "runtime\\ops-readiness\\real-ops\\archive\\real_ops_evidence_runner-20260504-161242.json",
+    "history_path": "runtime\\ops-readiness\\real-ops\\history.json",
+    "id": "real_ops_evidence_runner",
+    "report_path": "runtime\\ops-readiness\\real-ops\\arq-smoke-runner.json"
+  },
+  "execute": true,
+  "mode": "execute",
+  "ok": false,
+  "plan": {
+    "checks": [
+      {
+        "archive_dir": "runtime\\ops-readiness\\arq\\archive",
+        "area": "1.2_async_queue",
+        "blockers": [],
+        "checklist": [
+          "docker_cli",
+          "docker_daemon",
+          "redis_service",
+          "arq_worker_started",
+          "persisted_task_completed",
+          "evidence_archive"
+        ],
+        "command": [
+          "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+          "deploy/run_arq_e2e_smoke.py",
+          "--timeout-seconds",
+          "90",
+          "--compose-timeout-seconds",
+          "600",
+          "--json",
+          "--report-path",
+          "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+          "--archive-dir",
+          "runtime\\ops-readiness\\arq\\archive",
+          "--history-path",
+          "runtime\\ops-readiness\\arq\\history.json",
+          "--manifest-path",
+          "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+          "--docker-start-hint",
+          "--skip-if-unavailable"
+        ],
+        "description": "Run Redis/ARQ worker E2E smoke and confirm persisted task completion.",
+        "evidence_manifest_path": "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+        "history_path": "runtime\\ops-readiness\\arq\\history.json",
+        "id": "arq_long_running_smoke",
+        "included": true,
+        "probes": {
+          "docker": {
+            "blocker": "docker_daemon_unavailable",
+            "detail": "\"29.2.1\"",
+            "ok": true,
+            "returncode": 0
+          }
+        },
+        "real_environment": true,
+        "report_fields": [
+          "ok",
+          "skipped",
+          "blockers",
+          "task_id",
+          "job_id",
+          "evidence.decision",
+          "archive_path"
+        ],
+        "report_path": "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+        "required_env": [],
+        "required_tools": [
+          "docker"
+        ],
+        "runnable": true,
+        "safe_to_run": false,
+        "status": "ready"
+      }
+    ],
+    "execute": false,
+    "mode": "plan",
+    "ok": true,
+    "probe_tools": true,
+    "summary": {
+      "all_runnable": true,
+      "blocked": 0,
+      "runnable": 1,
+      "selected": 1
+    },
+    "unknown_ids": []
+  },
+  "probe_tools": true,
+  "results": [
+    {
+      "area": "1.2_async_queue",
+      "command": [
+        "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+        "deploy/run_arq_e2e_smoke.py",
+        "--timeout-seconds",
+        "90",
+        "--compose-timeout-seconds",
+        "600",
+        "--json",
+        "--report-path",
+        "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+        "--archive-dir",
+        "runtime\\ops-readiness\\arq\\archive",
+        "--history-path",
+        "runtime\\ops-readiness\\arq\\history.json",
+        "--manifest-path",
+        "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+        "--docker-start-hint",
+        "--skip-if-unavailable"
+      ],
+      "execution": {
+        "duration_ms": 47077,
+        "error": "",
+        "ok": false,
+        "returncode": 1,
+        "stderr": "",
+        "stdout": "1  |     worker_settings_ = cast('WorkerSettingsType', import_string(worker_settings))\narq-worker-1  |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\narq-worker-1  |   File \"/usr/local/lib/python3.12/site-packages/arq/utils.py\", line 149, in import_string\narq-worker-1  |     module = import_module(module_path)\narq-worker-1  |              ^^^^^^^^^^^^^^^^^^^^^^^^^^\narq-worker-1  |   File \"/usr/local/lib/python3.12/importlib/__init__.py\", line 90, in import_module\narq-worker-1  |     return _bootstrap._gcd_import(name[level:], package, level)\narq-worker-1  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 1387, in _gcd_import\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 1360, in _find_and_load\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 1310, in _find_and_load_unlocked\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 488, in _call_with_frames_removed\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 1387, in _gcd_import\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 1360, in _find_and_load\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 1331, in _find_and_load_unlocked\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 935, in _load_unlocked\narq-worker-1  |   File \"<frozen importlib._bootstrap_external>\", line 999, in exec_module\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 488, in _call_with_frames_removed\narq-worker-1  |   File \"/app/backend/tasks/__init__.py\", line 3, in <module>\narq-worker-1  |     from backend.tasks.backends import (\narq-worker-1  |   File \"/app/backend/tasks/backends.py\", line 8, in <module>\narq-worker-1  |     from backend.stores.task_store import TaskRecord\narq-worker-1  |   File \"/app/backend/stores/__init__.py\", line 3, in <module>\narq-worker-1  |     from backend.stores.config_store import SQLiteAppConfigStore, StoredConfigValue\narq-worker-1  |   File \"/app/backend/stores/config_store.py\", line 12, in <module>\narq-worker-1  |     from backend.chat_store import connect_sqlite\narq-worker-1  |   File \"/app/backend/chat_store.py\", line 14, in <module>\narq-worker-1  |     from langchain_core.chat_history import BaseChatMessageHistory\narq-worker-1  | ModuleNotFoundError: No module named 'langchain_core'\n+ docker compose -f F:\\项目\\AI智能体\\deploy\\compose.arq-worker.yml down\n Container deploy-arq-worker-1 Stopping \n Container deploy-arq-worker-1 Stopped \n Container deploy-arq-worker-1 Removing \n Container deploy-arq-worker-1 Removed \n Container deploy-redis-1 Stopping \n Container deploy-redis-1 Stopped \n Container deploy-redis-1 Removing \n Container deploy-redis-1 Removed \n Network deploy_default Removing \n Network deploy_default Removed \n{\n  \"archive_path\": \"runtime\\\\ops-readiness\\\\arq\\\\archive\\\\arq_long_running_smoke-20260504-161242.json\",\n  \"blockers\": [],\n  \"cleanup_completed\": true,\n  \"docker_start_contract\": {},\n  \"evidence\": {\n    \"archive_ready\": true,\n    \"blockers\": [],\n    \"compose_file\": \"F:\\\\项目\\\\AI智能体\\\\deploy\\\\compose.arq-worker.yml\",\n    \"decision\": \"smoke_failed\",\n    \"manifest_path\": \"runtime\\\\ops-readiness\\\\arq\\\\evidence-manifest.json\",\n    \"probe_path\": \"/app/deploy/arq_e2e_probe.py\",\n    \"schema_version\": 1\n  },\n  \"exit_code\": 1,\n  \"finished_at\": 1777882359.9475996,\n  \"id\": \"arq_long_running_smoke\",\n  \"ok\": false,\n  \"probe_output_tail\": \"Container deploy-redis-1 Running \\n Container deploy-redis-1 Waiting \\n Container deploy-redis-1 Healthy \\n Container deploy-arq-worker-run-5571dd2dfd48 Creating \\n Container deploy-arq-worker-run-5571dd2dfd48 Created \\nTraceback (most recent call last):\\n  File \\\"/app/deploy/arq_e2e_probe.py\\\", line 17, in <module>\\n    from backend.core.storage_runtime import app_database_path\\nModuleNotFoundError: No module named 'backend'\",\n  \"queue_name\": \"insightdesk:tasks\",\n  \"skipped\": false,\n  \"started_at\": 1777882315.7074606,\n  \"task_backend\": \"arq\"\n}"
+      },
+      "id": "arq_long_running_smoke",
+      "ok": false
+    }
+  ],
+  "strict_plan": true,
+  "strict_verifier": false,
+  "summary": {
+    "all_runnable": true,
+    "blocked": 0,
+    "blocked_ids": [],
+    "executed": 1,
+    "failed": 1,
+    "passed": 0,
+    "runnable": 1,
+    "selected": 1,
+    "unknown_ids": []
+  },
+  "timeout_seconds": 1800,
+  "verifier": null
+}

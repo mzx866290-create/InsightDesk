@@ -1,0 +1,24 @@
+{
+  "archive_path": "runtime\\ops-readiness\\arq\\archive\\arq_long_running_smoke-20260504-161242.json",
+  "blockers": [],
+  "cleanup_completed": true,
+  "docker_start_contract": {},
+  "evidence": {
+    "archive_ready": true,
+    "blockers": [],
+    "compose_file": "F:\\项目\\AI智能体\\deploy\\compose.arq-worker.yml",
+    "decision": "smoke_failed",
+    "manifest_path": "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+    "probe_path": "/app/deploy/arq_e2e_probe.py",
+    "schema_version": 1
+  },
+  "exit_code": 1,
+  "finished_at": 1777882359.9475996,
+  "id": "arq_long_running_smoke",
+  "ok": false,
+  "probe_output_tail": "Container deploy-redis-1 Running \n Container deploy-redis-1 Waiting \n Container deploy-redis-1 Healthy \n Container deploy-arq-worker-run-5571dd2dfd48 Creating \n Container deploy-arq-worker-run-5571dd2dfd48 Created \nTraceback (most recent call last):\n  File \"/app/deploy/arq_e2e_probe.py\", line 17, in <module>\n    from backend.core.storage_runtime import app_database_path\nModuleNotFoundError: No module named 'backend'",
+  "queue_name": "insightdesk:tasks",
+  "skipped": false,
+  "started_at": 1777882315.7074606,
+  "task_backend": "arq"
+}

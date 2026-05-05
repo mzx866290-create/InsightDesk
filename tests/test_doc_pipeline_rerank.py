@@ -151,6 +151,154 @@ def test_format_debug_entry_exposes_feedback_fields():
     assert entry["feedback_negative_count"] == 1
 
 
+def test_prepare_documents_applies_governance_metadata_and_dedupes():
+    pipeline = DocPipeline(device="cpu")
+    expired_ts = int(doc_pipeline.time.time()) - 60
+
+    prepared = pipeline._prepare_documents_for_index(
+        [
+            Document(page_content="Current reimbursement policy requires approval.", metadata={"source": "policy_v2_20250101.md"}),
+            Document(page_content="Legacy reimbursement policy requires approval.", metadata={"source": "policy_v1_20240101.md"}),
+            Document(
+                page_content="Expired reimbursement policy for archive only.",
+                metadata={"source": "policy_v3_20260101.md", "kb_expiry_ts": expired_ts},
+            ),
+            Document(page_content="Current reimbursement policy requires approval.", metadata={"source": "policy_v2_20250101.md"}),
+        ]
+    )
+
+    assert len(prepared) == 3
+
+    by_source = {doc.metadata["source"]: doc for doc in prepared}
+    assert by_source["policy_v2_20250101.md"].metadata["kb_is_latest"] is True
+    assert by_source["policy_v2_20250101.md"].metadata["kb_lifecycle_status"] == "current"
+    assert by_source["policy_v1_20240101.md"].metadata["kb_is_latest"] is False
+    assert by_source["policy_v1_20240101.md"].metadata["kb_lifecycle_status"] == "superseded"
+    assert by_source["policy_v3_20260101.md"].metadata["kb_is_expired"] is True
+    assert by_source["policy_v3_20260101.md"].metadata["kb_lifecycle_status"] == "expired"
+
+
+def test_keyword_search_prefers_current_governed_docs(monkeypatch):
+    monkeypatch.setattr(DocPipeline, "_load_feedback_summary_map", lambda self, source_type="doc": {})
+
+    pipeline = DocPipeline(device="cpu")
+    docs = pipeline._prepare_documents_for_index(
+        [
+            Document(page_content="Reimbursement workflow current policy approval.", metadata={"source": "policy_v2_20250101.md"}),
+            Document(page_content="Reimbursement workflow legacy policy approval.", metadata={"source": "policy_v1_20240101.md"}),
+        ]
+    )
+    pipeline.vectorstore = type(
+        "FakeVectorStore",
+        (),
+        {"docstore": type("FakeDocStore", (), {"_dict": {str(i): doc for i, doc in enumerate(docs)}})()},
+    )()
+
+    results = pipeline.keyword_search("reimbursement approval", k=2)
+
+    assert [doc.metadata["source"] for doc in results] == [
+        "policy_v2_20250101.md",
+        "policy_v1_20240101.md",
+    ]
+    assert results[0].metadata["governance_boost"] > results[1].metadata["governance_boost"]
+
+
+def test_search_with_rerank_applies_governance_boost(monkeypatch):
+    class FakeCrossEncoder:
+        def __init__(self, model_name, max_length, device, local_files_only=False, token=None):
+            self.device = device
+
+        def predict(self, pairs):
+            return [0.6, 0.6]
+
+    class FakeVectorStore:
+        def __init__(self, docs):
+            self._docs = docs
+
+        def similarity_search(self, query, k):
+            return self._docs[:k]
+
+    monkeypatch.setattr(doc_pipeline, "CrossEncoder", FakeCrossEncoder)
+    monkeypatch.setattr(DocPipeline, "_resolve_device", lambda self, device: device or "cpu")
+    monkeypatch.setattr(DocPipeline, "_load_feedback_summary_map", lambda self, source_type="doc": {})
+    DocPipeline._reranker_cache.clear()
+
+    pipeline = DocPipeline(device="cpu")
+    prepared = pipeline._prepare_documents_for_index(
+        [
+            Document(page_content="Legacy reimbursement policy approval.", metadata={"source": "policy_v1_20240101.md"}),
+            Document(page_content="Current reimbursement policy approval.", metadata={"source": "policy_v2_20250101.md"}),
+        ]
+    )
+    pipeline.vectorstore = FakeVectorStore(prepared)
+
+    results = pipeline.search_with_rerank("reimbursement policy", k=2, fetch_k=2)
+
+    assert [doc.metadata["source"] for doc in results] == [
+        "policy_v2_20250101.md",
+        "policy_v1_20240101.md",
+    ]
+    assert results[0].metadata["governance_boost"] > results[1].metadata["governance_boost"]
+
+
+def test_ingest_rebuilds_index_from_prepared_documents(monkeypatch):
+    built_batches: list[list[str]] = []
+
+    class FakeBuiltStore:
+        def __init__(self, first_batch):
+            self._docs = list(first_batch)
+            self.docstore = type(
+                "FakeDocStore",
+                (),
+                {"_dict": {str(i): doc for i, doc in enumerate(self._docs)}},
+            )()
+            built_batches.append([doc.metadata["source"] for doc in first_batch])
+
+        def add_documents(self, batch):
+            self._docs.extend(batch)
+            self.docstore._dict = {str(i): doc for i, doc in enumerate(self._docs)}
+            built_batches.append([doc.metadata["source"] for doc in batch])
+
+    pipeline = DocPipeline(device="cpu")
+    pipeline._embeddings = object()
+    pipeline.vector_store_adapter = type(
+        "FakeVectorStoreAdapter",
+        (),
+        {
+            "provider": "faiss",
+            "from_documents": lambda self, batch, embeddings: FakeBuiltStore(batch),
+        },
+    )()
+    pipeline.vectorstore = FakeBuiltStore(
+        pipeline._prepare_documents_for_index(
+            [
+                Document(
+                    page_content="Legacy reimbursement policy approval.",
+                    metadata={"source": "policy_v1_20240101.md"},
+                )
+            ]
+        )
+    )
+    pipeline.load_file = lambda fp: [
+        Document(
+            page_content="Current reimbursement policy approval.",
+            metadata={"source": "policy_v2_20250101.md"},
+        )
+    ]
+    pipeline._smart_split = lambda docs: docs
+    pipeline._save_vectorstore_local = lambda: None
+    built_batches.clear()
+
+    count = pipeline.ingest(["policy_v2_20250101.md"])
+
+    assert count == 2
+    assert built_batches == [["policy_v1_20240101.md", "policy_v2_20250101.md"]]
+    assert [doc.metadata["source"] for doc in pipeline._all_index_documents()] == [
+        "policy_v1_20240101.md",
+        "policy_v2_20250101.md",
+    ]
+
+
 def test_normalize_rerank_scores_handles_invalid_values():
     pipeline = DocPipeline(device="cpu")
 

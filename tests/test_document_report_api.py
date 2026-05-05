@@ -83,12 +83,14 @@ def _panel_config_payload(panel_id: str = "panel-main") -> dict[str, object]:
 
 def test_upload_documents_endpoint_stages_files_and_persists_task(monkeypatch, tmp_path):
     db_path = tmp_path / "chat_history.db"
+    staging_dir = tmp_path / "shared_uploads"
     task_store = api_server.SQLiteTaskStore(db_path=str(db_path))
     scheduled: list[object] = []
     task_id = ""
 
     monkeypatch.setattr(api_server, "_task_store", task_store)
     monkeypatch.setattr(api_server, "_tasks", {})
+    monkeypatch.setattr(api_server, "DOCUMENT_UPLOAD_STAGING_DIR", staging_dir, raising=False)
     monkeypatch.setattr(
         api_server,
         "_effective_vector_store_path",
@@ -123,14 +125,88 @@ def test_upload_documents_endpoint_stages_files_and_persists_task(monkeypatch, t
         assert record.params["file_names"] == ["alpha.txt", "brief.md"]
         assert record.params["vector_store_path"] == "resolved::kb_custom"
         assert all(Path(path).exists() for path in record.params["temp_paths"])
+        assert all(
+            Path(path).resolve().is_relative_to(staging_dir.resolve())
+            for path in record.params["temp_paths"]
+        )
 
         stored = task_store.get(task_id)
         assert stored is not None
         assert stored.task_type == "upload_documents"
         assert stored.params["file_names"] == ["alpha.txt", "brief.md"]
+        assert stored.params["temp_paths"] == record.params["temp_paths"]
     finally:
         for coro in scheduled:
             coro.close()
+        record = api_server._tasks.get(task_id)
+        if record is not None:
+            for temp_path in record.params.get("temp_paths", []):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
+
+def test_upload_documents_endpoint_arq_persists_and_enqueues_external_task(
+    monkeypatch,
+    tmp_path,
+):
+    db_path = tmp_path / "chat_history.db"
+    task_store = api_server.SQLiteTaskStore(db_path=str(db_path))
+    queued_task_ids: list[str] = []
+    task_id = ""
+
+    async def fake_enqueue_external_task(record):
+        queued_task_ids.append(record.task_id)
+        return "queued"
+
+    def fail_create_task(coro):
+        coro.close()
+        raise AssertionError("local asyncio.create_task should not be called")
+
+    monkeypatch.setattr(api_server, "_task_store", task_store)
+    monkeypatch.setattr(api_server, "_tasks", {})
+    monkeypatch.setattr(api_server, "TASK_BACKEND", "arq")
+    monkeypatch.setattr(
+        api_server,
+        "enqueue_external_task",
+        fake_enqueue_external_task,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        api_server,
+        "_effective_vector_store_path",
+        lambda path=None: f"resolved::{path or 'current'}",
+    )
+    monkeypatch.setattr(api_server.asyncio, "create_task", fail_create_task)
+
+    client = TestClient(api_server.app)
+
+    try:
+        response = client.post(
+            "/api/documents/upload",
+            data={"vector_store_path": "kb_arq"},
+            files=[("files", ("alpha.txt", b"alpha", "text/plain"))],
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        task_id = payload["task_id"]
+        assert payload["task_type"] == "upload_documents"
+        assert payload["status"] == api_server.TaskStatus.PENDING
+
+        record = api_server._tasks[task_id]
+        assert record.task_type == "upload_documents"
+        assert record.params["file_names"] == ["alpha.txt"]
+        assert record.params["vector_store_path"] == "resolved::kb_arq"
+        assert all(Path(path).exists() for path in record.params["temp_paths"])
+
+        stored = task_store.get(task_id)
+        assert stored is not None
+        assert stored.task_type == "upload_documents"
+        assert stored.params["file_names"] == ["alpha.txt"]
+        assert queued_task_ids == [task_id]
+    finally:
         record = api_server._tasks.get(task_id)
         if record is not None:
             for temp_path in record.params.get("temp_paths", []):
@@ -428,6 +504,17 @@ def test_regenerate_deck_endpoint_reuses_saved_scope(monkeypatch, tmp_path):
     )
 
     assert response.status_code == 200
+    payload = response.json()
+    assert payload["deck"]["deck_id"] == "deck-scoped-regenerate"
+    assert payload["citation_validation"]["can_export"] is True
+    assert payload["evidence_review"]["citation_validation"] == payload["citation_validation"]
+    assert payload["export_gate"] == {
+        "blocked": False,
+        "overridden": False,
+        "can_export": True,
+        "reason": "",
+        "message": "",
+    }
     messages = captured["messages"]
     assert len(messages) == 2
     assert messages[0].content == "Trend scan"
@@ -468,6 +555,47 @@ def test_export_deck_endpoint_returns_pptx_bytes():
     )
     assert 'attachment; filename="Board Update.pptx"' == response.headers["content-disposition"]
 
+    presentation = Presentation(io.BytesIO(response.content))
+    assert len(presentation.slides) == 2
+
+
+def test_export_deck_endpoint_blocks_failed_citation_validation_by_default():
+    deck = _deck("deck-export-blocked")
+    deck.slides[1].blocks[0].content["evidence_ref_ids"] = ["ev-missing"]
+    api_server._deck_store.save(deck)
+
+    client = TestClient(api_server.app)
+    response = client.get("/api/decks/deck-export-blocked/export")
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["export_gate"]["blocked"] is True
+    assert detail["export_gate"]["overridden"] is False
+    assert detail["citation_validation"]["can_export"] is False
+    assert detail["citation_validation"]["missing_block_evidence_ref_ids"] == [
+        "ev-missing"
+    ]
+    assert detail["evidence_review"]["citation_validation"] == detail["citation_validation"]
+
+
+def test_export_deck_endpoint_allows_explicit_unsafe_override():
+    deck = _deck("deck-export-override")
+    deck.slides[1].blocks[0].content["evidence_ref_ids"] = ["ev-missing"]
+    api_server._deck_store.save(deck)
+
+    client = TestClient(api_server.app)
+    response = client.get(
+        "/api/decks/deck-export-override/export",
+        params={
+            "allow_unsafe_export": "true",
+            "override_reason": "manual legal review",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    )
     presentation = Presentation(io.BytesIO(response.content))
     assert len(presentation.slides) == 2
 

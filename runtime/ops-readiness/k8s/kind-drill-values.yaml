@@ -1,0 +1,43 @@
+image:
+  repository: python
+  tag: 3.12-alpine
+  pullPolicy: IfNotPresent
+
+runtime:
+  persistence:
+    enabled: false
+
+api:
+  command:
+    - python
+    - -c
+  args:
+    - |
+      from http.server import BaseHTTPRequestHandler, HTTPServer
+
+      class Handler(BaseHTTPRequestHandler):
+          def do_GET(self):
+              self.send_response(200)
+              self.end_headers()
+              self.wfile.write(b"ok")
+
+          def log_message(self, format, *args):
+              return
+
+      HTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 1
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 6
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: http
+    initialDelaySeconds: 1
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 6

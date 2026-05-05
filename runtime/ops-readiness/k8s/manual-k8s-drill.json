@@ -1,0 +1,33 @@
+{
+  "blockers": [
+    "missing_env:OPS_REAL_CLUSTER_TEST"
+  ],
+  "chart_dir": "F:\\项目\\AI智能体\\deploy\\helm\\insightdesk",
+  "contracts": {
+    "evidence": {
+      "archive_dir": "runtime\\ops-readiness\\k8s\\archive",
+      "history_path": "runtime\\ops-readiness\\k8s\\history.json",
+      "report_path": "runtime\\ops-readiness\\k8s\\manual-k8s-drill.json"
+    }
+  },
+  "evidence": {
+    "archive_dir": "runtime\\ops-readiness\\k8s\\archive",
+    "archive_path": "runtime\\ops-readiness\\k8s\\archive\\k8s_rollout_drill-20260503-143303.json",
+    "history_path": "runtime\\ops-readiness\\k8s\\history.json",
+    "id": "k8s_rollout_drill",
+    "report_path": "runtime\\ops-readiness\\k8s\\manual-k8s-drill.json"
+  },
+  "gate": "OPS_REAL_CLUSTER_TEST",
+  "include_worker": false,
+  "namespace": "default",
+  "ok": false,
+  "release": "insightdesk",
+  "skipped": true,
+  "status": "skipped",
+  "steps": [],
+  "summary": {
+    "executed_steps": 0,
+    "ready": false,
+    "total_steps": 5
+  }
+}

@@ -10,6 +10,8 @@ import {
 import type {
   ArtifactExportFormat,
   ArtifactRecord,
+  ClaimEvidenceChain,
+  ClaimVerificationSummary,
   DeckSpec,
   ReportArtifactContent,
 } from '../../api/client'
@@ -20,6 +22,8 @@ interface ReportArtifactOpenPayload {
   markdown: string
   answerGroupId?: string
   panelId?: string
+  claimEvidenceChains?: ClaimEvidenceChain[]
+  claimVerificationSummary?: ClaimVerificationSummary
 }
 
 interface ArtifactMatrixProps {
@@ -104,6 +108,8 @@ export const ArtifactMatrix: React.FC<ArtifactMatrixProps> = ({
           markdown: content.markdown ?? '',
           answerGroupId: content.answer_group_id ?? undefined,
           panelId: content.panel_id ?? undefined,
+          claimEvidenceChains: content.claim_evidence_chains,
+          claimVerificationSummary: content.claim_verification_summary,
         })
         return
       }

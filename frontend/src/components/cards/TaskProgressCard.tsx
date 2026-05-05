@@ -1,6 +1,14 @@
 import React, { useEffect, useState } from 'react'
-import { CheckCircle, Clock, Loader2, RefreshCw, XCircle } from 'lucide-react'
-import { getDeck, getTask } from '../../api/client'
+import {
+  CheckCircle,
+  Clock,
+  Loader2,
+  RefreshCw,
+  ShieldAlert,
+  XCircle,
+} from 'lucide-react'
+
+import { decideTaskApproval, getDeck, getTask } from '../../api/client'
 import type { DeckSpec, TaskStatus } from '../../api/client'
 import { useChatStore } from '../../stores/chatStore'
 import { createAndTrackTask, useTaskStore } from '../../stores/taskStore'
@@ -8,12 +16,13 @@ import { DeckEditorModal } from '../reports/DeckEditorModal'
 import { ReportPreviewModal } from '../reports/ReportPreviewModal'
 
 const TASK_TYPE_LABELS: Record<string, string> = {
-  analyze_knowledge_base: '知识库分析',
-  generate_dashboard: '仪表盘生成',
-  generate_deck: '演示稿生成',
-  generate_report: '报告生成',
-  upload_documents: '文档导入',
-  web_research: '联网研究',
+  analyze_knowledge_base: 'Knowledge Base Analysis',
+  generate_dashboard: 'Dashboard Generation',
+  generate_deck: 'Deck Generation',
+  generate_report: 'Report Generation',
+  multi_agent_workflow: 'Multi-Agent Workflow',
+  upload_documents: 'Document Upload',
+  web_research: 'Web Research',
 }
 
 const STATUS_CONFIG: Record<
@@ -21,25 +30,31 @@ const STATUS_CONFIG: Record<
   { label: string; icon: React.ReactNode; color: string; barColor: string }
 > = {
   pending: {
-    label: '等待中',
+    label: 'Pending',
     icon: <Clock size={13} className="animate-pulse text-text-secondary/70" />,
     color: 'text-text-secondary/70',
     barColor: 'bg-text-secondary/40',
   },
   running: {
-    label: '执行中',
+    label: 'Running',
     icon: <Loader2 size={13} className="animate-spin text-accent-blue" />,
     color: 'text-accent-blue',
     barColor: 'bg-accent-blue',
   },
+  waiting_approval: {
+    label: 'Needs approval',
+    icon: <ShieldAlert size={13} className="text-amber-300" />,
+    color: 'text-amber-300',
+    barColor: 'bg-amber-400',
+  },
   completed: {
-    label: '已完成',
+    label: 'Completed',
     icon: <CheckCircle size={13} className="text-accent-green" />,
     color: 'text-accent-green',
     barColor: 'bg-accent-green',
   },
   failed: {
-    label: '失败',
+    label: 'Failed',
     icon: <XCircle size={13} className="text-red-400" />,
     color: 'text-red-400',
     barColor: 'bg-red-400',
@@ -50,6 +65,11 @@ interface TaskProgressCardProps {
   taskId: string
   taskType?: string
   sessionId?: string
+}
+
+function isRestartInterrupted(error: string | undefined): boolean {
+  if (!error) return false
+  return error.includes('服务已重启') || error.includes('鏈嶅姟宸查噸鍚')
 }
 
 export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
@@ -66,6 +86,7 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
   const [deckData, setDeckData] = useState<DeckSpec | null>(null)
   const [deckLoading, setDeckLoading] = useState(false)
   const [deckError, setDeckError] = useState<string | null>(null)
+  const [approvalLoading, setApprovalLoading] = useState(false)
 
   useEffect(() => {
     if (task) return
@@ -79,22 +100,19 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
       .catch(() => {})
   }, [taskId, task, startPolling])
 
-  const displayType = task?.task_type ?? taskType ?? '任务'
+  const displayType = task?.task_type ?? taskType ?? 'Task'
   const label = TASK_TYPE_LABELS[displayType] ?? displayType
   const status: TaskStatus = task?.status ?? 'pending'
   const progress = task?.progress ?? 0
   const cfg = STATUS_CONFIG[status]
   const effectiveSessionId = sessionId ?? task?.session_id ?? currentSessionId ?? undefined
-  const restartInterrupted =
-    status === 'failed' &&
-    typeof task?.error === 'string' &&
-    task.error.includes('服务已重启')
+  const restartInterrupted = isRestartInterrupted(task?.error)
   const isTerminal = status === 'completed' || status === 'failed'
 
   const reportMarkdown =
     typeof task?.params?.report_markdown === 'string' ? task.params.report_markdown : ''
   const reportTitle =
-    typeof task?.params?.report_title === 'string' ? task.params.report_title : '研究报告'
+    typeof task?.params?.report_title === 'string' ? task.params.report_title : 'Research Report'
   const reportArtifactId =
     typeof task?.params?.artifact_id === 'string' ? task.params.artifact_id : undefined
   const reportAnswerGroupId =
@@ -104,7 +122,9 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
 
   const deckId = typeof task?.params?.deck_id === 'string' ? task.params.deck_id : ''
   const deckTitle =
-    typeof task?.params?.deck_title === 'string' ? task.params.deck_title : '演示稿草稿'
+    typeof task?.params?.deck_title === 'string' ? task.params.deck_title : 'Deck Draft'
+  const approvalReason =
+    typeof task?.params?.approval_reason === 'string' ? task.params.approval_reason : ''
 
   const handleRetry = async () => {
     if (!task) return
@@ -112,6 +132,22 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
       await createAndTrackTask(task.task_type, task.params ?? {}, effectiveSessionId)
     } catch (error) {
       console.error('Task retry failed', error)
+    }
+  }
+
+  const handleApprovalDecision = async (decision: 'approved' | 'rejected') => {
+    if (!task || approvalLoading) return
+    setApprovalLoading(true)
+    try {
+      const updated = await decideTaskApproval(task.task_id, { decision })
+      useTaskStore.getState().addTask(updated)
+      if (updated.status === 'pending' || updated.status === 'running') {
+        startPolling(task.task_id)
+      }
+    } catch (error) {
+      console.error('Task approval failed', error)
+    } finally {
+      setApprovalLoading(false)
     }
   }
 
@@ -129,7 +165,7 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
       setDeckData(deck)
       setDeckOpen(true)
     } catch (error) {
-      setDeckError((error as Error).message || '打开 Deck 失败。')
+      setDeckError((error as Error).message || 'Failed to open deck.')
     } finally {
       setDeckLoading(false)
     }
@@ -152,7 +188,7 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
 
       <div className="px-4 pb-1 pt-3">
         <div className="mb-1 flex items-center justify-between">
-          <span className="text-[10px] text-text-secondary/60">进度</span>
+          <span className="text-[10px] text-text-secondary/60">Progress</span>
           <span className={`text-[10px] font-semibold ${cfg.color}`}>{progress}%</span>
         </div>
         <div className="h-1.5 overflow-hidden rounded-full bg-bg-tertiary">
@@ -165,6 +201,36 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
         </div>
       </div>
 
+      {status === 'waiting_approval' && (
+        <div className="space-y-2 px-4 pb-3 pt-2">
+          <p className="text-[11px] leading-relaxed text-amber-200">
+            {approvalReason || 'This workflow is waiting for approval.'}
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                void handleApprovalDecision('approved')
+              }}
+              disabled={approvalLoading}
+              className="rounded-lg border border-accent-green/30 bg-accent-green/10 px-2.5 py-1 text-[11px] text-accent-green disabled:opacity-50"
+            >
+              {approvalLoading ? 'Working...' : 'Approve'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void handleApprovalDecision('rejected')
+              }}
+              disabled={approvalLoading}
+              className="rounded-lg border border-accent-red/30 bg-accent-red/10 px-2.5 py-1 text-[11px] text-accent-red disabled:opacity-50"
+            >
+              {approvalLoading ? 'Working...' : 'Reject'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {task?.result && status === 'completed' && (
         <div className="px-4 pb-3 pt-2">
           <p className="text-[11px] leading-relaxed text-text-primary/80">{task.result}</p>
@@ -174,7 +240,7 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
               onClick={() => setReportPreviewOpen(true)}
               className="mt-2 inline-flex items-center gap-1 text-[11px] text-accent-blue transition-colors hover:text-accent-blue/80"
             >
-              查看报告
+              Open report
             </button>
           )}
           {deckId && (
@@ -184,9 +250,9 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
                 void handleOpenDeck()
               }}
               disabled={deckLoading}
-              className="mt-2 ml-3 inline-flex items-center gap-1 text-[11px] text-accent-blue transition-colors hover:text-accent-blue/80 disabled:opacity-50"
+              className="ml-3 mt-2 inline-flex items-center gap-1 text-[11px] text-accent-blue transition-colors hover:text-accent-blue/80 disabled:opacity-50"
             >
-              {deckLoading ? '打开中...' : `查看 Deck${deckTitle ? `: ${deckTitle}` : ''}`}
+              {deckLoading ? 'Opening...' : `Open deck${deckTitle ? `: ${deckTitle}` : ''}`}
             </button>
           )}
           {deckError && (
@@ -200,7 +266,7 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
           {restartInterrupted && (
             <div className="rounded-lg border border-amber-400/20 bg-amber-400/10 px-2.5 py-2">
               <p className="text-[11px] leading-relaxed text-amber-300">
-                任务因服务重启被中断，需要重新发起。
+                The task was interrupted by a service restart and needs to be relaunched.
               </p>
             </div>
           )}
@@ -209,12 +275,12 @@ export const TaskProgressCard: React.FC<TaskProgressCardProps> = ({
             onClick={handleRetry}
             className="flex items-center gap-1 text-[11px] text-text-secondary transition-colors hover:text-text-primary"
           >
-            <RefreshCw size={10} /> {restartInterrupted ? '重新启动任务' : '重试'}
+            <RefreshCw size={10} /> {restartInterrupted ? 'Relaunch task' : 'Retry'}
           </button>
         </div>
       )}
 
-      {!isTerminal && (
+      {!isTerminal && status !== 'waiting_approval' && (
         <div className="px-4 pb-2">
           <p className="truncate font-mono text-[9px] text-text-secondary/30">{taskId}</p>
         </div>

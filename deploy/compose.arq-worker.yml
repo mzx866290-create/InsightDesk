@@ -1,0 +1,59 @@
+services:
+  arq-worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.arq-worker
+    environment:
+      APP_DB_PATH: /app/runtime/chat_history.db
+      ARQ_KEEP_RESULT_SECONDS: ${ARQ_KEEP_RESULT_SECONDS:-3600}
+      ARQ_PENDING_STALE_SECONDS: ${ARQ_PENDING_STALE_SECONDS:-600}
+      ARQ_QUEUE_NAME: ${ARQ_QUEUE_NAME:-insightdesk:tasks}
+      ARQ_QUEUE_WARNING_LENGTH: ${ARQ_QUEUE_WARNING_LENGTH:-100}
+      ARQ_RETRY_ATTEMPTS: ${ARQ_RETRY_ATTEMPTS:-3}
+      ARQ_RETRY_BACKOFF_SECONDS: ${ARQ_RETRY_BACKOFF_SECONDS:-15}
+      ARQ_RUNNING_STALE_SECONDS: ${ARQ_RUNNING_STALE_SECONDS:-1800}
+      ARQ_WORKER_DRAIN_SECONDS: ${ARQ_WORKER_DRAIN_SECONDS:-30}
+      ARQ_WORKER_HEARTBEAT_KEY: ${ARQ_WORKER_HEARTBEAT_KEY:-insightdesk:tasks:worker:heartbeat}
+      ARQ_WORKER_HEARTBEAT_SECONDS: ${ARQ_WORKER_HEARTBEAT_SECONDS:-30}
+      ARQ_WORKER_MAX_JOBS: ${ARQ_WORKER_MAX_JOBS:-4}
+      CHAT_HISTORY_DB_PATH: /app/runtime/chat_history.db
+      DOCUMENT_UPLOAD_STAGING_DIR: ${DOCUMENT_UPLOAD_STAGING_DIR:-/app/runtime/upload_staging}
+      OLLAMA_BASE_URL: ${DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      PYTHONPATH: /app
+      REDIS_URL: ${DOCKER_REDIS_URL:-redis://redis:6379/0}
+      TASK_BACKEND: arq
+      TASK_STORE_FAIL_INCOMPLETE_ON_START: "false"
+      VECTOR_STORE_PATH: /app/runtime/vector_store
+    volumes:
+      - ../runtime:/app/runtime
+    depends_on:
+      redis:
+        condition: service_healthy
+    command: >
+      sh -lc "mkdir -p /app/runtime/vector_store /app/runtime/upload_staging
+      && touch /app/runtime/chat_history.db
+      && ln -sf /app/runtime/chat_history.db /app/chat_history.db
+      && arq backend.tasks.worker.WorkerSettings"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import os, socket; from urllib.parse import urlparse; u=urlparse(os.getenv('REDIS_URL','redis://redis:6379/0')); s=socket.create_connection((u.hostname or 'redis', u.port or 6379), 3); s.close()\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    stop_grace_period: ${ARQ_WORKER_STOP_GRACE_PERIOD:-45s}
+    stop_signal: SIGTERM
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    restart: unless-stopped

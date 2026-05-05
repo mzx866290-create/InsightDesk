@@ -1,0 +1,1 @@
+"""Shared API schema package."""

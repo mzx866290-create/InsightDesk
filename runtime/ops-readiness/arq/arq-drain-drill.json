@@ -1,0 +1,79 @@
+{
+  "archive_path": "runtime\\ops-readiness\\arq\\archive\\arq_drain_drill-20260504-161713.json",
+  "archive_ready": true,
+  "blockers": [],
+  "closure": {
+    "cleanup_completed": true,
+    "complete": true,
+    "decision": "drain_closed",
+    "enqueued": true,
+    "evidence": {
+      "archive_ready": true,
+      "blockers": [],
+      "drain_seconds": 15,
+      "failed_steps": [],
+      "step_count": 4,
+      "successful_steps": [
+        "compose_up",
+        "enqueue_probe",
+        "stop_worker",
+        "wait_for_terminal_task"
+      ],
+      "task_id": "arq-e2e-642c81a6045d4f5e928d29a3cec5bf0f"
+    },
+    "missing": [],
+    "task_reached_terminal_state": true,
+    "worker_stopped": true
+  },
+  "docker_start_contract": {},
+  "drain_seconds": 15,
+  "evidence": {
+    "archive_ready": true,
+    "blockers": [],
+    "compose_file": "F:\\项目\\AI智能体\\deploy\\compose.arq-worker.yml",
+    "decision": "drain_closed",
+    "manifest_path": "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+    "probe_path": "/app/deploy/arq_e2e_probe.py",
+    "schema_version": 1,
+    "task_id": "arq-e2e-642c81a6045d4f5e928d29a3cec5bf0f"
+  },
+  "exit_code": 0,
+  "finished_at": 1777882632.4126902,
+  "id": "arq_drain_drill",
+  "ok": true,
+  "pickup_wait_seconds": 1.5,
+  "probe_step_seconds": 3.0,
+  "skipped": false,
+  "started_at": 1777882577.1595628,
+  "steps": [
+    {
+      "duration_ms": 14086,
+      "name": "compose_up",
+      "ok": true,
+      "output_tail": "t: 240B done\n#6 DONE 0.0s\n\n#7 [1/5] FROM docker.io/library/python:3.12-slim@sha256:46cb7cc2877e60fbd5e21a9ae6115c30ace7a077b9f8772da879e4590c18c2e3\n#7 DONE 0.0s\n\n#8 [internal] load build context\n#8 transferring context: 44.44kB 0.0s done\n#8 DONE 0.1s\n\n#9 [2/5] WORKDIR /app\n#9 CACHED\n\n#10 [3/5] RUN pip install --upgrade pip     && pip install \"arq>=0.26.0\"\n#10 CACHED\n\n#11 [4/5] COPY backend ./backend\n#11 CACHED\n\n#12 [5/5] COPY deploy ./deploy\n#12 CACHED\n\n#13 exporting to image\n#13 exporting layers done\n#13 writing image sha256:37025b3f17b77ffd366205bbdb478ddedb825e4ce0e33dd653053f358232ea3d done\n#13 naming to docker.io/library/deploy-arq-worker done\n#13 DONE 0.0s\n\n#14 resolving provenance for metadata file\n#14 DONE 0.0s\n Image deploy-arq-worker Built \n Network deploy_default Creating \n Network deploy_default Created \n Container deploy-redis-1 Creating \n Container deploy-redis-1 Created \n Container deploy-arq-worker-1 Creating \n Container deploy-arq-worker-1 Created \n Container deploy-redis-1 Starting \n Container deploy-redis-1 Started \n Container deploy-redis-1 Waiting \n Container deploy-redis-1 Healthy \n Container deploy-arq-worker-1 Starting \n Container deploy-arq-worker-1 Started",
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3451,
+      "name": "enqueue_probe",
+      "ok": true,
+      "output_tail": "Container deploy-redis-1 Running \n Container deploy-redis-1 Waiting \n Container deploy-redis-1 Healthy \n Container deploy-arq-worker-run-c36753d76ed8 Creating \n Container deploy-arq-worker-run-c36753d76ed8 Created \nTASK_ID=arq-e2e-642c81a6045d4f5e928d29a3cec5bf0f\nJOB_ID=task:arq-e2e-642c81a6045d4f5e928d29a3cec5bf0f",
+      "returncode": 0
+    },
+    {
+      "duration_ms": 30976,
+      "name": "stop_worker",
+      "ok": true,
+      "output_tail": "Container deploy-arq-worker-1 Stopping \n Container deploy-arq-worker-1 Stopped",
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3474,
+      "name": "wait_for_terminal_task",
+      "ok": true,
+      "output_tail": "Container deploy-redis-1 Running \n Container deploy-redis-1 Waiting \n Container deploy-redis-1 Healthy \n Container deploy-arq-worker-run-9b982b70f403 Creating \n Container deploy-arq-worker-run-9b982b70f403 Created \nOK: task completed task_id=arq-e2e-642c81a6045d4f5e928d29a3cec5bf0f progress=100",
+      "returncode": 0
+    }
+  ],
+  "task_id": "arq-e2e-642c81a6045d4f5e928d29a3cec5bf0f"
+}

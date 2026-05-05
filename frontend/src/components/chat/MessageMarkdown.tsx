@@ -1,11 +1,10 @@
 import React, { useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import { Check, Copy } from 'lucide-react'
 
 import { MarkdownTableChart } from '../charts/MarkdownTableChart'
+import { MarkdownCodeBlock } from './MarkdownCodeBlock'
 
 interface MessageMarkdownProps {
   content: string
@@ -47,28 +46,11 @@ const MessageMarkdown: React.FC<MessageMarkdownProps> = ({ content }) => {
 
           if (isBlock) {
             return (
-              <div className="relative group my-3 rounded-lg overflow-hidden border border-bg-border">
-                <div className="flex items-center justify-between bg-bg-tertiary px-4 py-2 text-xs text-text-secondary">
-                  <span>{match ? match[1] : 'code'}</span>
-                  <CopyButton text={codeText} />
-                </div>
-                <div className="overflow-x-auto">
-                  <SyntaxHighlighter
-                    style={oneDark}
-                    language={match ? match[1] : 'text'}
-                    PreTag="div"
-                    customStyle={{
-                      margin: 0,
-                      borderRadius: 0,
-                      background: '#12121a',
-                      fontSize: '0.8rem',
-                      padding: '1rem',
-                    }}
-                  >
-                    {codeText}
-                  </SyntaxHighlighter>
-                </div>
-              </div>
+              <MarkdownCodeBlock
+                codeText={codeText}
+                language={match ? match[1] : 'text'}
+                copyButton={<CopyButton text={codeText} />}
+              />
             )
           }
 

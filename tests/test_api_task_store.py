@@ -1,6 +1,6 @@
 import time
 
-from backend.api_task_store import RESTART_FAILURE_MESSAGE, SQLiteTaskStore, TaskRecord, TaskStatus
+from backend.stores.task_store import RESTART_FAILURE_MESSAGE, SQLiteTaskStore, TaskRecord, TaskStatus
 from backend.chat_store import connect_sqlite
 
 
@@ -27,6 +27,31 @@ def test_task_store_marks_incomplete_tasks_failed_after_restart(tmp_path):
     assert reloaded is not None
     assert reloaded.status == TaskStatus.FAILED
     assert reloaded.error == RESTART_FAILURE_MESSAGE
+
+
+def test_task_store_can_preserve_pending_tasks_after_restart(tmp_path):
+    db_path = tmp_path / "chat_history.db"
+
+    store = SQLiteTaskStore(db_path=str(db_path), fail_incomplete_on_start=False)
+    store.save(
+        TaskRecord(
+            task_id="queued-arq-task",
+            task_type="upload_documents",
+            status=TaskStatus.PENDING,
+            params={},
+            session_id=None,
+            created_at=1.0,
+            updated_at=1.0,
+            progress=0,
+        )
+    )
+
+    restarted_store = SQLiteTaskStore(db_path=str(db_path), fail_incomplete_on_start=False)
+    reloaded = restarted_store.get("queued-arq-task")
+
+    assert reloaded is not None
+    assert reloaded.status == TaskStatus.PENDING
+    assert reloaded.error is None
 
 
 def test_task_store_prune_enforces_terminal_history_limit(tmp_path):

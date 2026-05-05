@@ -13,10 +13,16 @@ import uuid
 from typing import List, Dict, Any, Optional
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
+from backend.core.storage_runtime import (
+    DATABASE_PROVIDER_POSTGRES,
+    app_database_path,
+    database_provider,
+    ensure_sqlite_parent,
+)
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = "./chat_history.db"
+DB_PATH = app_database_path()
 SQLITE_TIMEOUT_SECONDS = 5
 SQLITE_BUSY_TIMEOUT_MS = 5000
 _UNSET = object()
@@ -26,9 +32,33 @@ WORKSPACE_COLOR_CHOICES = {"slate", "blue", "green", "amber", "rose"}
 WORKSPACE_DECK_THEME_CHOICES = {"default", "midnight", "sunrise"}
 
 
-def connect_sqlite(db_path: str = DB_PATH) -> sqlite3.Connection:
+def _should_use_postgres_store(db_path: str | None = None) -> bool:
+    """Route default runtime calls to PostgreSQL while preserving explicit SQLite paths."""
+
+    normalized_db_path = str(db_path or "").strip()
+    return database_provider() == DATABASE_PROVIDER_POSTGRES and normalized_db_path in {
+        "",
+        DB_PATH,
+    }
+
+
+def _session_memory_store():
+    from backend.stores.factory import create_session_memory_store
+
+    return create_session_memory_store()
+
+
+def _retrieval_feedback_store():
+    from backend.stores.factory import create_retrieval_feedback_store
+
+    return create_retrieval_feedback_store()
+
+
+def connect_sqlite(db_path: str | None = None) -> sqlite3.Connection:
     """Create a SQLite connection with the project's default safety settings."""
-    conn = sqlite3.connect(db_path, timeout=SQLITE_TIMEOUT_SECONDS)
+    resolved_db_path = str(db_path or app_database_path()).strip()
+    ensure_sqlite_parent(resolved_db_path)
+    conn = sqlite3.connect(resolved_db_path, timeout=SQLITE_TIMEOUT_SECONDS)
     conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA journal_mode = WAL")
     return conn
@@ -92,7 +122,9 @@ def _init_messages_table(conn: sqlite3.Connection) -> None:
         cursor.execute("ALTER TABLE messages ADD COLUMN panel_id TEXT DEFAULT ''")
         logger.info("Migrated messages table: added 'panel_id' column")
     if "answer_group_id" not in existing_cols:
-        cursor.execute("ALTER TABLE messages ADD COLUMN answer_group_id TEXT DEFAULT ''")
+        cursor.execute(
+            "ALTER TABLE messages ADD COLUMN answer_group_id TEXT DEFAULT ''"
+        )
         logger.info("Migrated messages table: added 'answer_group_id' column")
     if "images_json" not in existing_cols:
         cursor.execute("ALTER TABLE messages ADD COLUMN images_json TEXT DEFAULT ''")
@@ -113,7 +145,9 @@ def _init_messages_table(conn: sqlite3.Connection) -> None:
         cursor.execute("ALTER TABLE messages ADD COLUMN task_type TEXT DEFAULT ''")
         logger.info("Migrated messages table: added 'task_type' column")
     if "feedback_value" not in existing_cols:
-        cursor.execute("ALTER TABLE messages ADD COLUMN feedback_value INTEGER DEFAULT 0")
+        cursor.execute(
+            "ALTER TABLE messages ADD COLUMN feedback_value INTEGER DEFAULT 0"
+        )
         logger.info("Migrated messages table: added 'feedback_value' column")
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_session
@@ -185,7 +219,9 @@ def _init_message_search_table(conn: sqlite3.Connection) -> bool:
             """
         )
     except sqlite3.OperationalError as exc:
-        logger.warning("FTS5 message search unavailable, falling back to LIKE queries: %s", exc)
+        logger.warning(
+            "FTS5 message search unavailable, falling back to LIKE queries: %s", exc
+        )
         return False
 
     if not table_existed:
@@ -278,7 +314,9 @@ def _init_workspaces_table(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    existing_columns = {row[1] for row in cursor.execute("PRAGMA table_info(workspaces)")}
+    existing_columns = {
+        row[1] for row in cursor.execute("PRAGMA table_info(workspaces)")
+    }
     if "description" not in existing_columns:
         cursor.execute("ALTER TABLE workspaces ADD COLUMN description TEXT DEFAULT ''")
         logger.info("Migrated workspaces table: added 'description' column")
@@ -360,9 +398,13 @@ def _init_session_memory_table(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    existing_columns = {row[1] for row in cursor.execute("PRAGMA table_info(session_memory)")}
+    existing_columns = {
+        row[1] for row in cursor.execute("PRAGMA table_info(session_memory)")
+    }
     if "meta_json" not in existing_columns:
-        cursor.execute("ALTER TABLE session_memory ADD COLUMN meta_json TEXT DEFAULT '{}'")
+        cursor.execute(
+            "ALTER TABLE session_memory ADD COLUMN meta_json TEXT DEFAULT '{}'"
+        )
         logger.info("Migrated session_memory table: added 'meta_json' column")
     cursor.execute(
         """
@@ -399,9 +441,13 @@ def _init_session_panels_table(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (session_id, panel_id)
         )
     """)
-    existing_columns = {row[1] for row in cursor.execute("PRAGMA table_info(session_panels)")}
+    existing_columns = {
+        row[1] for row in cursor.execute("PRAGMA table_info(session_panels)")
+    }
     if "api_key_ref" not in existing_columns:
-        cursor.execute("ALTER TABLE session_panels ADD COLUMN api_key_ref TEXT DEFAULT ''")
+        cursor.execute(
+            "ALTER TABLE session_panels ADD COLUMN api_key_ref TEXT DEFAULT ''"
+        )
         logger.info("Migrated session_panels table: added 'api_key_ref' column")
     cursor.execute("""
         CREATE INDEX IF NOT EXISTS idx_session_panels_session
@@ -503,13 +549,19 @@ def _init_system_prompts_table(conn: sqlite3.Connection) -> None:
     """)
     conn.commit()
     # Migration: add vector_store_id if missing
-    existing_cols = {row[1] for row in cursor.execute("PRAGMA table_info(system_prompts)")}
+    existing_cols = {
+        row[1] for row in cursor.execute("PRAGMA table_info(system_prompts)")
+    }
     if "vector_store_id" not in existing_cols:
-        cursor.execute("ALTER TABLE system_prompts ADD COLUMN vector_store_id TEXT DEFAULT ''")
+        cursor.execute(
+            "ALTER TABLE system_prompts ADD COLUMN vector_store_id TEXT DEFAULT ''"
+        )
         conn.commit()
         logger.info("Migrated system_prompts table: added 'vector_store_id' column")
     if "dashboard_template" not in existing_cols:
-        cursor.execute("ALTER TABLE system_prompts ADD COLUMN dashboard_template TEXT DEFAULT ''")
+        cursor.execute(
+            "ALTER TABLE system_prompts ADD COLUMN dashboard_template TEXT DEFAULT ''"
+        )
         conn.commit()
         logger.info("Migrated system_prompts table: added 'dashboard_template' column")
     # Seed a built-in default if the table is empty
@@ -639,12 +691,16 @@ def _normalize_workspace_panel_configs(value: Any = None) -> List[Dict[str, Any]
     for index, item in enumerate(value):
         if not isinstance(item, dict):
             continue
-        panel_id = str(item.get("panel_id") or "").strip() or f"panel-preset-{index + 1}"
+        panel_id = (
+            str(item.get("panel_id") or "").strip() or f"panel-preset-{index + 1}"
+        )
         if panel_id in seen_panel_ids:
             continue
         seen_panel_ids.add(panel_id)
 
-        provider = str(item.get("provider") or item.get("connection_type") or "ollama").strip()
+        provider = str(
+            item.get("provider") or item.get("connection_type") or "ollama"
+        ).strip()
         connection_type = str(
             item.get("connection_type") or item.get("provider") or provider or "ollama"
         ).strip()
@@ -697,7 +753,9 @@ def _normalize_workspace_tool_config(value: Any = None) -> Dict[str, Any]:
 
 def _normalize_workspace_output_preset(value: Any = None) -> Dict[str, Any]:
     payload = value if isinstance(value, dict) else {}
-    deck_theme = str(payload.get("deck_theme") or "default").strip().lower() or "default"
+    deck_theme = (
+        str(payload.get("deck_theme") or "default").strip().lower() or "default"
+    )
     if deck_theme not in WORKSPACE_DECK_THEME_CHOICES:
         deck_theme = "default"
     try:
@@ -727,7 +785,9 @@ def _build_retrieval_source_key(source: Any) -> str:
     source_type = " ".join(str(source.get("type") or "").strip().split()).lower()
     source_title = " ".join(_normalize_content(source.get("title", "")).strip().split())
     source_url = " ".join(_normalize_content(source.get("url", "")).strip().split())
-    source_snippet = " ".join(_normalize_content(source.get("snippet", "")).strip().split())
+    source_snippet = " ".join(
+        _normalize_content(source.get("snippet", "")).strip().split()
+    )
     source_index = source.get("index")
     normalized_index = ""
     if source_index is not None:
@@ -772,12 +832,14 @@ def _build_search_preview(content: Any, query: str, limit: int = 120) -> str:
 def _build_message_search_match_query(query: str) -> str:
     terms = [
         token.strip()
-        for token in re.findall(r"[0-9A-Za-z_]+|[\u4e00-\u9fff]+", str(query or "").lower())
+        for token in re.findall(
+            r"[0-9A-Za-z_]+|[\u4e00-\u9fff]+", str(query or "").lower()
+        )
         if token.strip()
     ]
     if not terms:
         return ""
-    return " AND ".join(f'"{term.replace("\"", "\"\"")}"' for term in terms[:8])
+    return " AND ".join(f'"{term.replace('"', '""')}"' for term in terms[:8])
 
 
 def _normalize_session_memory_kind(kind: Optional[str] = None) -> str:
@@ -806,7 +868,9 @@ def _normalize_session_memory_meta(meta: Any = None) -> Dict[str, Any]:
     return normalized if isinstance(normalized, dict) else {}
 
 
-def _normalize_metadata_list(items: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+def _normalize_metadata_list(
+    items: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     for item in items or []:
         if isinstance(item, dict):
@@ -814,7 +878,9 @@ def _normalize_metadata_list(items: Optional[List[Dict[str, Any]]] = None) -> Li
     return normalized
 
 
-def _normalize_images(images: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, str]]:
+def _normalize_images(
+    images: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, str]]:
     normalized: List[Dict[str, str]] = []
     for image in images or []:
         if not isinstance(image, dict):
@@ -832,7 +898,9 @@ def _normalize_images(images: Optional[List[Dict[str, Any]]] = None) -> List[Dic
     return normalized
 
 
-def _normalize_files(files: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+def _normalize_files(
+    files: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     for file in files or []:
         if not isinstance(file, dict):
@@ -840,7 +908,9 @@ def _normalize_files(files: Optional[List[Dict[str, Any]]] = None) -> List[Dict[
         normalized.append(
             {
                 "name": str(file.get("name") or "").strip(),
-                "media_type": str(file.get("media_type") or "application/octet-stream").strip(),
+                "media_type": str(
+                    file.get("media_type") or "application/octet-stream"
+                ).strip(),
                 "data_url": str(file.get("data_url") or "").strip(),
                 "size_bytes": int(file.get("size_bytes") or 0),
                 "extracted_text": str(file.get("extracted_text") or "").strip(),
@@ -926,7 +996,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
     Implements LangChain's BaseChatMessageHistory interface.
     """
 
-    def __init__(self, session_id: str, db_path: str = "./chat_history.db"):
+    def __init__(self, session_id: str, db_path: str | None = None):
         """
         Initialize SQLite chat history for a specific session.
 
@@ -935,7 +1005,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
             db_path: Path to SQLite database file
         """
         self.session_id = session_id
-        self.db_path = db_path
+        self.db_path = str(db_path or app_database_path()).strip()
         self._init_db()
         self._ensure_session_exists()
 
@@ -1000,7 +1070,9 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
         """Load raw message rows with optional context-window truncation."""
         with connect_sqlite(self.db_path) as conn:
             cursor = conn.cursor()
-            effective_panel_id = (panel_id or "").strip() or self._resolve_default_panel_id(conn)
+            effective_panel_id = (
+                panel_id or ""
+            ).strip() or self._resolve_default_panel_id(conn)
             excluded_group_id = (exclude_ai_answer_group_id or "").strip()
 
             if effective_panel_id:
@@ -1084,7 +1156,22 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
         )
 
         messages = []
-        for _, msg_type, content, _, _, _, images_json, files_json, _, _, _, _, _, _ in rows:
+        for (
+            _,
+            msg_type,
+            content,
+            _,
+            _,
+            _,
+            images_json,
+            files_json,
+            _,
+            _,
+            _,
+            _,
+            _,
+            _,
+        ) in rows:
             images = _parse_json_list(images_json)
             files = _parse_json_list(files_json)
             if msg_type == "human":
@@ -1458,9 +1545,13 @@ def _row_to_workspace(row: tuple) -> Dict[str, Any]:
         "description": str(row[2] or ""),
         "color": _normalize_workspace_color(row[3]),
         "preset": {
-            "default_panels": _normalize_workspace_panel_configs(_parse_json_list(row[4])),
+            "default_panels": _normalize_workspace_panel_configs(
+                _parse_json_list(row[4])
+            ),
             "tool_config": _normalize_workspace_tool_config(_parse_json_object(row[5])),
-            "output_preset": _normalize_workspace_output_preset(_parse_json_object(row[6])),
+            "output_preset": _normalize_workspace_output_preset(
+                _parse_json_object(row[6])
+            ),
         },
         "is_active": bool(row[7]),
         "created_at": float(row[8] or 0),
@@ -1517,7 +1608,9 @@ def _group_message_ids_for_history_pruning(rows: List[tuple]) -> List[List[int]]
             continue
 
         grouped_ids.append([message_id])
-        current_ungrouped_turn_index = len(grouped_ids) - 1 if msg_type == "ai" else None
+        current_ungrouped_turn_index = (
+            len(grouped_ids) - 1 if msg_type == "ai" else None
+        )
 
     return grouped_ids
 
@@ -1666,7 +1759,9 @@ def _collect_message_search_hits(
                 (match_query, *sorted_session_ids),
             )
         except sqlite3.OperationalError:
-            logger.exception("FTS5 message preview lookup failed, falling back to LIKE queries")
+            logger.exception(
+                "FTS5 message preview lookup failed, falling back to LIKE queries"
+            )
             cursor.execute(
                 """
                 SELECT session_id, content
@@ -1788,7 +1883,7 @@ def _fetch_workspace_row(
 
 
 def get_all_sessions(
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
     query: str = "",
     archived: Optional[bool] = None,
     favorite: Optional[bool] = None,
@@ -1860,15 +1955,13 @@ def get_all_sessions(
                     OR LOWER(COALESCE(s.tags_json, '[]')) LIKE ?
                     OR {message_search_clause}
                 )
-                """
-                .format(
+                """.format(
                     message_search_clause=(
                         "s.session_id IN ("
                         "SELECT session_id FROM message_search WHERE message_search MATCH ?"
                         ")"
                         if match_query and _message_search_table_exists(cursor)
-                        else
-                        "EXISTS ("
+                        else "EXISTS ("
                         "SELECT 1 FROM messages search_m "
                         "WHERE search_m.session_id = s.session_id "
                         "AND LOWER(COALESCE(search_m.content, '')) LIKE ?"
@@ -1880,7 +1973,9 @@ def get_all_sessions(
                 [
                     f"%{normalized_query}%",
                     f"%{normalized_query}%",
-                    match_query if match_query and _message_search_table_exists(cursor) else f"%{normalized_query}%",
+                    match_query
+                    if match_query and _message_search_table_exists(cursor)
+                    else f"%{normalized_query}%",
                 ]
             )
 
@@ -1937,7 +2032,9 @@ ORDER BY
         return sessions
 
 
-def get_session(session_id: str, db_path: str = "./chat_history.db") -> Optional[Dict[str, Any]]:
+def get_session(
+    session_id: str, db_path: str | None = None
+) -> Optional[Dict[str, Any]]:
     normalized_session_id = str(session_id or "").strip()
     if not normalized_session_id:
         return None
@@ -1953,7 +2050,7 @@ def get_session(session_id: str, db_path: str = "./chat_history.db") -> Optional
 
 
 def list_workspaces(
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> List[Dict[str, Any]]:
     with connect_sqlite(db_path) as conn:
         _init_workspaces_table(conn)
@@ -1996,7 +2093,7 @@ def list_workspaces(
 
 def get_workspace(
     workspace_id: str,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
     normalized_workspace_id = str(workspace_id or "").strip()
     if not normalized_workspace_id:
@@ -2019,7 +2116,7 @@ def create_workspace(
     tool_config: Optional[Dict[str, Any]] = None,
     output_preset: Optional[Dict[str, Any]] = None,
     activate: bool = True,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> Dict[str, Any]:
     normalized_name = _normalize_workspace_name(name)
     normalized_description = _normalize_workspace_description(description)
@@ -2072,7 +2169,7 @@ def update_workspace(
     default_panels: Optional[List[Dict[str, Any]]] = None,
     tool_config: Optional[Dict[str, Any]] = None,
     output_preset: Optional[Dict[str, Any]] = None,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
     with connect_sqlite(db_path) as conn:
         _init_workspaces_table(conn)
@@ -2134,7 +2231,7 @@ def update_workspace(
 def activate_workspace(
     workspace_id: str,
     *,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
     with connect_sqlite(db_path) as conn:
         _init_workspaces_table(conn)
@@ -2155,7 +2252,7 @@ def delete_workspace(
     workspace_id: str,
     *,
     target_workspace_id: Optional[str] = None,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
     normalized_workspace_id = str(workspace_id or "").strip()
     if not normalized_workspace_id:
@@ -2163,7 +2260,9 @@ def delete_workspace(
     if normalized_workspace_id == DEFAULT_WORKSPACE_ID:
         raise ValueError("默认工作区不能删除")
 
-    normalized_target_workspace_id = str(target_workspace_id or "").strip() or DEFAULT_WORKSPACE_ID
+    normalized_target_workspace_id = (
+        str(target_workspace_id or "").strip() or DEFAULT_WORKSPACE_ID
+    )
     if normalized_target_workspace_id == normalized_workspace_id:
         raise ValueError("迁移目标工作区不能与被删除的工作区相同")
 
@@ -2228,11 +2327,22 @@ def set_message_feedback(
     message_id: Optional[int] = None,
     panel_id: str = "",
     answer_group_id: str = "",
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
     normalized_feedback_value = _normalize_message_feedback_value(feedback_value)
     normalized_panel_id = str(panel_id or "").strip()
     normalized_answer_group_id = str(answer_group_id or "").strip()
+
+    if _should_use_postgres_store(db_path):
+        from backend.stores.factory import create_chat_message_history
+
+        history = create_chat_message_history(session_id)
+        return history.set_message_feedback(
+            feedback_value=normalized_feedback_value,
+            message_id=message_id,
+            panel_id=normalized_panel_id,
+            answer_group_id=normalized_answer_group_id,
+        )
 
     with connect_sqlite(db_path) as conn:
         _init_messages_table(conn)
@@ -2299,7 +2409,7 @@ def truncate_session_from_answer_group(
     content: str,
     images: Optional[List[Dict[str, Any]]] = None,
     files: Optional[List[Dict[str, Any]]] = None,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
     normalized_answer_group_id = str(answer_group_id or "").strip()
     if not normalized_answer_group_id:
@@ -2379,8 +2489,17 @@ def set_retrieval_feedback(
     answer_group_id: str,
     source: Dict[str, Any],
     feedback_value: int,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> Dict[str, Any]:
+    if _should_use_postgres_store(db_path):
+        return _retrieval_feedback_store().set_retrieval_feedback(
+            session_id,
+            panel_id=panel_id,
+            answer_group_id=answer_group_id,
+            source=source,
+            feedback_value=feedback_value,
+        )
+
     normalized_feedback_value = _normalize_message_feedback_value(feedback_value)
     normalized_panel_id = str(panel_id or "").strip()
     normalized_answer_group_id = str(answer_group_id or "").strip()
@@ -2459,8 +2578,15 @@ def list_retrieval_feedback(
     *,
     panel_id: str,
     answer_group_id: str,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> List[Dict[str, Any]]:
+    if _should_use_postgres_store(db_path):
+        return _retrieval_feedback_store().list_retrieval_feedback(
+            session_id,
+            panel_id=panel_id,
+            answer_group_id=answer_group_id,
+        )
+
     normalized_panel_id = str(panel_id or "").strip()
     normalized_answer_group_id = str(answer_group_id or "").strip()
     if not normalized_panel_id:
@@ -2500,8 +2626,13 @@ def list_retrieval_feedback(
 def aggregate_retrieval_feedback_by_source(
     *,
     source_type: Optional[str] = None,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> List[Dict[str, Any]]:
+    if _should_use_postgres_store(db_path):
+        return _retrieval_feedback_store().aggregate_retrieval_feedback_by_source(
+            source_type=source_type,
+        )
+
     normalized_source_type = str(source_type or "").strip().lower()
 
     query = """
@@ -2556,7 +2687,7 @@ def update_session_meta(
     is_pinned: Optional[bool] = None,
     tags: Optional[List[str]] = None,
     workspace_id: Optional[str] = None,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
     with connect_sqlite(db_path) as conn:
         _init_workspaces_table(conn)
@@ -2625,7 +2756,7 @@ def reorder_sessions(
     session_ids: List[str],
     *,
     workspace_id: Optional[str] = None,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> Dict[str, Any]:
     normalized_ids: List[str] = []
     seen: set[str] = set()
@@ -2661,7 +2792,11 @@ def reorder_sessions(
         )
         rows = cursor.fetchall()
         existing_ids = {str(row[0] or "") for row in rows}
-        missing_ids = [session_id for session_id in normalized_ids if session_id not in existing_ids]
+        missing_ids = [
+            session_id
+            for session_id in normalized_ids
+            if session_id not in existing_ids
+        ]
         if missing_ids:
             raise ValueError(f"未找到会话：{missing_ids[0]}")
 
@@ -2772,7 +2907,9 @@ def _resolve_bookmark_target(
     }
 
 
-def get_bookmark(bookmark_id: str, db_path: str = "./chat_history.db") -> Optional[Dict[str, Any]]:
+def get_bookmark(
+    bookmark_id: str, db_path: str | None = None
+) -> Optional[Dict[str, Any]]:
     normalized_bookmark_id = str(bookmark_id or "").strip()
     if not normalized_bookmark_id:
         return None
@@ -2809,7 +2946,7 @@ def get_bookmark(bookmark_id: str, db_path: str = "./chat_history.db") -> Option
 def list_bookmarks(
     *,
     session_id: Optional[str] = None,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> List[Dict[str, Any]]:
     with connect_sqlite(db_path) as conn:
         _init_sessions_table(conn)
@@ -2853,7 +2990,7 @@ def create_or_update_bookmark(
     content: Any = "",
     model_id: str = "",
     session_title: str = "",
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
     normalized_session_id = str(session_id or "").strip()
     if not normalized_session_id:
@@ -2987,7 +3124,7 @@ def create_or_update_bookmark(
     }
 
 
-def delete_bookmark(bookmark_id: str, db_path: str = "./chat_history.db") -> bool:
+def delete_bookmark(bookmark_id: str, db_path: str | None = None) -> bool:
     normalized_bookmark_id = str(bookmark_id or "").strip()
     if not normalized_bookmark_id:
         return False
@@ -3007,8 +3144,16 @@ def list_session_memory(
     kind: Optional[str] = None,
     limit: Optional[int] = None,
     newest_first: bool = False,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> List[Dict[str, Any]]:
+    if _should_use_postgres_store(db_path):
+        return _session_memory_store().list_session_memory(
+            session_id,
+            kind=kind,
+            limit=limit,
+            newest_first=newest_first,
+        )
+
     with connect_sqlite(db_path) as conn:
         _init_sessions_table(conn)
         _init_session_memory_table(conn)
@@ -3047,8 +3192,16 @@ def create_session_memory(
     kind: str,
     content: Any,
     meta: Optional[Dict[str, Any]] = None,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
+    if _should_use_postgres_store(db_path):
+        return _session_memory_store().create_session_memory(
+            session_id,
+            kind=kind,
+            content=content,
+            meta=meta,
+        )
+
     normalized_kind = _normalize_session_memory_kind(kind)
     normalized_content = _normalize_session_memory_content(content)
     normalized_meta = _normalize_session_memory_meta(meta)
@@ -3103,8 +3256,16 @@ def pin_session_memory(
     content: Any,
     kind: str = "fact",
     meta: Optional[Dict[str, Any]] = None,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
+    if _should_use_postgres_store(db_path):
+        return _session_memory_store().pin_session_memory(
+            session_id,
+            content=content,
+            kind=kind,
+            meta=meta,
+        )
+
     normalized_kind = _normalize_session_memory_kind(kind)
     normalized_content = _normalize_session_memory_content(content)
     normalized_meta = _normalize_session_memory_meta(meta)
@@ -3133,8 +3294,14 @@ def pin_session_memory(
         existing_row = cursor.fetchone()
 
         if existing_row:
-            existing_meta = _normalize_session_memory_meta(_parse_json_object(existing_row[4]))
-            merged_meta = {**existing_meta, **normalized_meta} if normalized_meta else existing_meta
+            existing_meta = _normalize_session_memory_meta(
+                _parse_json_object(existing_row[4])
+            )
+            merged_meta = (
+                {**existing_meta, **normalized_meta}
+                if normalized_meta
+                else existing_meta
+            )
             cursor.execute(
                 "UPDATE session_memory SET meta_json = ?, updated_at = ? WHERE id = ?",
                 (
@@ -3180,8 +3347,20 @@ def update_session_memory(
     content: Any = _UNSET,
     kind: Any = _UNSET,
     meta: Any = _UNSET,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
+    if _should_use_postgres_store(db_path):
+        return _session_memory_store().update_session_memory(
+            session_id,
+            memory_id,
+            content=None if content is _UNSET else content,
+            kind=None if kind is _UNSET else kind,
+            meta=None if meta is _UNSET else meta,
+            update_content=content is not _UNSET,
+            update_kind=kind is not _UNSET,
+            update_meta=meta is not _UNSET,
+        )
+
     with connect_sqlite(db_path) as conn:
         _init_sessions_table(conn)
         _init_session_memory_table(conn)
@@ -3211,7 +3390,9 @@ def update_session_memory(
 
         if meta is not _UNSET:
             updates.append("meta_json = ?")
-            params.append(json.dumps(_normalize_session_memory_meta(meta), ensure_ascii=False))
+            params.append(
+                json.dumps(_normalize_session_memory_meta(meta), ensure_ascii=False)
+            )
 
         if not updates:
             return _row_to_session_memory(existing_row)
@@ -3248,8 +3429,11 @@ def delete_session_memory(
     session_id: str,
     memory_id: str,
     *,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> bool:
+    if _should_use_postgres_store(db_path):
+        return _session_memory_store().delete_session_memory(session_id, memory_id)
+
     with connect_sqlite(db_path) as conn:
         _init_session_memory_table(conn)
         cursor = conn.cursor()
@@ -3273,8 +3457,12 @@ def delete_session_memory(
 def clear_session_memory(
     session_id: str,
     *,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> None:
+    if _should_use_postgres_store(db_path):
+        _session_memory_store().clear_session_memory(session_id)
+        return
+
     with connect_sqlite(db_path) as conn:
         _init_session_memory_table(conn)
         cursor = conn.cursor()
@@ -3289,7 +3477,7 @@ def clear_session_memory(
         conn.commit()
 
 
-def delete_session(session_id: str, db_path: str = "./chat_history.db") -> None:
+def delete_session(session_id: str, db_path: str | None = None) -> None:
     """
     Delete a session and all its messages.
 
@@ -3311,7 +3499,9 @@ def delete_session(session_id: str, db_path: str = "./chat_history.db") -> None:
         cursor.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
         cursor.execute("DELETE FROM session_panels WHERE session_id = ?", (session_id,))
         cursor.execute("DELETE FROM session_memory WHERE session_id = ?", (session_id,))
-        cursor.execute("DELETE FROM retrieval_feedback WHERE session_id = ?", (session_id,))
+        cursor.execute(
+            "DELETE FROM retrieval_feedback WHERE session_id = ?", (session_id,)
+        )
         cursor.execute("DELETE FROM bookmarks WHERE session_id = ?", (session_id,))
 
         # Delete session
@@ -3333,7 +3523,10 @@ def _row_to_prompt(row: tuple) -> Dict:
             if isinstance(parsed, dict):
                 dashboard_template = parsed
         except json.JSONDecodeError:
-            logger.warning("Invalid dashboard_template JSON found in system_prompts row id=%s", row[0])
+            logger.warning(
+                "Invalid dashboard_template JSON found in system_prompts row id=%s",
+                row[0],
+            )
     return {
         "id": row[0],
         "name": row[1],
@@ -3357,6 +3550,10 @@ def replace_session_panels(
     panel_configs: List[Dict[str, Any]],
     db_path: str = DB_PATH,
 ) -> None:
+    if _should_use_postgres_store(db_path):
+        _session_memory_store().replace_session_panels(session_id, panel_configs)
+        return
+
     with connect_sqlite(db_path) as conn:
         _init_session_panels_table(conn)
         cursor = conn.cursor()
@@ -3400,6 +3597,10 @@ def upsert_session_panel(
     panel_config: Dict[str, Any],
     db_path: str = DB_PATH,
 ) -> None:
+    if _should_use_postgres_store(db_path):
+        _session_memory_store().upsert_session_panel(session_id, panel_config)
+        return
+
     with connect_sqlite(db_path) as conn:
         _init_session_panels_table(conn)
         cursor = conn.cursor()
@@ -3451,7 +3652,11 @@ def upsert_session_panel(
                 session_id,
                 panel_id,
                 str(panel_config.get("provider") or "ollama"),
-                str(panel_config.get("connection_type") or panel_config.get("provider") or ""),
+                str(
+                    panel_config.get("connection_type")
+                    or panel_config.get("provider")
+                    or ""
+                ),
                 str(panel_config.get("model") or ""),
                 str(panel_config.get("base_url") or ""),
                 str(panel_config.get("api_key_ref") or ""),
@@ -3467,6 +3672,9 @@ def upsert_session_panel(
 
 
 def get_session_panels(session_id: str, db_path: str = DB_PATH) -> List[Dict[str, Any]]:
+    if _should_use_postgres_store(db_path):
+        return _session_memory_store().get_session_panels(session_id)
+
     with connect_sqlite(db_path) as conn:
         _init_session_panels_table(conn)
         cursor = conn.cursor()
@@ -3535,7 +3743,9 @@ def promote_panel_answer(
             (session_id,),
         )
         primary_row = cursor.fetchone()
-        target_panel_id = str(primary_row[0]).strip() if primary_row and primary_row[0] else ""
+        target_panel_id = (
+            str(primary_row[0]).strip() if primary_row and primary_row[0] else ""
+        )
         if not target_panel_id:
             target_panel_id = source_panel_id
 
@@ -3674,7 +3884,15 @@ def create_system_prompt(
         cursor.execute(
             "INSERT INTO system_prompts (id, name, content, is_default, is_active, created_at, updated_at, vector_store_id, dashboard_template) "
             "VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?)",
-            (prompt_id, name, content, now, now, vector_store_id, dashboard_template_json),
+            (
+                prompt_id,
+                name,
+                content,
+                now,
+                now,
+                vector_store_id,
+                dashboard_template_json,
+            ),
         )
         conn.commit()
     return {
@@ -3751,6 +3969,8 @@ def activate_system_prompt(prompt_id: str, db_path: str = DB_PATH) -> bool:
             return False
         # Deactivate all, then activate target
         cursor.execute("UPDATE system_prompts SET is_active = 0")
-        cursor.execute("UPDATE system_prompts SET is_active = 1 WHERE id = ?", (prompt_id,))
+        cursor.execute(
+            "UPDATE system_prompts SET is_active = 1 WHERE id = ?", (prompt_id,)
+        )
         conn.commit()
         return True

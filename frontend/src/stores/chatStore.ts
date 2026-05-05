@@ -15,6 +15,7 @@ import { normalizeModelConfig } from '../api/client'
 import type { WorkflowNode } from './workflowStore'
 
 export type ErrorRetryMode = 'rerun' | 'continue'
+export type ResearchMode = 'quick' | 'deep'
 
 export interface PanelMessage {
   id: string
@@ -77,6 +78,7 @@ export interface JumpTarget {
   panelId?: string
   answerGroupId?: string
   messageId?: number
+  searchQuery?: string
 }
 
 interface ChatState {
@@ -97,6 +99,7 @@ interface ChatState {
   settingsOpen: boolean
   webSearchEnabled: boolean
   knowledgeBaseEnabled: boolean
+  researchMode: ResearchMode
   enabledMcpServers: string[]
   attachmentWorkspaceOpen: boolean
   memoryWorkspaceOpen: boolean
@@ -187,6 +190,7 @@ interface ChatState {
   setSettingsOpen: (open: boolean) => void
   setWebSearchEnabled: (enabled: boolean) => void
   setKnowledgeBaseEnabled: (enabled: boolean) => void
+  setResearchMode: (mode: ResearchMode) => void
   setEnabledMcpServers: (servers: string[]) => void
   toggleAttachmentWorkspace: () => void
   setAttachmentWorkspaceOpen: (open: boolean) => void
@@ -352,6 +356,7 @@ export const useChatStore = create<ChatState>()(
       settingsOpen: false,
       webSearchEnabled: false,
       knowledgeBaseEnabled: true,
+      researchMode: 'deep',
       enabledMcpServers: ['knowledge-base', 'web-search'],
       attachmentWorkspaceOpen: false,
       memoryWorkspaceOpen: false,
@@ -840,6 +845,7 @@ export const useChatStore = create<ChatState>()(
       setSettingsOpen: (open) => set({ settingsOpen: open }),
       setWebSearchEnabled: (enabled) => set({ webSearchEnabled: enabled }),
       setKnowledgeBaseEnabled: (enabled) => set({ knowledgeBaseEnabled: enabled }),
+      setResearchMode: (mode) => set({ researchMode: mode }),
       setEnabledMcpServers: (servers) =>
         set({
           enabledMcpServers: Array.from(
@@ -932,7 +938,7 @@ export const useChatStore = create<ChatState>()(
     }),
     {
       name: 'ai-kb-chat-store',
-      version: 11,
+      version: 12,
       migrate: (persistedState) => {
         const state = (persistedState ?? {}) as Partial<ChatState>
         return {
@@ -940,6 +946,7 @@ export const useChatStore = create<ChatState>()(
           sidebarOpen: state.sidebarOpen ?? true,
           webSearchEnabled: state.webSearchEnabled ?? false,
           knowledgeBaseEnabled: state.knowledgeBaseEnabled ?? true,
+          researchMode: state.researchMode === 'quick' ? 'quick' : 'deep',
           enabledMcpServers:
             Array.isArray(state.enabledMcpServers) && state.enabledMcpServers.length > 0
               ? state.enabledMcpServers
@@ -1041,6 +1048,7 @@ export const useChatStore = create<ChatState>()(
         sidebarOpen: s.sidebarOpen,
         webSearchEnabled: s.webSearchEnabled,
         knowledgeBaseEnabled: s.knowledgeBaseEnabled,
+        researchMode: s.researchMode,
         enabledMcpServers: s.enabledMcpServers,
         welcomeGuideDismissed: s.welcomeGuideDismissed,
         activePromptId: s.activePromptId,

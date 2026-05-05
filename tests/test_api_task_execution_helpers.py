@@ -3,9 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from backend.api_task_execution_helpers import (
+import backend.helpers.task_execution_helpers as task_execution_helpers
+from backend.helpers.task_execution_helpers import (
     run_analyze_knowledge_base_task,
     run_generate_deck_task,
+    run_multi_agent_workflow_task,
     run_promote_attachment_to_kb_task,
     run_generate_report_task,
     run_placeholder_task,
@@ -329,6 +331,322 @@ def test_run_placeholder_task_sets_progress_and_result():
 
     assert progress == [20, 50, 80]
     assert "custom_demo" in (record.result or "")
+
+
+def test_run_multi_agent_workflow_task_waits_for_approval(monkeypatch):
+    record = TaskRecord(
+        task_id="task-workflow-waiting",
+        task_type="multi_agent_workflow",
+        status=TaskStatus.RUNNING,
+        params={"user_request": "Publish the report externally"},
+        session_id="session-1",
+        created_at=1.0,
+        updated_at=1.0,
+    )
+    progress: list[int] = []
+
+    async def fake_run_orchestrator(user_request: str, *, context=None, **kwargs):
+        assert user_request == "Publish the report externally"
+        assert context == {}
+        return {
+            "status": "waiting_approval",
+            "plan": [
+                {
+                    "id": "step-1",
+                    "agent": "writing",
+                    "task_type": "writing",
+                    "status": "waiting_approval",
+                    "requires_approval": True,
+                    "approval_status": "pending",
+                }
+            ],
+            "approval_reason": "Report publication requires review",
+            "approval_step_id": "step-1",
+            "final_output": "",
+        }
+
+    monkeypatch.setattr(task_execution_helpers, "run_orchestrator", fake_run_orchestrator)
+
+    async def run():
+        await run_multi_agent_workflow_task(
+            record,
+            set_progress=lambda value: _append_progress(progress, value),
+        )
+
+    asyncio.run(run())
+
+    assert progress == [20, 80]
+    assert record.params["workflow_status"] == "waiting_approval"
+    assert record.params["approval_reason"] == "Report publication requires review"
+    assert record.params["approval_step_id"] == "step-1"
+    assert "waiting for human approval" in (record.result or "")
+
+
+def test_run_multi_agent_workflow_task_resumes_after_approval(monkeypatch):
+    record = TaskRecord(
+        task_id="task-workflow-approved",
+        task_type="multi_agent_workflow",
+        status=TaskStatus.RUNNING,
+        params={
+            "user_request": "Publish the report externally",
+            "workflow_state": {"status": "waiting_approval", "plan": []},
+            "approval_decision": "approved",
+            "approval_reviewer": "owner-1",
+            "approval_comment": "Looks good",
+        },
+        session_id="session-1",
+        created_at=1.0,
+        updated_at=1.0,
+    )
+    progress: list[int] = []
+
+    async def fake_resume_orchestrator(state, **kwargs):
+        assert state == {"status": "waiting_approval", "plan": []}
+        assert kwargs["approval_decision"] == "approved"
+        assert kwargs["approval_reviewer"] == "owner-1"
+        assert kwargs["approval_comment"] == "Looks good"
+        return {
+            "status": "completed",
+            "plan": [{"id": "step-1", "status": "completed"}],
+            "final_output": "Workflow finished successfully.",
+            "approval_decision": "approved",
+        }
+
+    monkeypatch.setattr(task_execution_helpers, "resume_orchestrator", fake_resume_orchestrator)
+
+    async def run():
+        await run_multi_agent_workflow_task(
+            record,
+            set_progress=lambda value: _append_progress(progress, value),
+        )
+
+    asyncio.run(run())
+
+    assert progress == [20, 80]
+    assert record.params["workflow_status"] == "completed"
+    assert record.params["approval_decision"] == "approved"
+    assert record.params["workflow_final_output"] == "Workflow finished successfully."
+    assert record.result == "Workflow finished successfully."
+    assert "approval_comment" not in record.params
+
+
+def test_run_multi_agent_workflow_task_uses_seed_plan_and_runtime_research_config(monkeypatch):
+    record = TaskRecord(
+        task_id="task-workflow-plan",
+        task_type="multi_agent_workflow",
+        status=TaskStatus.RUNNING,
+        params={
+            "user_request": "Research the AI slide market",
+            "context": {"session_id": "session-1"},
+            "plan": [
+                {
+                    "id": "step-1",
+                    "agent": "research",
+                    "task_type": "research",
+                    "description": "Research the AI slide market",
+                    "input": "AI slide market",
+                    "metadata": {"research_mode": "deep"},
+                }
+            ],
+            "panel_config": {
+                "provider": "ollama",
+                "model": "qwen3:latest",
+                "base_url": "http://localhost:11434",
+                "api_key": "",
+                "temperature": 0.2,
+            },
+            "research_mode": "deep",
+            "providers": ["tavily", "exa"],
+            "max_rounds": 2,
+            "max_results_per_query": 5,
+            "max_fetch_pages": 4,
+        },
+        session_id="session-1",
+        created_at=1.0,
+        updated_at=1.0,
+    )
+    progress: list[int] = []
+
+    monkeypatch.setattr(task_execution_helpers, "_model_config_value", lambda cfg, key, default=None: cfg.get(key, default))
+
+    def fake_create_llm(provider, model, base_url, api_key, temperature):
+        assert provider == "ollama"
+        assert model == "qwen3:latest"
+        assert base_url == "http://localhost:11434"
+        assert api_key == ""
+        assert temperature == 0.2
+        return "fake-llm"
+
+    async def fake_run_orchestrator(user_request: str, **kwargs):
+        assert user_request == "Research the AI slide market"
+        assert kwargs["context"] == {"session_id": "session-1"}
+        assert kwargs["plan"][0]["agent"] == "research"
+        assert kwargs["llm"] == "fake-llm"
+        assert kwargs["research_config"].mode == "deep"
+        assert list(kwargs["research_config"].providers or []) == ["tavily", "exa"]
+        assert kwargs["research_config"].max_results_per_query == 5
+        return {
+            "status": "completed",
+            "plan": kwargs["plan"],
+            "agent_results": {"step-1": {"status": "completed", "agent": "research"}},
+            "agent_metrics": {
+                "step-1": {
+                    "agent": "research",
+                    "status": "completed",
+                    "total_tokens": 42,
+                    "estimated_cost_usd": 0.0042,
+                }
+            },
+            "agent_cost_summary": {
+                "step_count": 1,
+                "completed_count": 1,
+                "failed_count": 0,
+                "total_tokens": 42,
+                "estimated_cost_usd": 0.0042,
+            },
+            "final_output": "Workflow finished with seeded plan.",
+        }
+
+    monkeypatch.setattr(task_execution_helpers, "run_orchestrator", fake_run_orchestrator)
+
+    async def run():
+        await run_multi_agent_workflow_task(
+            record,
+            set_progress=lambda value: _append_progress(progress, value),
+            normalize_model_config=lambda value: value,
+            create_llm=fake_create_llm,
+        )
+
+    asyncio.run(run())
+
+    assert progress == [20, 80]
+    assert record.params["workflow_status"] == "completed"
+    assert record.params["workflow_agent_results"]["step-1"]["agent"] == "research"
+    assert record.params["workflow_agent_metrics"]["step-1"]["total_tokens"] == 42
+    assert record.params["workflow_agent_cost_summary"]["estimated_cost_usd"] == 0.0042
+    assert record.result == "Workflow finished with seeded plan."
+
+
+def test_run_multi_agent_workflow_task_persists_chat_result(monkeypatch):
+    record = TaskRecord(
+        task_id="task-workflow-chat",
+        task_type="multi_agent_workflow",
+        status=TaskStatus.RUNNING,
+        params={
+            "user_request": "Research the AI slide market",
+            "panel_id": "panel-main",
+            "answer_group_id": "grp-1",
+            "workflow_agent_results": {
+                "step-1": {
+                    "agent": "research",
+                    "sources": [{"title": "Market report", "url": "https://example.com/report"}],
+                }
+            },
+        },
+        session_id="session-1",
+        created_at=1.0,
+        updated_at=1.0,
+    )
+    persisted: list[dict[str, object]] = []
+
+    async def fake_run_orchestrator(user_request: str, **kwargs):
+        return {
+            "status": "completed",
+            "plan": [{"id": "step-1", "agent": "research", "task_type": "research", "status": "completed"}],
+            "agent_results": {
+                "step-1": {
+                    "agent": "research",
+                    "status": "completed",
+                    "sources": [{"title": "Market report", "url": "https://example.com/report"}],
+                }
+            },
+            "final_output": "Workflow finished with report.",
+        }
+
+    monkeypatch.setattr(task_execution_helpers, "run_orchestrator", fake_run_orchestrator)
+    monkeypatch.setattr(
+        task_execution_helpers,
+        "persist_multi_agent_workflow_task_result",
+        lambda current, *, content, db_path="./chat_history.db": persisted.append(
+            {"task_id": current.task_id, "content": content, "params": dict(current.params or {})}
+        ),
+    )
+
+    async def run():
+        await run_multi_agent_workflow_task(
+            record,
+            set_progress=lambda value: _append_progress([], value),
+        )
+
+    asyncio.run(run())
+
+    assert record.result == "Workflow finished with report."
+    assert persisted
+    assert persisted[0]["content"] == "Workflow finished with report."
+    assert persisted[0]["params"]["workflow_plan"][0]["status"] == "completed"
+
+
+def test_run_multi_agent_workflow_task_persists_research_archive(monkeypatch):
+    record = TaskRecord(
+        task_id="task-workflow-research-archive",
+        task_type="multi_agent_workflow",
+        status=TaskStatus.RUNNING,
+        params={"user_request": "Research the AI slide market"},
+        session_id="session-archive",
+        created_at=1.0,
+        updated_at=1.0,
+    )
+    saved_artifacts: list[dict[str, object]] = []
+
+    research_artifact = {
+        "type": "research_report",
+        "version": "v2",
+        "query": "AI slide market",
+        "claim_evidence_chains": [{"claim_id": "claim-001", "status": "partial"}],
+        "claim_verification_summary": {"total_claims": 1, "partial_claims": 1},
+    }
+
+    async def fake_run_orchestrator(user_request: str, **kwargs):
+        return {
+            "status": "completed",
+            "plan": [{"id": "step-1", "agent": "research", "task_type": "research", "status": "completed"}],
+            "agent_results": {
+                "step-1": {
+                    "agent": "research",
+                    "status": "completed",
+                    "output": "Research archive markdown.",
+                    "artifacts": [research_artifact],
+                    "sources": [{"title": "Market report", "url": "https://example.com/report"}],
+                    "metadata": {"research_mode": "deep"},
+                }
+            },
+            "final_output": "Workflow finished with research.",
+        }
+
+    def fake_build_research_archive_artifact(**kwargs):
+        assert kwargs["session_id"] == "session-archive"
+        assert kwargs["task_id"] == "task-workflow-research-archive"
+        return {
+            "artifact_id": "artifact-research-archive",
+            "content": {
+                "research_report": kwargs["agent_result"]["artifacts"][0],
+            },
+        }
+
+    monkeypatch.setattr(task_execution_helpers, "run_orchestrator", fake_run_orchestrator)
+
+    async def run():
+        await run_multi_agent_workflow_task(
+            record,
+            set_progress=lambda value: _append_progress([], value),
+            build_research_archive_artifact=fake_build_research_archive_artifact,
+            save_artifact=lambda artifact: saved_artifacts.append(artifact),
+        )
+
+    asyncio.run(run())
+
+    assert record.params["research_archive_artifact_id"] == "artifact-research-archive"
+    assert saved_artifacts[0]["content"]["research_report"]["claim_evidence_chains"][0]["claim_id"] == "claim-001"
 
 
 def test_run_promote_attachment_to_kb_task_rejects_workspace_mismatch(monkeypatch):

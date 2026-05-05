@@ -1,0 +1,61 @@
+[
+  {
+    "archive_path": "runtime\\ops-readiness\\k8s\\archive\\k8s_rollout_drill-20260503-143303.json",
+    "blockers": [
+      "missing_env:OPS_REAL_CLUSTER_TEST"
+    ],
+    "executed_steps": 0,
+    "id": "k8s_rollout_drill",
+    "namespace": "default",
+    "ok": false,
+    "recorded_at": 1777789983.603112,
+    "release": "insightdesk",
+    "report_path": "runtime\\ops-readiness\\k8s\\manual-k8s-drill.json",
+    "skipped": true,
+    "status": "skipped"
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\k8s\\archive\\k8s_rollout_drill-20260504-121121.json",
+    "blockers": [
+      "missing_env:OPS_REAL_CLUSTER_TEST"
+    ],
+    "config_reload_ready": true,
+    "executed_steps": 0,
+    "id": "k8s_rollout_drill",
+    "namespace": "default",
+    "ok": false,
+    "recorded_at": 1777867881.747907,
+    "release": "insightdesk",
+    "report_path": "runtime\\ops-readiness\\k8s\\local-skip-check.json",
+    "skipped": true,
+    "status": "skipped"
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\k8s\\archive\\k8s_rollout_drill-20260505-195839.json",
+    "blockers": [],
+    "config_reload_ready": true,
+    "executed_steps": 5,
+    "id": "k8s_rollout_drill",
+    "namespace": "default",
+    "ok": true,
+    "recorded_at": 1777982319.097352,
+    "release": "insightdesk",
+    "report_path": "runtime\\ops-readiness\\k8s\\k8s-real-cluster-probe.json",
+    "skipped": false,
+    "status": "ready"
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\k8s\\archive\\k8s_rollout_drill-20260505-195849.json",
+    "blockers": [],
+    "config_reload_ready": true,
+    "executed_steps": 5,
+    "id": "k8s_rollout_drill",
+    "namespace": "default",
+    "ok": true,
+    "recorded_at": 1777982329.3494408,
+    "release": "insightdesk",
+    "report_path": "runtime\\ops-readiness\\k8s\\k8s-config-reload-drill.json",
+    "skipped": false,
+    "status": "ready"
+  }
+]

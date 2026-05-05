@@ -1,4 +1,4 @@
-from backend.api_security_audit_store import SQLiteSecurityAuditStore
+from backend.stores.security_audit_store import SQLiteSecurityAuditStore
 
 
 def test_security_audit_store_persists_and_filters_events(tmp_path):
@@ -109,3 +109,51 @@ def test_security_audit_store_trim_to_latest_supports_manual_cleanup(tmp_path):
     assert [event.request_id for event in remaining_after_tail] == ["req-2", "req-3"]
     assert deleted_clear_all == 2
     assert store.count_events() == 0
+
+
+def test_security_audit_store_preserves_legal_hold_during_cleanup(tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    store = SQLiteSecurityAuditStore(db_path=str(db_path), history_limit=10)
+
+    store.append(
+        {
+            "timestamp": 1.0,
+            "request_id": "req-delete",
+            "action": "probe",
+            "result": "ok",
+            "ip": "127.0.0.1",
+            "is_local": True,
+            "auth_mode": "local",
+            "auth_source": "local_bypass",
+            "user_id": "local",
+            "user_role": "admin",
+            "details": "org_id=org-a tenant_id=tenant-a",
+        }
+    )
+    store.append(
+        {
+            "timestamp": 2.0,
+            "request_id": "req-hold",
+            "action": "probe",
+            "result": "ok",
+            "ip": "127.0.0.1",
+            "is_local": True,
+            "auth_mode": "local",
+            "auth_source": "local_bypass",
+            "user_id": "local",
+            "user_role": "admin",
+            "details": "org_id=org-b tenant_id=tenant-b",
+        }
+    )
+
+    updated_count = store.set_legal_hold("req-hold", legal_hold=True)
+    deleted_count = store.trim_to_latest(0)
+    remaining = store.list_events(limit=10)
+
+    assert updated_count == 1
+    assert deleted_count == 1
+    assert len(remaining) == 1
+    assert remaining[0].request_id == "req-hold"
+    assert remaining[0].legal_hold is True
+    assert remaining[0].tenant_id == "tenant-b"
+    assert remaining[0].org_id == "org-b"

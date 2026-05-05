@@ -117,6 +117,13 @@ def test_export_deck_to_pptx_renders_structured_slides_and_notes():
                         source_title="Q1经营分析.md",
                         snippet="重点项目延期 2 周，直接影响 4 月回款节奏。",
                         confidence=0.93,
+                    ),
+                    DeckEvidenceRef(
+                        id="ev-2",
+                        source_id="src-2",
+                        source_title="项目周报-交付风险.xlsx",
+                        snippet="交付团队反馈复杂需求占用核心人力，复用率不足。",
+                        confidence=0.88,
                     )
                 ],
                 quality_state="supported",
@@ -150,6 +157,7 @@ def test_export_deck_to_pptx_renders_structured_slides_and_notes():
         ],
         source_registry=[
             DeckSourceItem(id="src-1", type="doc", title="Q1经营分析.md"),
+            DeckSourceItem(id="src-2", type="sheet", title="项目周报-交付风险.xlsx"),
         ],
     )
 
@@ -164,12 +172,17 @@ def test_export_deck_to_pptx_renders_structured_slides_and_notes():
     assert "季度经营复盘" in cover_text
     assert "Q1 收入达成较好，但项目交付和毛利率承压。" in cover_text
 
+    outline_text = _shape_text(presentation.slides[1])
+    assert "证据来源" not in outline_text
+    assert "[1]" not in outline_text
+
     content_text = _shape_text(presentation.slides[2])
     assert "核心风险与改进方向" in content_text
     assert "关键摘要" in content_text
-    assert "• 重点项目延期 2 周，导致回款节奏后移。" in content_text
+    assert "• 重点项目延期 2 周，导致回款节奏后移。 [1][2]" in content_text
     assert "证据来源" in content_text
-    assert "Q1经营分析.md" in content_text
+    assert "[1] Q1经营分析.md (93%)" in content_text
+    assert "[2] 项目周报-交付风险.xlsx (88%)" in content_text
     assert "证据充分" in content_text
 
     appendix_text = _shape_text(presentation.slides[3])

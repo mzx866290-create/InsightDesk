@@ -24,6 +24,8 @@ import { CitationPanel } from './CitationPanel'
 import { ErrorBanner } from './ErrorBanner'
 import { IntentCardRenderer, stripIntentBlocks } from '../cards/IntentCardRenderer'
 import { TaskProgressCard } from '../cards/TaskProgressCard'
+import { ResearchMetaCard } from '../research/ResearchMetaCard'
+import { getResearchTaskMeta } from '../../utils/researchTask'
 import { useChatStore } from '../../stores/chatStore'
 import { createAndTrackTask, useTaskStore } from '../../stores/taskStore'
 import {
@@ -150,6 +152,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     updateMessage,
   } = useChatStore()
   const reportTask = useTaskStore((state) => (reportTaskId ? state.tasks[reportTaskId] : undefined))
+  const researchTask = useTaskStore((state) => (message.taskId ? state.tasks[message.taskId] : undefined))
   const effectivePanelId = panelId ?? message.panelId ?? ''
   const bookmarkEntry = bookmarks.find((bookmark) => {
     if ((bookmark.source ?? 'remote') === 'local' && bookmark.id === message.id) {
@@ -389,6 +392,11 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     (message.taskType === 'web_research' || message.modelId === 'web_research') &&
     Array.isArray(message.sources) &&
     message.sources.length > 0
+  const researchTaskMeta = getResearchTaskMeta(researchTask)
+  const showResearchMeta =
+    message.role === 'assistant' &&
+    (message.taskType === 'web_research' || message.modelId === 'web_research') &&
+    Boolean(researchTaskMeta)
 
   const canGenerateReport =
     Boolean(currentSessionId) &&
@@ -732,6 +740,9 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
             taskType="generate_report"
             sessionId={currentSessionId ?? undefined}
           />
+        )}
+        {showResearchMeta && researchTaskMeta && (
+          <ResearchMetaCard meta={researchTaskMeta} compact className="mb-3" />
         )}
         <IntentCardRenderer content={message.content} streaming={message.streaming} />
         <Suspense

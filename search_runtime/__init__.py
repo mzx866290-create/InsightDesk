@@ -8,6 +8,8 @@ from .service import (
     search_web_text,
 )
 from .types import (
+    AtomicClaim,
+    ClaimVerification,
     ResearchBudget,
     ResearchContradiction,
     ResearchFinding,
@@ -15,6 +17,7 @@ from .types import (
     ResearchPlan,
     ResearchQuery,
     ResearchRound,
+    ResearchSource,
     SearchDocument,
     SearchProviderCapabilities,
     SearchResponse,
@@ -22,6 +25,8 @@ from .types import (
 )
 
 __all__ = [
+    "AtomicClaim",
+    "ClaimVerification",
     "ResearchBudget",
     "ResearchContradiction",
     "ResearchFinding",
@@ -29,6 +34,7 @@ __all__ = [
     "ResearchPlan",
     "ResearchQuery",
     "ResearchRound",
+    "ResearchSource",
     "SearchDocument",
     "SearchProviderCapabilities",
     "SearchResponse",

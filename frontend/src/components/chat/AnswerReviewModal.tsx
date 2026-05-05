@@ -145,6 +145,11 @@ function renderResponseCard(
           workflow {item.completed_workflow_count}/{item.workflow_node_count}
         </span>
         <span className="rounded-full bg-bg-secondary px-2 py-1">长度 {item.content_length}</span>
+        {item.token_usage ? (
+          <span className="rounded-full bg-bg-secondary px-2 py-1">
+            tokens {item.token_usage.total_tokens}{item.token_usage.estimated ? ' est.' : ''}
+          </span>
+        ) : null}
       </div>
 
       <p className="rounded-xl bg-bg-secondary/70 px-3 py-3 text-sm leading-relaxed text-text-primary">
@@ -290,6 +295,71 @@ export const AnswerReviewModal: React.FC<AnswerReviewModalProps> = ({
                 ))}
               </div>
             ) : null}
+
+            {(review.consensus_points?.length ?? 0) > 0 ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-xs font-medium text-text-primary">
+                  <Check size={12} className="text-accent-green" />
+                  共识要点
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {review.consensus_points?.map((item) => (
+                    <span
+                      key={`${item.term}-${item.support_count}`}
+                      className="rounded-full bg-accent-green/10 px-2 py-1 text-[11px] text-accent-green"
+                    >
+                      {item.term} · {item.support_count}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {review.synthesis?.answer || review.synthesized_answer ? (
+              <div className="space-y-2 rounded-xl border border-bg-border bg-bg-secondary/50 px-3 py-3">
+                <div className="flex items-center gap-2 text-xs font-medium text-text-primary">
+                  <Sparkles size={12} className="text-accent-blue" />
+                  Synthesized answer
+                </div>
+                <p className="whitespace-pre-wrap text-xs leading-relaxed text-text-secondary">
+                  {review.synthesis?.answer || review.synthesized_answer}
+                </p>
+              </div>
+            ) : null}
+
+            {review.token_summary ? (
+              <div className="grid gap-2 md:grid-cols-4">
+                <div className="rounded-xl bg-bg-secondary/70 px-3 py-3">
+                  <div className="text-[10px] uppercase tracking-wide text-text-secondary/70">Prompt</div>
+                  <div className="text-sm font-semibold text-text-primary">{review.token_summary.prompt_tokens}</div>
+                </div>
+                <div className="rounded-xl bg-bg-secondary/70 px-3 py-3">
+                  <div className="text-[10px] uppercase tracking-wide text-text-secondary/70">Completion</div>
+                  <div className="text-sm font-semibold text-text-primary">{review.token_summary.completion_tokens}</div>
+                </div>
+                <div className="rounded-xl bg-bg-secondary/70 px-3 py-3">
+                  <div className="text-[10px] uppercase tracking-wide text-text-secondary/70">Total</div>
+                  <div className="text-sm font-semibold text-text-primary">{review.token_summary.total_tokens}</div>
+                </div>
+                <div className="rounded-xl bg-bg-secondary/70 px-3 py-3">
+                  <div className="text-[10px] uppercase tracking-wide text-text-secondary/70">Usage</div>
+                  <div className="text-sm font-semibold text-text-primary">
+                    {review.token_summary.estimated ? `${review.token_summary.estimated_count} estimated` : 'actual'}
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {review.preference_signal ? (
+              <div className="flex flex-wrap gap-1.5 text-[11px] text-text-secondary">
+                <span className="rounded-full bg-bg-secondary px-2 py-1">
+                  preference {review.preference_signal.persisted ? 'persisted' : 'pending'}
+                </span>
+                <span className="rounded-full bg-bg-secondary px-2 py-1">
+                  winner {review.preference_signal.selected_panel_id}
+                </span>
+              </div>
+            ) : null}
           </div>
 
           <div className="space-y-3">
@@ -309,6 +379,36 @@ export const AnswerReviewModal: React.FC<AnswerReviewModalProps> = ({
             </div>
           </div>
 
+          {(review.model_performance?.length ?? 0) > 0 ? (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
+                <Scale size={14} className="text-accent-blue" />
+                模型表现
+              </div>
+              <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                {review.model_performance?.map((item) => (
+                  <div
+                    key={`${item.panel_id}-${item.model_id}`}
+                    className="rounded-xl border border-bg-border bg-bg-tertiary/40 px-3 py-3"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-medium text-text-primary">{item.panel_id}</div>
+                      {item.model_id ? (
+                        <div className="truncate text-[11px] text-text-secondary">{item.model_id}</div>
+                      ) : null}
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-1.5 text-[11px] text-text-secondary">
+                      <span>耗时 {item.latency_seconds === null ? '-' : `${item.latency_seconds.toFixed(2)}s`}</span>
+                      <span>速度 {item.chars_per_second === null ? '-' : `${item.chars_per_second.toFixed(1)}/s`}</span>
+                      <span>长度 {item.content_length}</span>
+                      <span>证据 {item.source_count}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           {review.comparisons.length > 0 ? (
             <div className="space-y-3">
               <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
@@ -317,6 +417,28 @@ export const AnswerReviewModal: React.FC<AnswerReviewModalProps> = ({
               </div>
               <div className="grid gap-3 lg:grid-cols-2">
                 {review.comparisons.map(renderComparison)}
+              </div>
+            </div>
+          ) : null}
+
+          {(review.difference_points?.length ?? 0) > 0 ? (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
+                <AlertCircle size={14} className="text-accent-orange" />
+                独有关注点
+              </div>
+              <div className="grid gap-2 md:grid-cols-2">
+                {review.difference_points?.map((item) => (
+                  <div
+                    key={`${item.panel_id}-${item.unique_terms.join('-')}`}
+                    className="rounded-xl border border-bg-border bg-bg-tertiary/40 px-3 py-3"
+                  >
+                    <div className="text-xs font-medium text-text-primary">{item.panel_id}</div>
+                    {item.note ? (
+                      <p className="mt-1 text-xs leading-relaxed text-text-secondary">{item.note}</p>
+                    ) : null}
+                  </div>
+                ))}
               </div>
             </div>
           ) : null}

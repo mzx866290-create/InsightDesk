@@ -1,6 +1,6 @@
 import sqlite3
 
-from backend.api_config_store import SQLiteAppConfigStore
+from backend.stores.config_store import SQLiteAppConfigStore
 
 
 def test_app_config_store_encrypts_values_at_rest(tmp_path, monkeypatch):

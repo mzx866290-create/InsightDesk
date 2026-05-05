@@ -164,7 +164,73 @@ class ResearchFinding:
 class ResearchContradiction:
     topic: str
     details: str
+    resolution_action: Literal["no_action", "clarify_in_output", "repair_search"] = "clarify_in_output"
     sources: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ResearchSource:
+    doc: SearchDocument
+    facet: str = ""
+    bucket: str = ""
+    source_tier: Literal["primary", "secondary", "tertiary"] = "tertiary"
+    source_family: str = ""
+    freshness_band: str = "unknown"
+    selection_reason: str = ""
+    provider_caveat: str = ""
+
+    def to_payload(self, index: int) -> dict[str, object]:
+        payload = self.doc.to_source_item(index)
+        payload.update(
+            {
+                "facet": self.facet,
+                "source_bucket": self.bucket,
+                "source_tier": self.source_tier,
+                "source_family": self.source_family,
+                "freshness_band": self.freshness_band,
+                "selection_reason": self.selection_reason,
+                "provider_caveat": self.provider_caveat,
+            }
+        )
+        return payload
+
+
+@dataclass
+class AtomicClaim:
+    claim_id: str
+    facet: str
+    text: str
+    claim_type: Literal["event", "data_point", "policy_signal", "market_trend", "forecast"] = "event"
+    date: str | None = None
+    candidate_sources: list[str] = field(default_factory=list)
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "claim_id": self.claim_id,
+            "facet": self.facet,
+            "text": self.text,
+            "claim_type": self.claim_type,
+            "date": self.date,
+            "candidate_sources": list(self.candidate_sources),
+        }
+
+
+@dataclass
+class ClaimVerification:
+    claim_id: str
+    status: Literal["verified", "partial", "unverified"]
+    evidence_strength: Literal["high", "medium", "low"]
+    supporting_sources: list[str] = field(default_factory=list)
+    verification_note: str = ""
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "claim_id": self.claim_id,
+            "status": self.status,
+            "evidence_strength": self.evidence_strength,
+            "supporting_sources": list(self.supporting_sources),
+            "verification_note": self.verification_note,
+        }
 
 
 @dataclass
@@ -181,6 +247,7 @@ class WebResearchResult:
     provider: str
     answer: str = ""
     summary: str = ""
+    rewritten_query: str = ""
     sources: list[SearchDocument] = field(default_factory=list)
     highlights: list[str] = field(default_factory=list)
     findings: list[ResearchFinding] = field(default_factory=list)
@@ -231,6 +298,8 @@ class WebResearchResult:
                     source_text = "；".join(item.strip() for item in contradiction.sources if item.strip())
                     if source_text:
                         lines.append(f"   相关来源：{source_text}")
+                if contradiction.resolution_action:
+                    lines.append(f"   处理建议：{contradiction.resolution_action}")
 
         if self.caveats:
             lines.append("")

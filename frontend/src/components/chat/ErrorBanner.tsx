@@ -25,11 +25,17 @@ export const ErrorBanner: React.FC<ErrorBannerProps> = ({
   const resolved = resolveErrorMessage(errorCode, content)
   const displayTitle = resolved.title
   const displaySuggestion = suggestion ?? resolved.suggestion
-  const recommendedAction = resolved.action
+  const recommendedActions = Array.isArray(resolved.action)
+    ? resolved.action
+    : resolved.action
+      ? [resolved.action]
+      : []
+  const hasAction = (action: 'settings' | 'clear' | 'retry' | 'none') =>
+    recommendedActions.includes(action)
 
-  const showSettingsAction = recommendedAction === 'settings'
-  const showClearAction = recommendedAction === 'clear' || (!errorCode && recommendedAction !== 'none')
-  const showRetry = recommendedAction === 'retry' || (!errorCode && !!onRetry)
+  const showSettingsAction = hasAction('settings')
+  const showClearAction = hasAction('clear') || (!errorCode && !hasAction('none'))
+  const showRetry = hasAction('retry') || (!errorCode && !!onRetry)
 
   return (
     <div className="flex justify-start mb-4 animate-fade-in">

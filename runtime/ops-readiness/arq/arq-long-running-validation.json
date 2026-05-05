@@ -1,0 +1,216 @@
+{
+  "archive_path": "runtime\\ops-readiness\\arq\\archive\\arq_long_running_validation-20260505-194953.json",
+  "blockers": [],
+  "closure": {
+    "complete": true,
+    "completed_iterations": 30,
+    "decision": "long_running_validation_passed",
+    "failed_iterations": []
+  },
+  "completed_iterations": 30,
+  "docker_start_contract": {},
+  "duration_seconds": 900,
+  "error": null,
+  "evidence": {
+    "archive_ready": true,
+    "blockers": [],
+    "completed_iterations": 30,
+    "compose_file": "F:\\项目\\AI智能体\\deploy\\compose.arq-worker.yml",
+    "decision": "long_running_validation_passed",
+    "duration_seconds": 900,
+    "manifest_path": "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+    "max_iterations": 30,
+    "probe_path": "/app/deploy/arq_e2e_probe.py",
+    "schema_version": 1
+  },
+  "exit_code": 0,
+  "finished_at": 1777981793.8925943,
+  "gate_env": "ARQ_LONG_RUNNING_TEST",
+  "id": "arq_long_running_validation",
+  "iterations": [
+    {
+      "duration_ms": 4471,
+      "index": 1,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 5725,
+      "index": 2,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 4890,
+      "index": 3,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 5029,
+      "index": 4,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 4342,
+      "index": 5,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 5083,
+      "index": 6,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3998,
+      "index": 7,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3924,
+      "index": 8,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3992,
+      "index": 9,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3954,
+      "index": 10,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3896,
+      "index": 11,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 4024,
+      "index": 12,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3901,
+      "index": 13,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 4901,
+      "index": 14,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3900,
+      "index": 15,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3917,
+      "index": 16,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3870,
+      "index": 17,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 4899,
+      "index": 18,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 4107,
+      "index": 19,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3885,
+      "index": 20,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3884,
+      "index": 21,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3956,
+      "index": 22,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3973,
+      "index": 23,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3900,
+      "index": 24,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 4019,
+      "index": 25,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 4062,
+      "index": 26,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3981,
+      "index": 27,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 4892,
+      "index": 28,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3928,
+      "index": 29,
+      "ok": true,
+      "returncode": 0
+    },
+    {
+      "duration_ms": 3860,
+      "index": 30,
+      "ok": true,
+      "returncode": 0
+    }
+  ],
+  "max_iterations": 30,
+  "ok": true,
+  "skipped": false,
+  "started_at": 1777981602.848901
+}

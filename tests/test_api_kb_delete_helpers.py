@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 
-from backend.api_kb_delete_helpers import delete_kb_directory
+from backend.helpers.kb_delete_helpers import delete_kb_directory
 
 
 def test_delete_kb_directory_removes_tree_clears_cache_and_formats_message(tmp_path):

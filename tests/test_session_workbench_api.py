@@ -149,3 +149,28 @@ def test_patch_session_rejects_empty_payload(monkeypatch, tmp_path):
 
     assert response.status_code == 400
     assert response.json()["detail"] == "至少需要提供一个可更新字段"
+
+def test_get_session_attachments_reads_history_through_factory(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APP_DB_PATH", str(tmp_path / "chat_history.db"))
+
+    history = chat_store.SQLiteChatMessageHistory("session-attachments")
+    history.add_user_message(
+        "Please review the attachment",
+        files=[
+            {
+                "name": "brief.txt",
+                "media_type": "text/plain",
+                "size_bytes": 11,
+                "extracted_text": "hello world",
+            }
+        ],
+    )
+
+    client = TestClient(api_server.app)
+    response = client.get("/api/sessions/session-attachments/attachments")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["file_count"] == 1
+    assert payload["attachments"][0]["name"] == "brief.txt"

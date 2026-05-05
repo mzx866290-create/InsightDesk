@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from backend.api_attachment_route_helpers import (
+from backend.helpers.attachment_route_helpers import (
     prepare_attachment_promotion,
     session_attachments_payload,
 )

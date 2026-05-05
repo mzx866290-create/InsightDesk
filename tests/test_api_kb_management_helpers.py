@@ -1,7 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from backend.api_kb_management_helpers import kb_health_payload, knowledge_bases_payload
+from backend.helpers.kb_management_helpers import kb_health_payload, knowledge_bases_payload
 
 
 def test_knowledge_bases_payload_collects_unique_paths_and_doc_counts(tmp_path):

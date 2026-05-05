@@ -288,6 +288,20 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       }
     }
 
+    if (!target && jumpTarget.searchQuery?.trim()) {
+      const normalizedQuery = jumpTarget.searchQuery.trim().toLowerCase()
+      const matchedMessage = panel.messages.find((message) => {
+        if (message.role === 'error') return false
+        return message.content.toLowerCase().includes(normalizedQuery)
+      })
+
+      if (matchedMessage) {
+        target = container.querySelector<HTMLElement>(
+          `[data-message-id="${matchedMessage.id}"]`,
+        )
+      }
+    }
+
     if (!target) return
 
     target.scrollIntoView({ behavior: 'smooth', block: 'center' })

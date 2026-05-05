@@ -1,7 +1,10 @@
-from backend.api_session_helpers import (
+from backend.helpers.session_helpers import (
     build_answer_group_review_payload,
+    build_session_messages_payload,
     collect_session_attachments,
+    find_session_attachment,
     message_payload,
+    record_answer_preference_signal,
     render_shared_deck_html,
     render_shared_session_html,
 )
@@ -104,6 +107,121 @@ def test_collect_session_attachments_dedupes_and_tracks_turns():
     assert brief["preview_text"] == "Alpha secti..."
 
 
+def test_find_session_attachment_reads_history_through_factory(monkeypatch):
+    from backend.stores import factory
+
+    class FakeHistory:
+        def get_all_message_records(self):
+            return [
+                {
+                    "timestamp": 1.0,
+                    "files": [
+                        {
+                            "name": "brief.txt",
+                            "media_type": "text/plain",
+                            "data_url": "data:text/plain;base64,YnJpZWY=",
+                            "extracted_text": "brief content",
+                        }
+                    ],
+                }
+            ]
+
+    calls: list[str] = []
+
+    def fake_create_chat_message_history(session_id: str):
+        calls.append(session_id)
+        return FakeHistory()
+
+    monkeypatch.setattr(
+        factory,
+        "create_chat_message_history",
+        fake_create_chat_message_history,
+    )
+    expected_id = collect_session_attachments(
+        FakeHistory().get_all_message_records(),
+        preview_char_limit=40,
+    )["attachments"][0]["attachment_id"]
+
+    attachment = find_session_attachment(
+        "session-factory",
+        expected_id,
+        preview_char_limit=40,
+    )
+
+    assert calls == ["session-factory"]
+    assert attachment is not None
+    assert attachment["name"] == "brief.txt"
+
+
+def test_build_session_messages_payload_reads_history_through_factory(monkeypatch):
+    import backend.chat_store as chat_store
+    from backend.stores import factory
+
+    class FakeHistory:
+        db_path = "factory-history.sqlite"
+
+        def get_all_message_records(self, panel_id=None):
+            if panel_id == "panel-main":
+                return [
+                    {
+                        "id": 2,
+                        "type": "ai",
+                        "content": "Panel answer",
+                        "panel_id": "panel-main",
+                        "timestamp": 2.0,
+                    }
+                ]
+            return [
+                {
+                    "id": 1,
+                    "type": "human",
+                    "content": "Hello",
+                    "timestamp": 1.0,
+                }
+            ]
+
+    calls: dict[str, list] = {
+        "factory": [],
+        "sessions": [],
+        "panels": [],
+    }
+
+    def fake_create_chat_message_history(session_id: str):
+        calls["factory"].append(session_id)
+        return FakeHistory()
+
+    def fake_get_session(session_id: str, db_path=None):
+        calls["sessions"].append((session_id, db_path))
+        return {
+            "session_id": session_id,
+            "title": "Factory session",
+            "updated_at": 10.0,
+        }
+
+    def fake_get_session_panels(session_id: str, db_path=None):
+        calls["panels"].append((session_id, db_path))
+        return [{"panel_id": "panel-main", "is_primary": True}]
+
+    monkeypatch.setattr(
+        factory,
+        "create_chat_message_history",
+        fake_create_chat_message_history,
+    )
+    monkeypatch.setattr(chat_store, "get_session", fake_get_session)
+    monkeypatch.setattr(chat_store, "get_session_panels", fake_get_session_panels)
+
+    payload = build_session_messages_payload("session-factory")
+
+    assert calls == {
+        "factory": ["session-factory"],
+        "sessions": [("session-factory", "factory-history.sqlite")],
+        "panels": [("session-factory", "factory-history.sqlite")],
+    }
+    assert payload["session"]["title"] == "Factory session"
+    assert payload["messages"][0]["content"] == "Hello"
+    assert payload["panel_messages"]["panel-main"][0]["content"] == "Panel answer"
+
+
 def test_render_shared_pages_include_expected_content():
     session_html = render_shared_session_html(
         {
@@ -181,7 +299,7 @@ def test_build_answer_group_review_payload_prefers_better_supported_panel(monkey
     db_path = tmp_path / "chat_history.db"
 
     class TestSQLiteChatMessageHistory(chat_store.SQLiteChatMessageHistory):
-        def __init__(self, session_id: str, db_path_arg: str = "./chat_history.db"):
+        def __init__(self, session_id: str, **kwargs):
             super().__init__(session_id=session_id, db_path=str(db_path))
 
     monkeypatch.setattr(chat_store, "SQLiteChatMessageHistory", TestSQLiteChatMessageHistory)
@@ -189,7 +307,7 @@ def test_build_answer_group_review_payload_prefers_better_supported_panel(monkey
     history = TestSQLiteChatMessageHistory("session-review")
     history.add_user_message("Compare the options", answer_group_id="grp-review")
     history.add_ai_message(
-        "Short answer",
+        "Supported option needs evidence.",
         model_id="qwen-main",
         panel_id="panel-main",
         answer_group_id="grp-review",
@@ -241,3 +359,97 @@ def test_build_answer_group_review_payload_prefers_better_supported_panel(monkey
     assert payload["responses"][0]["source_count"] == 2
     assert payload["responses"][0]["completed_workflow_count"] == 2
     assert payload["responses"][0]["score"] > payload["responses"][1]["score"]
+    assert any(item["term"] == "evidence" for item in payload["consensus_points"])
+    assert payload["difference_points"][0]["panel_id"] == "panel-compare"
+    assert payload["token_summary"]["estimated"] is True
+    assert payload["token_summary"]["total_tokens"] > 0
+    assert {
+        item["panel_id"] for item in payload["token_usage"]
+    } == {"panel-main", "panel-compare"}
+    assert all(item["estimated"] is True for item in payload["token_usage"])
+    assert payload["responses"][0]["token_usage"]["total_tokens"] > 0
+    assert payload["synthesis"]["source_panel_id"] == "panel-compare"
+    assert payload["synthesis"]["strategy"] == "deterministic_consensus_best_candidate"
+    assert "supported option" in payload["synthesized_answer"]
+    assert payload["preference_signal"]["persisted"] is False
+    assert payload["preference_signal"]["selected_panel_id"] == "panel-compare"
+    performance_by_panel = {
+        item["panel_id"]: item for item in payload["model_performance"]
+    }
+    assert performance_by_panel["panel-compare"]["content_length"] > performance_by_panel["panel-main"]["content_length"]
+    assert "latency_seconds" in performance_by_panel["panel-compare"]
+    assert performance_by_panel["panel-compare"]["token_usage"]["estimated"] is True
+
+
+def test_record_answer_preference_signal_persists_winner_feedback(monkeypatch, tmp_path):
+    import backend.chat_store as chat_store
+
+    db_path = tmp_path / "chat_history.db"
+
+    class TestSQLiteChatMessageHistory(chat_store.SQLiteChatMessageHistory):
+        def __init__(self, session_id: str, **kwargs):
+            super().__init__(session_id=session_id, db_path=str(db_path))
+
+    monkeypatch.setattr(chat_store, "SQLiteChatMessageHistory", TestSQLiteChatMessageHistory)
+
+    history = TestSQLiteChatMessageHistory("session-preference")
+    history.add_user_message("Pick the better implementation", answer_group_id="grp-preference")
+    history.add_ai_message(
+        "Short draft.",
+        model_id="model-a",
+        panel_id="panel-a",
+        answer_group_id="grp-preference",
+    )
+    history.add_ai_message(
+        "Recommended implementation:\n1. Keep the typed API stable.\n2. Persist the selected winner.\n3. Add focused tests.",
+        model_id="model-b",
+        panel_id="panel-b",
+        answer_group_id="grp-preference",
+        sources=[{"type": "doc", "title": "Implementation Notes"}],
+    )
+    chat_store.replace_session_panels(
+        "session-preference",
+        [
+            {
+                "panel_id": "panel-a",
+                "provider": "ollama",
+                "connection_type": "ollama",
+                "model": "model-a",
+                "base_url": "http://localhost:11434",
+                "temperature": 0.3,
+                "agent_mode": "auto",
+            },
+            {
+                "panel_id": "panel-b",
+                "provider": "ollama",
+                "connection_type": "ollama",
+                "model": "model-b",
+                "base_url": "http://localhost:11434",
+                "temperature": 0.4,
+                "agent_mode": "auto",
+            },
+        ],
+        db_path=str(db_path),
+    )
+
+    review = build_answer_group_review_payload("session-preference", "grp-preference")
+    signal = record_answer_preference_signal(
+        "session-preference",
+        "grp-preference",
+        "panel-b",
+        review,
+    )
+
+    assert signal["kind"] == "answer_winner_selected"
+    assert signal["selected_panel_id"] == "panel-b"
+    assert signal["selected_model_id"] == "model-b"
+    assert signal["accepted_recommendation"] is True
+    assert signal["persisted"] is True
+    assert signal["persistence"] == {"store": "messages.feedback_value", "value": 1}
+
+    stored_winner = next(
+        record
+        for record in history.get_all_message_records(panel_id="panel-b")
+        if record["type"] == "ai" and record["answer_group_id"] == "grp-preference"
+    )
+    assert stored_winner["feedback_value"] == 1

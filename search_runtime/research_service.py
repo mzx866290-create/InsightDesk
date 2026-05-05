@@ -179,6 +179,14 @@ def _dedupe_strings(items: Sequence[str]) -> list[str]:
     return deduped
 
 
+def _normalize_text_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return _dedupe_strings([value])
+    if isinstance(value, Sequence):
+        return _dedupe_strings(str(item) for item in value if str(item).strip())
+    return []
+
+
 def _infer_time_window(query: str, explicit_time_range: str | None) -> str:
     normalized = str(explicit_time_range or "").strip().lower()
     if normalized == "day":
@@ -611,7 +619,7 @@ def _parse_plan_payload(
         if isinstance(raw_facets, list):
             llm_facets = _dedupe_strings(str(item) for item in raw_facets)
 
-        caveats = _dedupe_strings(str(item) for item in payload.get("caveats", []) if str(item).strip())
+        caveats = _normalize_text_list(payload.get("caveats"))
 
     if llm_facets:
         facets = llm_facets
@@ -850,9 +858,7 @@ Knowledge context:
     analysis_data = analysis_payload if isinstance(analysis_payload, dict) else {}
     preliminary_findings = _parse_findings(analysis_data.get("findings"))
     preliminary_contradictions = _parse_contradictions(analysis_data.get("contradictions"))
-    caveats.extend(
-        _dedupe_strings(str(item) for item in analysis_data.get("caveats", []) if str(item).strip())
-    )
+    caveats.extend(_normalize_text_list(analysis_data.get("caveats")))
     follow_up_queries = _parse_research_queries(
         analysis_data.get("follow_up_queries"),
         fallback_facet=_format_facet_label(research_plan.facets[0]) if research_plan.facets else "overview",
@@ -1016,9 +1022,7 @@ Sources:
         or preliminary_contradictions
     )
     findings, contradictions = _attach_source_references(findings, contradictions, enriched_sources)
-    caveats.extend(
-        _dedupe_strings(str(item) for item in synthesis_data.get("caveats", []) if str(item).strip())
-    )
+    caveats.extend(_normalize_text_list(synthesis_data.get("caveats")))
     workflow_nodes.append(
         _workflow_node(
             "synthesize_report",
@@ -1045,6 +1049,7 @@ Sources:
         provider_summary=" + ".join(provider_labels) if provider_labels else "research",
         answer=summary,
         summary=summary,
+        rewritten_query=research_plan.queries[0].query if research_plan.queries else query,
         sources=enriched_sources,
         highlights=highlights[:5],
         findings=findings,

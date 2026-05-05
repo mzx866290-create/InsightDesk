@@ -712,9 +712,27 @@ export const Sidebar: React.FC = () => {
   }
 
   const handleSelectSession = async (session: Session) => {
-    if (session.session_id === currentSessionId) return
-    setMovingSessionId(null)
     const normalizedSearch = search.trim()
+    const shouldJumpToSearchMatch =
+      normalizedSearch.length > 0 && session.search_source === 'message'
+
+    setMovingSessionId(null)
+
+    if (shouldJumpToSearchMatch) {
+      setJumpTarget({
+        sessionId: session.session_id,
+        role: 'assistant',
+        searchQuery: normalizedSearch,
+      })
+    }
+
+    if (session.session_id === currentSessionId) {
+      if (isMobile) {
+        setSidebarOpen(false)
+      }
+      return
+    }
+
     await openSession(session, {
       forceWorkspaceSync: Boolean(normalizedSearch && session.workspace_id !== currentWorkspaceId),
     })

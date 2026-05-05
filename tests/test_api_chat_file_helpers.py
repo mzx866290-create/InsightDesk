@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
-from backend.api_chat_file_helpers import ChatFileConfig, prepare_chat_files
+from backend.helpers.chat_file_helpers import ChatFileConfig, prepare_chat_files
 
 
 def _config(**overrides):

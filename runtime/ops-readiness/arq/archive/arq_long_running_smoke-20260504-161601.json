@@ -1,0 +1,24 @@
+{
+  "archive_path": "runtime\\ops-readiness\\arq\\archive\\arq_long_running_smoke-20260504-161601.json",
+  "blockers": [],
+  "cleanup_completed": true,
+  "docker_start_contract": {},
+  "evidence": {
+    "archive_ready": true,
+    "blockers": [],
+    "compose_file": "F:\\项目\\AI智能体\\deploy\\compose.arq-worker.yml",
+    "decision": "smoke_passed",
+    "manifest_path": "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+    "probe_path": "/app/deploy/arq_e2e_probe.py",
+    "schema_version": 1
+  },
+  "exit_code": 0,
+  "finished_at": 1777882514.4044151,
+  "id": "arq_long_running_smoke",
+  "ok": true,
+  "probe_output_tail": "Container deploy-redis-1 Running \n Container deploy-redis-1 Waiting \n Container deploy-redis-1 Healthy \n Container deploy-arq-worker-run-17b28170437d Creating \n Container deploy-arq-worker-run-17b28170437d Created \nTASK_ID=arq-e2e-3a1718f5d3cf4102a78d9590cf7a8152\nJOB_ID=task:arq-e2e-3a1718f5d3cf4102a78d9590cf7a8152\nOK: task completed task_id=arq-e2e-3a1718f5d3cf4102a78d9590cf7a8152 progress=100",
+  "queue_name": "insightdesk:tasks",
+  "skipped": false,
+  "started_at": 1777882492.0834942,
+  "task_backend": "arq"
+}

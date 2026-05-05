@@ -1,0 +1,762 @@
+[
+  {
+    "archive_path": "runtime\\ops-readiness\\real-ops\\archive\\real_ops_evidence_runner-20260504-155355.json",
+    "blocked": 0,
+    "execute": true,
+    "executed": 1,
+    "failed": 1,
+    "history_path": "runtime\\ops-readiness\\real-ops\\history.json",
+    "id": "real_ops_evidence_runner",
+    "mode": "execute",
+    "ok": false,
+    "plan": {
+      "checks": [
+        {
+          "archive_dir": "runtime\\ops-readiness\\arq\\archive",
+          "area": "1.2_async_queue",
+          "blockers": [],
+          "checklist": [
+            "docker_cli",
+            "docker_daemon",
+            "redis_service",
+            "arq_worker_started",
+            "persisted_task_completed",
+            "evidence_archive"
+          ],
+          "command": [
+            "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+            "deploy/run_arq_e2e_smoke.py",
+            "--timeout-seconds",
+            "90",
+            "--json",
+            "--report-path",
+            "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+            "--archive-dir",
+            "runtime\\ops-readiness\\arq\\archive",
+            "--history-path",
+            "runtime\\ops-readiness\\arq\\history.json",
+            "--manifest-path",
+            "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+            "--docker-start-hint",
+            "--skip-if-unavailable"
+          ],
+          "description": "Run Redis/ARQ worker E2E smoke and confirm persisted task completion.",
+          "evidence_manifest_path": "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+          "history_path": "runtime\\ops-readiness\\arq\\history.json",
+          "id": "arq_long_running_smoke",
+          "included": true,
+          "probes": {
+            "docker": {
+              "blocker": "docker_daemon_unavailable",
+              "detail": "\"29.2.1\"",
+              "ok": true,
+              "returncode": 0
+            }
+          },
+          "real_environment": true,
+          "report_fields": [
+            "ok",
+            "skipped",
+            "blockers",
+            "task_id",
+            "job_id",
+            "evidence.decision",
+            "archive_path"
+          ],
+          "report_path": "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+          "required_env": [],
+          "required_tools": [
+            "docker"
+          ],
+          "runnable": true,
+          "safe_to_run": false,
+          "status": "ready"
+        },
+        {
+          "archive_dir": "runtime\\ops-readiness\\arq\\archive",
+          "area": "1.2_async_queue",
+          "blockers": [],
+          "checklist": [
+            "docker_cli",
+            "docker_daemon",
+            "active_job_started",
+            "worker_stop_requested",
+            "drain_closed",
+            "evidence_archive"
+          ],
+          "command": [
+            "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+            "deploy/run_arq_drain_drill.py",
+            "--timeout-seconds",
+            "120",
+            "--json",
+            "--report-path",
+            "runtime\\ops-readiness\\arq\\arq-drain-drill.json",
+            "--archive-dir",
+            "runtime\\ops-readiness\\arq\\archive",
+            "--history-path",
+            "runtime\\ops-readiness\\arq\\history.json",
+            "--manifest-path",
+            "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+            "--docker-start-hint",
+            "--skip-if-unavailable"
+          ],
+          "description": "Stop the ARQ worker during an active job and emit a drain closure report.",
+          "evidence_manifest_path": "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+          "history_path": "runtime\\ops-readiness\\arq\\history.json",
+          "id": "arq_drain_drill",
+          "included": true,
+          "probes": {
+            "docker": {
+              "blocker": "docker_daemon_unavailable",
+              "detail": "\"29.2.1\"",
+              "ok": true,
+              "returncode": 0
+            }
+          },
+          "real_environment": true,
+          "report_fields": [
+            "ok",
+            "skipped",
+            "closure.complete",
+            "closure.decision",
+            "closure.evidence",
+            "archive_path"
+          ],
+          "report_path": "runtime\\ops-readiness\\arq\\arq-drain-drill.json",
+          "required_env": [],
+          "required_tools": [
+            "docker"
+          ],
+          "runnable": true,
+          "safe_to_run": false,
+          "status": "ready"
+        }
+      ],
+      "execute": false,
+      "mode": "plan",
+      "ok": true,
+      "probe_tools": true,
+      "summary": {
+        "all_runnable": true,
+        "blocked": 0,
+        "runnable": 2,
+        "selected": 2
+      },
+      "unknown_ids": []
+    },
+    "probe_tools": true,
+    "recorded_at": 1777881235.8183355,
+    "report_path": "runtime\\ops-readiness\\real-ops\\arq-smoke-drain-runner.json",
+    "results": [
+      {
+        "area": "1.2_async_queue",
+        "command": [
+          "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+          "deploy/run_arq_e2e_smoke.py",
+          "--timeout-seconds",
+          "90",
+          "--json",
+          "--report-path",
+          "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+          "--archive-dir",
+          "runtime\\ops-readiness\\arq\\archive",
+          "--history-path",
+          "runtime\\ops-readiness\\arq\\history.json",
+          "--manifest-path",
+          "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+          "--docker-start-hint",
+          "--skip-if-unavailable"
+        ],
+        "execution": {
+          "duration_ms": 354044,
+          "error": "",
+          "ok": false,
+          "returncode": 1,
+          "stderr": "Traceback (most recent call last):\n  File \"F:\\项目\\AI智能体\\deploy\\run_arq_e2e_smoke.py\", line 408, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"F:\\项目\\AI智能体\\deploy\\run_arq_e2e_smoke.py\", line 393, in main\n    return run_smoke(\n           ^^^^^^^^^^\n  File \"F:\\项目\\AI智能体\\deploy\\run_arq_e2e_smoke.py\", line 303, in run_smoke\n    result = _run(_compose_command(*up_args), env=env, timeout=max(120, timeout_seconds * 2))\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"F:\\项目\\AI智能体\\deploy\\run_arq_e2e_smoke.py\", line 33, in _run\n    return subprocess.run(\n           ^^^^^^^^^^^^^^^\n  File \"C:\\Users\\MSI\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\subprocess.py\", line 550, in run\n    stdout, stderr = process.communicate(input, timeout=timeout)\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\MSI\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\subprocess.py\", line 1209, in communicate\n    stdout, stderr = self._communicate(input, endtime, timeout)\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\MSI\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\subprocess.py\", line 1628, in _communicate\n    raise TimeoutExpired(self.args, orig_timeout)\nsubprocess.TimeoutExpired: Command '['docker', 'compose', '-f', 'F:\\\\项目\\\\AI智能体\\\\deploy\\\\compose.arq-worker.yml', 'up', '--build', '-d', 'redis', 'arq-worker']' timed out after 180 seconds",
+          "stdout": "+ docker info\n+ docker compose -f F:\\项目\\AI智能体\\deploy\\compose.arq-worker.yml up --build -d redis arq-worker"
+        },
+        "id": "arq_long_running_smoke",
+        "ok": false
+      }
+    ],
+    "selected": 2,
+    "strict_plan": true,
+    "strict_verifier": false,
+    "summary": {
+      "all_runnable": true,
+      "blocked": 0,
+      "blocked_ids": [],
+      "executed": 1,
+      "failed": 1,
+      "passed": 0,
+      "runnable": 2,
+      "selected": 2,
+      "unknown_ids": []
+    },
+    "verifier": null
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\real-ops\\archive\\real_ops_evidence_runner-20260504-160704.json",
+    "blocked": 0,
+    "execute": true,
+    "executed": 1,
+    "failed": 1,
+    "history_path": "runtime\\ops-readiness\\real-ops\\history.json",
+    "id": "real_ops_evidence_runner",
+    "mode": "execute",
+    "ok": false,
+    "plan": {
+      "checks": [
+        {
+          "archive_dir": "runtime\\ops-readiness\\arq\\archive",
+          "area": "1.2_async_queue",
+          "blockers": [],
+          "checklist": [
+            "docker_cli",
+            "docker_daemon",
+            "redis_service",
+            "arq_worker_started",
+            "persisted_task_completed",
+            "evidence_archive"
+          ],
+          "command": [
+            "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+            "deploy/run_arq_e2e_smoke.py",
+            "--timeout-seconds",
+            "90",
+            "--compose-timeout-seconds",
+            "600",
+            "--json",
+            "--report-path",
+            "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+            "--archive-dir",
+            "runtime\\ops-readiness\\arq\\archive",
+            "--history-path",
+            "runtime\\ops-readiness\\arq\\history.json",
+            "--manifest-path",
+            "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+            "--docker-start-hint",
+            "--skip-if-unavailable"
+          ],
+          "description": "Run Redis/ARQ worker E2E smoke and confirm persisted task completion.",
+          "evidence_manifest_path": "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+          "history_path": "runtime\\ops-readiness\\arq\\history.json",
+          "id": "arq_long_running_smoke",
+          "included": true,
+          "probes": {
+            "docker": {
+              "blocker": "docker_daemon_unavailable",
+              "detail": "\"29.2.1\"",
+              "ok": true,
+              "returncode": 0
+            }
+          },
+          "real_environment": true,
+          "report_fields": [
+            "ok",
+            "skipped",
+            "blockers",
+            "task_id",
+            "job_id",
+            "evidence.decision",
+            "archive_path"
+          ],
+          "report_path": "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+          "required_env": [],
+          "required_tools": [
+            "docker"
+          ],
+          "runnable": true,
+          "safe_to_run": false,
+          "status": "ready"
+        }
+      ],
+      "execute": false,
+      "mode": "plan",
+      "ok": true,
+      "probe_tools": true,
+      "summary": {
+        "all_runnable": true,
+        "blocked": 0,
+        "runnable": 1,
+        "selected": 1
+      },
+      "unknown_ids": []
+    },
+    "probe_tools": true,
+    "recorded_at": 1777882024.5874891,
+    "report_path": "runtime\\ops-readiness\\real-ops\\arq-smoke-runner.json",
+    "results": [
+      {
+        "area": "1.2_async_queue",
+        "command": [
+          "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+          "deploy/run_arq_e2e_smoke.py",
+          "--timeout-seconds",
+          "90",
+          "--compose-timeout-seconds",
+          "600",
+          "--json",
+          "--report-path",
+          "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+          "--archive-dir",
+          "runtime\\ops-readiness\\arq\\archive",
+          "--history-path",
+          "runtime\\ops-readiness\\arq\\history.json",
+          "--manifest-path",
+          "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+          "--docker-start-hint",
+          "--skip-if-unavailable"
+        ],
+        "execution": {
+          "duration_ms": 627475,
+          "error": "",
+          "ok": false,
+          "returncode": 1,
+          "stderr": "Traceback (most recent call last):\n  File \"F:\\项目\\AI智能体\\deploy\\run_arq_e2e_smoke.py\", line 420, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"F:\\项目\\AI智能体\\deploy\\run_arq_e2e_smoke.py\", line 404, in main\n    return run_smoke(\n           ^^^^^^^^^^\n  File \"F:\\项目\\AI智能体\\deploy\\run_arq_e2e_smoke.py\", line 304, in run_smoke\n    result = _run(\n             ^^^^^\n  File \"F:\\项目\\AI智能体\\deploy\\run_arq_e2e_smoke.py\", line 33, in _run\n    return subprocess.run(\n           ^^^^^^^^^^^^^^^\n  File \"C:\\Users\\MSI\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\subprocess.py\", line 550, in run\n    stdout, stderr = process.communicate(input, timeout=timeout)\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\MSI\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\subprocess.py\", line 1209, in communicate\n    stdout, stderr = self._communicate(input, endtime, timeout)\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\MSI\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\subprocess.py\", line 1628, in _communicate\n    raise TimeoutExpired(self.args, orig_timeout)\nsubprocess.TimeoutExpired: Command '['docker', 'compose', '-f', 'F:\\\\项目\\\\AI智能体\\\\deploy\\\\compose.arq-worker.yml', 'up', '--build', '-d', 'redis', 'arq-worker']' timed out after 600 seconds",
+          "stdout": "+ docker info\n+ docker compose -f F:\\项目\\AI智能体\\deploy\\compose.arq-worker.yml up --build -d redis arq-worker"
+        },
+        "id": "arq_long_running_smoke",
+        "ok": false
+      }
+    ],
+    "selected": 1,
+    "strict_plan": true,
+    "strict_verifier": false,
+    "summary": {
+      "all_runnable": true,
+      "blocked": 0,
+      "blocked_ids": [],
+      "executed": 1,
+      "failed": 1,
+      "passed": 0,
+      "runnable": 1,
+      "selected": 1,
+      "unknown_ids": []
+    },
+    "verifier": null
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\real-ops\\archive\\real_ops_evidence_runner-20260504-161242.json",
+    "blocked": 0,
+    "execute": true,
+    "executed": 1,
+    "failed": 1,
+    "history_path": "runtime\\ops-readiness\\real-ops\\history.json",
+    "id": "real_ops_evidence_runner",
+    "mode": "execute",
+    "ok": false,
+    "plan": {
+      "checks": [
+        {
+          "archive_dir": "runtime\\ops-readiness\\arq\\archive",
+          "area": "1.2_async_queue",
+          "blockers": [],
+          "checklist": [
+            "docker_cli",
+            "docker_daemon",
+            "redis_service",
+            "arq_worker_started",
+            "persisted_task_completed",
+            "evidence_archive"
+          ],
+          "command": [
+            "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+            "deploy/run_arq_e2e_smoke.py",
+            "--timeout-seconds",
+            "90",
+            "--compose-timeout-seconds",
+            "600",
+            "--json",
+            "--report-path",
+            "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+            "--archive-dir",
+            "runtime\\ops-readiness\\arq\\archive",
+            "--history-path",
+            "runtime\\ops-readiness\\arq\\history.json",
+            "--manifest-path",
+            "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+            "--docker-start-hint",
+            "--skip-if-unavailable"
+          ],
+          "description": "Run Redis/ARQ worker E2E smoke and confirm persisted task completion.",
+          "evidence_manifest_path": "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+          "history_path": "runtime\\ops-readiness\\arq\\history.json",
+          "id": "arq_long_running_smoke",
+          "included": true,
+          "probes": {
+            "docker": {
+              "blocker": "docker_daemon_unavailable",
+              "detail": "\"29.2.1\"",
+              "ok": true,
+              "returncode": 0
+            }
+          },
+          "real_environment": true,
+          "report_fields": [
+            "ok",
+            "skipped",
+            "blockers",
+            "task_id",
+            "job_id",
+            "evidence.decision",
+            "archive_path"
+          ],
+          "report_path": "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+          "required_env": [],
+          "required_tools": [
+            "docker"
+          ],
+          "runnable": true,
+          "safe_to_run": false,
+          "status": "ready"
+        }
+      ],
+      "execute": false,
+      "mode": "plan",
+      "ok": true,
+      "probe_tools": true,
+      "summary": {
+        "all_runnable": true,
+        "blocked": 0,
+        "runnable": 1,
+        "selected": 1
+      },
+      "unknown_ids": []
+    },
+    "probe_tools": true,
+    "recorded_at": 1777882362.6220477,
+    "report_path": "runtime\\ops-readiness\\real-ops\\arq-smoke-runner.json",
+    "results": [
+      {
+        "area": "1.2_async_queue",
+        "command": [
+          "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+          "deploy/run_arq_e2e_smoke.py",
+          "--timeout-seconds",
+          "90",
+          "--compose-timeout-seconds",
+          "600",
+          "--json",
+          "--report-path",
+          "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+          "--archive-dir",
+          "runtime\\ops-readiness\\arq\\archive",
+          "--history-path",
+          "runtime\\ops-readiness\\arq\\history.json",
+          "--manifest-path",
+          "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+          "--docker-start-hint",
+          "--skip-if-unavailable"
+        ],
+        "execution": {
+          "duration_ms": 47077,
+          "error": "",
+          "ok": false,
+          "returncode": 1,
+          "stderr": "",
+          "stdout": "1  |     worker_settings_ = cast('WorkerSettingsType', import_string(worker_settings))\narq-worker-1  |                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\narq-worker-1  |   File \"/usr/local/lib/python3.12/site-packages/arq/utils.py\", line 149, in import_string\narq-worker-1  |     module = import_module(module_path)\narq-worker-1  |              ^^^^^^^^^^^^^^^^^^^^^^^^^^\narq-worker-1  |   File \"/usr/local/lib/python3.12/importlib/__init__.py\", line 90, in import_module\narq-worker-1  |     return _bootstrap._gcd_import(name[level:], package, level)\narq-worker-1  |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 1387, in _gcd_import\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 1360, in _find_and_load\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 1310, in _find_and_load_unlocked\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 488, in _call_with_frames_removed\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 1387, in _gcd_import\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 1360, in _find_and_load\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 1331, in _find_and_load_unlocked\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 935, in _load_unlocked\narq-worker-1  |   File \"<frozen importlib._bootstrap_external>\", line 999, in exec_module\narq-worker-1  |   File \"<frozen importlib._bootstrap>\", line 488, in _call_with_frames_removed\narq-worker-1  |   File \"/app/backend/tasks/__init__.py\", line 3, in <module>\narq-worker-1  |     from backend.tasks.backends import (\narq-worker-1  |   File \"/app/backend/tasks/backends.py\", line 8, in <module>\narq-worker-1  |     from backend.stores.task_store import TaskRecord\narq-worker-1  |   File \"/app/backend/stores/__init__.py\", line 3, in <module>\narq-worker-1  |     from backend.stores.config_store import SQLiteAppConfigStore, StoredConfigValue\narq-worker-1  |   File \"/app/backend/stores/config_store.py\", line 12, in <module>\narq-worker-1  |     from backend.chat_store import connect_sqlite\narq-worker-1  |   File \"/app/backend/chat_store.py\", line 14, in <module>\narq-worker-1  |     from langchain_core.chat_history import BaseChatMessageHistory\narq-worker-1  | ModuleNotFoundError: No module named 'langchain_core'\n+ docker compose -f F:\\项目\\AI智能体\\deploy\\compose.arq-worker.yml down\n Container deploy-arq-worker-1 Stopping \n Container deploy-arq-worker-1 Stopped \n Container deploy-arq-worker-1 Removing \n Container deploy-arq-worker-1 Removed \n Container deploy-redis-1 Stopping \n Container deploy-redis-1 Stopped \n Container deploy-redis-1 Removing \n Container deploy-redis-1 Removed \n Network deploy_default Removing \n Network deploy_default Removed \n{\n  \"archive_path\": \"runtime\\\\ops-readiness\\\\arq\\\\archive\\\\arq_long_running_smoke-20260504-161242.json\",\n  \"blockers\": [],\n  \"cleanup_completed\": true,\n  \"docker_start_contract\": {},\n  \"evidence\": {\n    \"archive_ready\": true,\n    \"blockers\": [],\n    \"compose_file\": \"F:\\\\项目\\\\AI智能体\\\\deploy\\\\compose.arq-worker.yml\",\n    \"decision\": \"smoke_failed\",\n    \"manifest_path\": \"runtime\\\\ops-readiness\\\\arq\\\\evidence-manifest.json\",\n    \"probe_path\": \"/app/deploy/arq_e2e_probe.py\",\n    \"schema_version\": 1\n  },\n  \"exit_code\": 1,\n  \"finished_at\": 1777882359.9475996,\n  \"id\": \"arq_long_running_smoke\",\n  \"ok\": false,\n  \"probe_output_tail\": \"Container deploy-redis-1 Running \\n Container deploy-redis-1 Waiting \\n Container deploy-redis-1 Healthy \\n Container deploy-arq-worker-run-5571dd2dfd48 Creating \\n Container deploy-arq-worker-run-5571dd2dfd48 Created \\nTraceback (most recent call last):\\n  File \\\"/app/deploy/arq_e2e_probe.py\\\", line 17, in <module>\\n    from backend.core.storage_runtime import app_database_path\\nModuleNotFoundError: No module named 'backend'\",\n  \"queue_name\": \"insightdesk:tasks\",\n  \"skipped\": false,\n  \"started_at\": 1777882315.7074606,\n  \"task_backend\": \"arq\"\n}"
+        },
+        "id": "arq_long_running_smoke",
+        "ok": false
+      }
+    ],
+    "selected": 1,
+    "strict_plan": true,
+    "strict_verifier": false,
+    "summary": {
+      "all_runnable": true,
+      "blocked": 0,
+      "blocked_ids": [],
+      "executed": 1,
+      "failed": 1,
+      "passed": 0,
+      "runnable": 1,
+      "selected": 1,
+      "unknown_ids": []
+    },
+    "verifier": null
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\real-ops\\archive\\real_ops_evidence_runner-20260504-161601.json",
+    "blocked": 0,
+    "execute": true,
+    "executed": 1,
+    "failed": 0,
+    "history_path": "runtime\\ops-readiness\\real-ops\\history.json",
+    "id": "real_ops_evidence_runner",
+    "mode": "execute",
+    "ok": true,
+    "plan": {
+      "checks": [
+        {
+          "archive_dir": "runtime\\ops-readiness\\arq\\archive",
+          "area": "1.2_async_queue",
+          "blockers": [],
+          "checklist": [
+            "docker_cli",
+            "docker_daemon",
+            "redis_service",
+            "arq_worker_started",
+            "persisted_task_completed",
+            "evidence_archive"
+          ],
+          "command": [
+            "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+            "deploy/run_arq_e2e_smoke.py",
+            "--timeout-seconds",
+            "90",
+            "--compose-timeout-seconds",
+            "600",
+            "--json",
+            "--report-path",
+            "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+            "--archive-dir",
+            "runtime\\ops-readiness\\arq\\archive",
+            "--history-path",
+            "runtime\\ops-readiness\\arq\\history.json",
+            "--manifest-path",
+            "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+            "--docker-start-hint",
+            "--skip-if-unavailable"
+          ],
+          "description": "Run Redis/ARQ worker E2E smoke and confirm persisted task completion.",
+          "evidence_manifest_path": "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+          "history_path": "runtime\\ops-readiness\\arq\\history.json",
+          "id": "arq_long_running_smoke",
+          "included": true,
+          "probes": {
+            "docker": {
+              "blocker": "docker_daemon_unavailable",
+              "detail": "\"29.2.1\"",
+              "ok": true,
+              "returncode": 0
+            }
+          },
+          "real_environment": true,
+          "report_fields": [
+            "ok",
+            "skipped",
+            "blockers",
+            "task_id",
+            "job_id",
+            "evidence.decision",
+            "archive_path"
+          ],
+          "report_path": "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+          "required_env": [],
+          "required_tools": [
+            "docker"
+          ],
+          "runnable": true,
+          "safe_to_run": false,
+          "status": "ready"
+        }
+      ],
+      "execute": false,
+      "mode": "plan",
+      "ok": true,
+      "probe_tools": true,
+      "summary": {
+        "all_runnable": true,
+        "blocked": 0,
+        "runnable": 1,
+        "selected": 1
+      },
+      "unknown_ids": []
+    },
+    "probe_tools": true,
+    "recorded_at": 1777882561.6133912,
+    "report_path": "runtime\\ops-readiness\\real-ops\\arq-smoke-runner.json",
+    "results": [
+      {
+        "area": "1.2_async_queue",
+        "command": [
+          "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+          "deploy/run_arq_e2e_smoke.py",
+          "--timeout-seconds",
+          "90",
+          "--compose-timeout-seconds",
+          "600",
+          "--json",
+          "--report-path",
+          "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+          "--archive-dir",
+          "runtime\\ops-readiness\\arq\\archive",
+          "--history-path",
+          "runtime\\ops-readiness\\arq\\history.json",
+          "--manifest-path",
+          "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+          "--docker-start-hint",
+          "--skip-if-unavailable"
+        ],
+        "execution": {
+          "duration_ms": 69656,
+          "error": "",
+          "ok": true,
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "#1 [internal] load local bake definitions\n#1 reading from stdin 532B 0.0s done\n#1 DONE 0.0s\n\n#2 [internal] load build definition from Dockerfile.arq-worker\n#2 transferring dockerfile: 385B 0.1s done\n#2 DONE 0.2s\n\n#3 resolve image config for docker-image://docker.io/docker/dockerfile:1.7\n#3 DONE 2.0s\n\n#4 docker-image://docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e\n#4 CACHED\n\n#5 [internal] load metadata for docker.io/library/python:3.12-slim\n#5 DONE 1.2s\n\n#6 [internal] load .dockerignore\n#6 transferring context: 240B done\n#6 DONE 0.0s\n\n#7 [1/5] FROM docker.io/library/python:3.12-slim@sha256:46cb7cc2877e60fbd5e21a9ae6115c30ace7a077b9f8772da879e4590c18c2e3\n#7 DONE 0.0s\n\n#8 [internal] load build context\n#8 transferring context: 50.20kB 0.0s done\n#8 DONE 0.1s\n\n#9 [2/5] WORKDIR /app\n#9 CACHED\n\n#10 [3/5] RUN pip install --upgrade pip     && pip install \"arq>=0.26.0\"\n#10 CACHED\n\n#11 [4/5] COPY backend ./backend\n#11 DONE 0.2s\n\n#12 [5/5] COPY deploy ./deploy\n#12 DONE 0.1s\n\n#13 exporting to image\n#13 exporting layers\n#13 exporting layers 0.2s done\n#13 writing image sha256:37025b3f17b77ffd366205bbdb478ddedb825e4ce0e33dd653053f358232ea3d done\n#13 naming to docker.io/library/deploy-arq-worker done\n#13 DONE 0.3s\n\n#14 resolving provenance for metadata file\n#14 DONE 0.0s\n Image deploy-arq-worker Built \n Network deploy_default Creating \n Network deploy_default Created \n Container deploy-redis-1 Creating \n Container deploy-redis-1 Created \n Container deploy-arq-worker-1 Creating \n Container deploy-arq-worker-1 Created \n Container deploy-redis-1 Starting \n Container deploy-redis-1 Started \n Container deploy-redis-1 Waiting \n Container deploy-redis-1 Healthy \n Container deploy-arq-worker-1 Starting \n Container deploy-arq-worker-1 Started \n+ docker compose -f F:\\项目\\AI智能体\\deploy\\compose.arq-worker.yml run --rm -e TASK_STORE_FAIL_INCOMPLETE_ON_START=false -e TASK_BACKEND=arq arq-worker python /app/deploy/arq_e2e_probe.py --timeout-seconds 90\n Container deploy-redis-1 Running \n Container deploy-redis-1 Waiting \n Container deploy-redis-1 Healthy \n Container deploy-arq-worker-run-17b28170437d Creating \n Container deploy-arq-worker-run-17b28170437d Created \nTASK_ID=arq-e2e-3a1718f5d3cf4102a78d9590cf7a8152\nJOB_ID=task:arq-e2e-3a1718f5d3cf4102a78d9590cf7a8152\nOK: task completed task_id=arq-e2e-3a1718f5d3cf4102a78d9590cf7a8152 progress=100\n+ docker compose -f F:\\项目\\AI智能体\\deploy\\compose.arq-worker.yml down\n Container deploy-arq-worker-1 Stopping \n Container deploy-arq-worker-1 Stopped \n Container deploy-arq-worker-1 Removing \n Container deploy-arq-worker-1 Removed \n Container deploy-redis-1 Stopping \n Container deploy-redis-1 Stopped \n Container deploy-redis-1 Removing \n Container deploy-redis-1 Removed \n Network deploy_default Removing \n Network deploy_default Removed \n{\n  \"archive_path\": \"runtime\\\\ops-readiness\\\\arq\\\\archive\\\\arq_long_running_smoke-20260504-161601.json\",\n  \"blockers\": [],\n  \"cleanup_completed\": true,\n  \"docker_start_contract\": {},\n  \"evidence\": {\n    \"archive_ready\": true,\n    \"blockers\": [],\n    \"compose_file\": \"F:\\\\项目\\\\AI智能体\\\\deploy\\\\compose.arq-worker.yml\",\n    \"decision\": \"smoke_passed\",\n    \"manifest_path\": \"runtime\\\\ops-readiness\\\\arq\\\\evidence-manifest.json\",\n    \"probe_path\": \"/app/deploy/arq_e2e_probe.py\",\n    \"schema_version\": 1\n  },\n  \"exit_code\": 0,\n  \"finished_at\": 1777882514.4044151,\n  \"id\": \"arq_long_running_smoke\",\n  \"ok\": true,\n  \"probe_output_tail\": \"Container deploy-redis-1 Running \\n Container deploy-redis-1 Waiting \\n Container deploy-redis-1 Healthy \\n Container deploy-arq-worker-run-17b28170437d Creating \\n Container deploy-arq-worker-run-17b28170437d Created \\nTASK_ID=arq-e2e-3a1718f5d3cf4102a78d9590cf7a8152\\nJOB_ID=task:arq-e2e-3a1718f5d3cf4102a78d9590cf7a8152\\nOK: task completed task_id=arq-e2e-3a1718f5d3cf4102a78d9590cf7a8152 progress=100\",\n  \"queue_name\": \"insightdesk:tasks\",\n  \"skipped\": false,\n  \"started_at\": 1777882492.0834942,\n  \"task_backend\": \"arq\"\n}"
+        },
+        "id": "arq_long_running_smoke",
+        "ok": true
+      }
+    ],
+    "selected": 1,
+    "strict_plan": true,
+    "strict_verifier": false,
+    "summary": {
+      "all_runnable": true,
+      "blocked": 0,
+      "blocked_ids": [],
+      "executed": 1,
+      "failed": 0,
+      "passed": 1,
+      "runnable": 1,
+      "selected": 1,
+      "unknown_ids": []
+    },
+    "verifier": null
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\real-ops\\archive\\real_ops_evidence_runner-20260504-161713.json",
+    "blocked": 0,
+    "execute": true,
+    "executed": 1,
+    "failed": 0,
+    "history_path": "runtime\\ops-readiness\\real-ops\\history.json",
+    "id": "real_ops_evidence_runner",
+    "mode": "execute",
+    "ok": true,
+    "plan": {
+      "checks": [
+        {
+          "archive_dir": "runtime\\ops-readiness\\arq\\archive",
+          "area": "1.2_async_queue",
+          "blockers": [],
+          "checklist": [
+            "docker_cli",
+            "docker_daemon",
+            "active_job_started",
+            "worker_stop_requested",
+            "drain_closed",
+            "evidence_archive"
+          ],
+          "command": [
+            "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+            "deploy/run_arq_drain_drill.py",
+            "--timeout-seconds",
+            "120",
+            "--compose-timeout-seconds",
+            "600",
+            "--json",
+            "--report-path",
+            "runtime\\ops-readiness\\arq\\arq-drain-drill.json",
+            "--archive-dir",
+            "runtime\\ops-readiness\\arq\\archive",
+            "--history-path",
+            "runtime\\ops-readiness\\arq\\history.json",
+            "--manifest-path",
+            "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+            "--docker-start-hint",
+            "--skip-if-unavailable"
+          ],
+          "description": "Stop the ARQ worker during an active job and emit a drain closure report.",
+          "evidence_manifest_path": "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+          "history_path": "runtime\\ops-readiness\\arq\\history.json",
+          "id": "arq_drain_drill",
+          "included": true,
+          "probes": {
+            "docker": {
+              "blocker": "docker_daemon_unavailable",
+              "detail": "\"29.2.1\"",
+              "ok": true,
+              "returncode": 0
+            }
+          },
+          "real_environment": true,
+          "report_fields": [
+            "ok",
+            "skipped",
+            "closure.complete",
+            "closure.decision",
+            "closure.evidence",
+            "archive_path"
+          ],
+          "report_path": "runtime\\ops-readiness\\arq\\arq-drain-drill.json",
+          "required_env": [],
+          "required_tools": [
+            "docker"
+          ],
+          "runnable": true,
+          "safe_to_run": false,
+          "status": "ready"
+        }
+      ],
+      "execute": false,
+      "mode": "plan",
+      "ok": true,
+      "probe_tools": true,
+      "summary": {
+        "all_runnable": true,
+        "blocked": 0,
+        "runnable": 1,
+        "selected": 1
+      },
+      "unknown_ids": []
+    },
+    "probe_tools": true,
+    "recorded_at": 1777882633.804104,
+    "report_path": "runtime\\ops-readiness\\real-ops\\arq-drain-runner.json",
+    "results": [
+      {
+        "area": "1.2_async_queue",
+        "command": [
+          "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+          "deploy/run_arq_drain_drill.py",
+          "--timeout-seconds",
+          "120",
+          "--compose-timeout-seconds",
+          "600",
+          "--json",
+          "--report-path",
+          "runtime\\ops-readiness\\arq\\arq-drain-drill.json",
+          "--archive-dir",
+          "runtime\\ops-readiness\\arq\\archive",
+          "--history-path",
+          "runtime\\ops-readiness\\arq\\history.json",
+          "--manifest-path",
+          "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+          "--docker-start-hint",
+          "--skip-if-unavailable"
+        ],
+        "execution": {
+          "duration_ms": 56768,
+          "error": "",
+          "ok": true,
+          "returncode": 0,
+          "stderr": "",
+          "stdout": "is-1 Removed \n Network deploy_default Removing \n Network deploy_default Removed \n{\n  \"archive_path\": \"runtime\\\\ops-readiness\\\\arq\\\\archive\\\\arq_drain_drill-20260504-161713.json\",\n  \"archive_ready\": true,\n  \"blockers\": [],\n  \"closure\": {\n    \"cleanup_completed\": true,\n    \"complete\": true,\n    \"decision\": \"drain_closed\",\n    \"enqueued\": true,\n    \"evidence\": {\n      \"archive_ready\": true,\n      \"blockers\": [],\n      \"drain_seconds\": 15,\n      \"failed_steps\": [],\n      \"step_count\": 4,\n      \"successful_steps\": [\n        \"compose_up\",\n        \"enqueue_probe\",\n        \"stop_worker\",\n        \"wait_for_terminal_task\"\n      ],\n      \"task_id\": \"arq-e2e-642c81a6045d4f5e928d29a3cec5bf0f\"\n    },\n    \"missing\": [],\n    \"task_reached_terminal_state\": true,\n    \"worker_stopped\": true\n  },\n  \"docker_start_contract\": {},\n  \"drain_seconds\": 15,\n  \"evidence\": {\n    \"archive_ready\": true,\n    \"blockers\": [],\n    \"compose_file\": \"F:\\\\项目\\\\AI智能体\\\\deploy\\\\compose.arq-worker.yml\",\n    \"decision\": \"drain_closed\",\n    \"manifest_path\": \"runtime\\\\ops-readiness\\\\arq\\\\evidence-manifest.json\",\n    \"probe_path\": \"/app/deploy/arq_e2e_probe.py\",\n    \"schema_version\": 1,\n    \"task_id\": \"arq-e2e-642c81a6045d4f5e928d29a3cec5bf0f\"\n  },\n  \"exit_code\": 0,\n  \"finished_at\": 1777882632.4126902,\n  \"id\": \"arq_drain_drill\",\n  \"ok\": true,\n  \"pickup_wait_seconds\": 1.5,\n  \"probe_step_seconds\": 3.0,\n  \"skipped\": false,\n  \"started_at\": 1777882577.1595628,\n  \"steps\": [\n    {\n      \"duration_ms\": 14086,\n      \"name\": \"compose_up\",\n      \"ok\": true,\n      \"output_tail\": \"t: 240B done\\n#6 DONE 0.0s\\n\\n#7 [1/5] FROM docker.io/library/python:3.12-slim@sha256:46cb7cc2877e60fbd5e21a9ae6115c30ace7a077b9f8772da879e4590c18c2e3\\n#7 DONE 0.0s\\n\\n#8 [internal] load build context\\n#8 transferring context: 44.44kB 0.0s done\\n#8 DONE 0.1s\\n\\n#9 [2/5] WORKDIR /app\\n#9 CACHED\\n\\n#10 [3/5] RUN pip install --upgrade pip     && pip install \\\"arq>=0.26.0\\\"\\n#10 CACHED\\n\\n#11 [4/5] COPY backend ./backend\\n#11 CACHED\\n\\n#12 [5/5] COPY deploy ./deploy\\n#12 CACHED\\n\\n#13 exporting to image\\n#13 exporting layers done\\n#13 writing image sha256:37025b3f17b77ffd366205bbdb478ddedb825e4ce0e33dd653053f358232ea3d done\\n#13 naming to docker.io/library/deploy-arq-worker done\\n#13 DONE 0.0s\\n\\n#14 resolving provenance for metadata file\\n#14 DONE 0.0s\\n Image deploy-arq-worker Built \\n Network deploy_default Creating \\n Network deploy_default Created \\n Container deploy-redis-1 Creating \\n Container deploy-redis-1 Created \\n Container deploy-arq-worker-1 Creating \\n Container deploy-arq-worker-1 Created \\n Container deploy-redis-1 Starting \\n Container deploy-redis-1 Started \\n Container deploy-redis-1 Waiting \\n Container deploy-redis-1 Healthy \\n Container deploy-arq-worker-1 Starting \\n Container deploy-arq-worker-1 Started\",\n      \"returncode\": 0\n    },\n    {\n      \"duration_ms\": 3451,\n      \"name\": \"enqueue_probe\",\n      \"ok\": true,\n      \"output_tail\": \"Container deploy-redis-1 Running \\n Container deploy-redis-1 Waiting \\n Container deploy-redis-1 Healthy \\n Container deploy-arq-worker-run-c36753d76ed8 Creating \\n Container deploy-arq-worker-run-c36753d76ed8 Created \\nTASK_ID=arq-e2e-642c81a6045d4f5e928d29a3cec5bf0f\\nJOB_ID=task:arq-e2e-642c81a6045d4f5e928d29a3cec5bf0f\",\n      \"returncode\": 0\n    },\n    {\n      \"duration_ms\": 30976,\n      \"name\": \"stop_worker\",\n      \"ok\": true,\n      \"output_tail\": \"Container deploy-arq-worker-1 Stopping \\n Container deploy-arq-worker-1 Stopped\",\n      \"returncode\": 0\n    },\n    {\n      \"duration_ms\": 3474,\n      \"name\": \"wait_for_terminal_task\",\n      \"ok\": true,\n      \"output_tail\": \"Container deploy-redis-1 Running \\n Container deploy-redis-1 Waiting \\n Container deploy-redis-1 Healthy \\n Container deploy-arq-worker-run-9b982b70f403 Creating \\n Container deploy-arq-worker-run-9b982b70f403 Created \\nOK: task completed task_id=arq-e2e-642c81a6045d4f5e928d29a3cec5bf0f progress=100\",\n      \"returncode\": 0\n    }\n  ],\n  \"task_id\": \"arq-e2e-642c81a6045d4f5e928d29a3cec5bf0f\"\n}"
+        },
+        "id": "arq_drain_drill",
+        "ok": true
+      }
+    ],
+    "selected": 1,
+    "strict_plan": true,
+    "strict_verifier": false,
+    "summary": {
+      "all_runnable": true,
+      "blocked": 0,
+      "blocked_ids": [],
+      "executed": 1,
+      "failed": 0,
+      "passed": 1,
+      "runnable": 1,
+      "selected": 1,
+      "unknown_ids": []
+    },
+    "verifier": null
+  }
+]

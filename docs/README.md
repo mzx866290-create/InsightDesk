@@ -31,6 +31,9 @@ The goal is to keep the repository documentation maintainable by reducing duplic
 - [DECK_DELIVERY_PLAN.md](/f:/项目/AI智能体/docs/DECK_DELIVERY_PLAN.md)
   Report/PPT delivery redesign direction, Deck architecture, and phased evolution plan.
 
+- [IMPLEMENTATION_PLAN.md](/f:/项目/AI智能体/docs/IMPLEMENTATION_PLAN.md)
+  四阶段优化实施计划：架构治理、多 Agent 协作、研究与交付强化、生产化与生态扩展。
+
 - [VALIDATION.md](/f:/项目/AI智能体/docs/VALIDATION.md)
   Smoke checks, release validation, and regression checklist.
 

@@ -1,7 +1,11 @@
 import { create } from 'zustand'
 
-import { getTask, listTasks } from '../api/client'
-import type { TaskRecord } from '../api/client'
+import { createMultiAgentWorkflowTask, getTask, listTasks } from '../api/client'
+import type {
+  CreateMultiAgentWorkflowTaskPayload,
+  TaskRecord,
+  TaskStatus,
+} from '../api/client'
 
 interface TaskState {
   tasks: Record<string, TaskRecord>
@@ -11,7 +15,7 @@ interface TaskState {
   startPolling: (taskId: string) => void
   stopPolling: (taskId: string) => void
   getTask: (taskId: string) => TaskRecord | undefined
-  syncRecentTasks: (limit?: number) => Promise<void>
+  syncRecentTasks: (limit?: number, status?: TaskStatus) => Promise<void>
 }
 
 const POLL_INTERVAL_MS = 1500
@@ -140,8 +144,8 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     }
   },
 
-  syncRecentTasks: async (limit = 20) => {
-    const tasks = await listTasks(limit)
+  syncRecentTasks: async (limit = 20, status) => {
+    const tasks = await listTasks(limit, status)
     get().addTasks(tasks)
     for (const task of tasks) {
       if (isActiveTaskStatus(task.status)) {
@@ -182,12 +186,31 @@ export async function createAndTrackTask(
   })
 
   if (!res.ok) {
-    throw new Error(`Task creation failed (HTTP ${res.status})`)
+    const payload = await res
+      .json()
+      .catch(() => null) as { detail?: string; message?: string } | null
+    const detail =
+      payload?.detail?.trim() || payload?.message?.trim() || `Task creation failed (HTTP ${res.status})`
+    throw new Error(detail)
   }
 
   const task: TaskRecord = await res.json()
   const store = useTaskStore.getState()
   store.addTask(task)
   store.startPolling(task.task_id)
+  return task
+}
+
+export async function createAndTrackWorkflowTask(
+  payload: CreateMultiAgentWorkflowTaskPayload,
+): Promise<TaskRecord> {
+  const task = await createMultiAgentWorkflowTask(payload)
+  const store = useTaskStore.getState()
+  store.addTask(task)
+  if (isActiveTaskStatus(task.status)) {
+    store.startPolling(task.task_id)
+  } else {
+    store.stopPolling(task.task_id)
+  }
   return task
 }

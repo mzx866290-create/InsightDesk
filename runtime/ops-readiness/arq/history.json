@@ -1,0 +1,53 @@
+[
+  {
+    "archive_path": "runtime\\ops-readiness\\arq\\archive\\arq_long_running_smoke-20260504-161242.json",
+    "blockers": [],
+    "decision": "smoke_failed",
+    "exit_code": 1,
+    "finished_at": 1777882359.9475996,
+    "id": "arq_long_running_smoke",
+    "ok": false,
+    "report_path": "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+    "skipped": false,
+    "started_at": 1777882315.7074606
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\arq\\archive\\arq_long_running_smoke-20260504-161601.json",
+    "blockers": [],
+    "decision": "smoke_passed",
+    "exit_code": 0,
+    "finished_at": 1777882514.4044151,
+    "id": "arq_long_running_smoke",
+    "ok": true,
+    "report_path": "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+    "skipped": false,
+    "started_at": 1777882492.0834942
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\arq\\archive\\arq_drain_drill-20260504-161713.json",
+    "blockers": [],
+    "closure_complete": true,
+    "closure_decision": "drain_closed",
+    "exit_code": 0,
+    "finished_at": 1777882632.4126902,
+    "id": "arq_drain_drill",
+    "ok": true,
+    "report_path": "runtime\\ops-readiness\\arq\\arq-drain-drill.json",
+    "skipped": false,
+    "started_at": 1777882577.1595628,
+    "task_id": "arq-e2e-642c81a6045d4f5e928d29a3cec5bf0f"
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\arq\\archive\\arq_long_running_validation-20260505-194953.json",
+    "blockers": [],
+    "closure_decision": "long_running_validation_passed",
+    "completed_iterations": 30,
+    "exit_code": 0,
+    "finished_at": 1777981793.8925943,
+    "id": "arq_long_running_validation",
+    "ok": true,
+    "report_path": "runtime\\ops-readiness\\arq\\arq-long-running-validation.json",
+    "skipped": false,
+    "started_at": 1777981602.848901
+  }
+]

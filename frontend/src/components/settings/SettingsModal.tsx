@@ -2,9 +2,15 @@ import React, { useEffect, useState, useCallback } from 'react'
 import {
   Upload, CheckCircle, AlertCircle, RefreshCw, Database, Plus, Pencil, Trash2,
   UserCog, Check, Activity, Search, ChevronDown, ChevronUp, Zap, HardDrive, FileText as FileIcon,
-  ToggleLeft, ToggleRight,
+  ToggleLeft, ToggleRight, LogIn,
 } from 'lucide-react'
 import { AdminTokenPanel } from '../admin/AdminTokenPanel'
+import { IdentityAdminPanel } from '../admin/IdentityAdminPanel'
+import { ResourceAccessPanel } from '../admin/ResourceAccessPanel'
+import { McpApprovalsPanel } from './McpApprovalsPanel'
+import { IntegratorConnectorsPanel } from './IntegratorConnectorsPanel'
+import { TraceOperationsPanel } from './TraceOperationsPanel'
+import { SecurityAuditSummaryPanel } from './SecurityAuditSummaryPanel'
 import { Modal } from '../ui/Modal'
 import { Button } from '../ui/Button'
 import {
@@ -14,9 +20,12 @@ import {
   getKnowledgeBases, getKBHealth, getKnowledgeBaseChunks, updateKnowledgeBaseChunk,
   deleteKnowledgeBaseChunk, testKBRetrieval, deleteKnowledgeBase,
   getAdminApiToken, getAuthWhoAmI, saveAdminApiToken,
+  getAuthSsoConfig, saveAuthSsoConfig, startAuthSsoLogin,
 } from '../../api/client'
 import type {
   AuthWhoAmI,
+  SaveSsoConfigPayload,
+  SsoConfig,
   DocStats,
   SystemPrompt,
   KnowledgeBase,
@@ -35,7 +44,55 @@ interface SettingsModalProps {
   onClose: () => void
 }
 
-type Tab = 'general' | 'documents' | 'roles' | 'kb_monitor'
+type Tab = 'general' | 'documents' | 'roles' | 'kb_monitor' | 'mcp_approvals' | 'integrations' | 'traces' | 'security_audit'
+
+type SsoConfigForm = {
+  provider: 'none' | 'oidc'
+  issuer_url: string
+  authorization_endpoint: string
+  token_endpoint: string
+  jwks_url: string
+  client_id: string
+  client_secret: string
+  clear_client_secret: boolean
+  allowed_domains: string
+  scopes: string
+  default_role: 'viewer' | 'editor' | 'admin'
+  session_ttl_seconds: number
+}
+
+const DEFAULT_SSO_FORM: SsoConfigForm = {
+  provider: 'none',
+  issuer_url: '',
+  authorization_endpoint: '',
+  token_endpoint: '',
+  jwks_url: '',
+  client_id: '',
+  client_secret: '',
+  clear_client_secret: false,
+  allowed_domains: '',
+  scopes: 'openid email profile',
+  default_role: 'viewer',
+  session_ttl_seconds: 28800,
+}
+
+function ssoConfigToForm(config: SsoConfig | null): SsoConfigForm {
+  if (!config) return DEFAULT_SSO_FORM
+  return {
+    provider: config.provider === 'oidc' ? 'oidc' : 'none',
+    issuer_url: config.issuer_url ?? '',
+    authorization_endpoint: config.authorization_endpoint ?? '',
+    token_endpoint: config.token_endpoint ?? '',
+    jwks_url: config.jwks_url ?? '',
+    client_id: config.client_id ?? '',
+    client_secret: '',
+    clear_client_secret: false,
+    allowed_domains: config.allowed_domains?.join(', ') ?? '',
+    scopes: config.scopes?.join(' ') || 'openid email profile',
+    default_role: config.default_role === 'admin' || config.default_role === 'editor' ? config.default_role : 'viewer',
+    session_ttl_seconds: config.session_ttl_seconds || 28800,
+  }
+}
 
 const BUILTIN_TEMPLATES = [
   {
@@ -110,6 +167,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
   const [adminAccessError, setAdminAccessError] = useState<string | null>(null)
   const [authProfile, setAuthProfile] = useState<AuthWhoAmI | null>(null)
   const [loadingAuthProfile, setLoadingAuthProfile] = useState(false)
+  const [ssoConfig, setSsoConfig] = useState<SsoConfig | null>(null)
+  const [ssoForm, setSsoForm] = useState<SsoConfigForm>(DEFAULT_SSO_FORM)
+  const [loadingSsoConfig, setLoadingSsoConfig] = useState(false)
+  const [savingSsoConfig, setSavingSsoConfig] = useState(false)
+  const [ssoLoginStarting, setSsoLoginStarting] = useState(false)
+  const [ssoError, setSsoError] = useState<string | null>(null)
   const [tavilyKey, setTavilyKey] = useState('')
   const [tavilyKeySet, setTavilyKeySet] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -231,6 +294,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
     }
   }, [])
 
+  const loadSsoConfig = useCallback(async () => {
+    setLoadingSsoConfig(true)
+    setSsoError(null)
+    try {
+      const config = await getAuthSsoConfig()
+      setSsoConfig(config)
+      setSsoForm(ssoConfigToForm(config))
+    } catch (e) {
+      setSsoConfig(null)
+      setSsoError((e as Error).message)
+    } finally {
+      setLoadingSsoConfig(false)
+    }
+  }, [])
+
   const loadPrompts = useCallback(async () => {
     setLoadingPrompts(true)
     try {
@@ -309,11 +387,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
       setAdminTokenSaved(false)
       setAdminAccessError(null)
       setAuthProfile(null)
+      setSsoConfig(null)
+      setSsoForm(DEFAULT_SSO_FORM)
       void loadAuthProfile()
+      void loadSsoConfig()
       loadConfig()
       loadPrompts()
     }
-  }, [open, loadAuthProfile, loadConfig, loadPrompts])
+  }, [open, loadAuthProfile, loadSsoConfig, loadConfig, loadPrompts])
 
   useEffect(() => {
     if (open && tab === 'roles') {
@@ -383,6 +464,53 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
         query: kbChunkAppliedQuery,
         source: kbChunkAppliedSourceFilter,
       })
+    }
+  }
+
+  const updateSsoForm = <Key extends keyof SsoConfigForm>(key: Key, value: SsoConfigForm[Key]) => {
+    setSsoForm((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const handleSaveSsoConfig = async () => {
+    setSavingSsoConfig(true)
+    setSsoError(null)
+    try {
+      const payload: SaveSsoConfigPayload = {
+        provider: ssoForm.provider,
+        issuer_url: ssoForm.issuer_url,
+        authorization_endpoint: ssoForm.authorization_endpoint,
+        token_endpoint: ssoForm.token_endpoint,
+        jwks_url: ssoForm.jwks_url,
+        client_id: ssoForm.client_id,
+        allowed_domains: ssoForm.allowed_domains,
+        scopes: ssoForm.scopes,
+        default_role: ssoForm.default_role,
+        session_ttl_seconds: ssoForm.session_ttl_seconds,
+        clear_client_secret: ssoForm.clear_client_secret,
+      }
+      if (ssoForm.client_secret.trim()) {
+        payload.client_secret = ssoForm.client_secret.trim()
+      }
+      const saved = await saveAuthSsoConfig(payload)
+      setSsoConfig(saved)
+      setSsoForm(ssoConfigToForm(saved))
+    } catch (e) {
+      setSsoError((e as Error).message)
+    } finally {
+      setSavingSsoConfig(false)
+    }
+  }
+
+  const handleStartSsoLogin = async () => {
+    setSsoLoginStarting(true)
+    setSsoError(null)
+    try {
+      const payload = await startAuthSsoLogin()
+      window.location.assign(payload.authorization_url)
+    } catch (e) {
+      setSsoError((e as Error).message)
+    } finally {
+      setSsoLoginStarting(false)
     }
   }
 
@@ -870,10 +998,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
   }
 
   const tabs: [Tab, string][] = [
+    ['integrations', 'Integrations'],
     ['general', '通用设置'],
     ['documents', '知识库文档'],
     ['roles', '角色管理'],
     ['kb_monitor', '知识库监控'],
+    ['mcp_approvals', 'MCP 审批'],
+    ['traces', 'Trace 运维'],
+    ['security_audit', '安全审计'],
   ]
   const uploadTask = uploadTaskId ? tasks[uploadTaskId] : undefined
   const uploadProgress = Math.max(0, Math.min(100, uploadTask?.progress ?? 0))
@@ -890,7 +1022,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
       open={open}
       onClose={onClose}
       title="设置"
-      width={tab === 'roles' || tab === 'kb_monitor' ? 'max-w-4xl' : 'max-w-xl'}
+      width={tab === 'roles' || tab === 'kb_monitor' || tab === 'mcp_approvals' || tab === 'integrations' || tab === 'traces' || tab === 'security_audit' ? 'max-w-4xl' : 'max-w-xl'}
     >
       {/* Tabs */}
       <div className="mb-5 flex flex-wrap gap-1 rounded-lg bg-bg-tertiary p-1">
@@ -898,6 +1030,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
           <button
             key={id}
             onClick={() => setTab(id)}
+            data-testid={`settings-tab-${id}`}
             className={`min-w-[6rem] flex-1 rounded-md py-1.5 text-xs font-medium transition-colors ${
               tab === id
                 ? 'bg-bg-secondary text-text-primary shadow-sm'
@@ -936,6 +1069,218 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
               setAuthProfile(null)
             }}
           />
+
+          <div className="rounded-xl border border-bg-border bg-bg-tertiary/30 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-text-primary">SSO / OIDC</h3>
+                <p className="mt-1 text-xs leading-5 text-text-secondary">
+                  使用外部身份提供商登录，成功后会写入本浏览器会话令牌。
+                </p>
+              </div>
+              <span className={`rounded-full px-2 py-1 text-[11px] ${
+                ssoConfig?.ready
+                  ? 'bg-accent-green/10 text-accent-green'
+                  : 'bg-bg-secondary text-text-secondary'
+              }`}>
+                {loadingSsoConfig ? 'Checking' : ssoConfig?.ready ? 'Ready' : 'Not Ready'}
+              </span>
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-[11px] uppercase tracking-wide text-text-secondary">
+                  Provider
+                </label>
+                <select
+                  data-testid="settings-sso-provider-input"
+                  className="input-base w-full text-sm"
+                  value={ssoForm.provider}
+                  onChange={(e) => updateSsoForm('provider', e.target.value === 'oidc' ? 'oidc' : 'none')}
+                >
+                  <option value="none">Disabled</option>
+                  <option value="oidc">OIDC</option>
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] uppercase tracking-wide text-text-secondary">
+                  Default app role
+                </label>
+                <select
+                  data-testid="settings-sso-default-role-input"
+                  className="input-base w-full text-sm"
+                  value={ssoForm.default_role}
+                  onChange={(e) => updateSsoForm('default_role', e.target.value as SsoConfigForm['default_role'])}
+                >
+                  <option value="viewer">viewer</option>
+                  <option value="editor">editor</option>
+                  <option value="admin">admin</option>
+                </select>
+              </div>
+              <div className="md:col-span-2">
+                <label className="mb-1 block text-[11px] uppercase tracking-wide text-text-secondary">
+                  Issuer URL
+                </label>
+                <input
+                  data-testid="settings-sso-issuer-url-input"
+                  className="input-base w-full text-sm"
+                  value={ssoForm.issuer_url}
+                  onChange={(e) => updateSsoForm('issuer_url', e.target.value)}
+                  placeholder="https://idp.example.com"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="mb-1 block text-[11px] uppercase tracking-wide text-text-secondary">
+                  Authorization endpoint
+                </label>
+                <input
+                  data-testid="settings-sso-authorization-endpoint-input"
+                  className="input-base w-full text-sm"
+                  value={ssoForm.authorization_endpoint}
+                  onChange={(e) => updateSsoForm('authorization_endpoint', e.target.value)}
+                  placeholder="https://idp.example.com/oauth2/v1/authorize"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] uppercase tracking-wide text-text-secondary">
+                  Token endpoint
+                </label>
+                <input
+                  data-testid="settings-sso-token-endpoint-input"
+                  className="input-base w-full text-sm"
+                  value={ssoForm.token_endpoint}
+                  onChange={(e) => updateSsoForm('token_endpoint', e.target.value)}
+                  placeholder="https://idp.example.com/oauth2/v1/token"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] uppercase tracking-wide text-text-secondary">
+                  JWKS URL
+                </label>
+                <input
+                  data-testid="settings-sso-jwks-url-input"
+                  className="input-base w-full text-sm"
+                  value={ssoForm.jwks_url}
+                  onChange={(e) => updateSsoForm('jwks_url', e.target.value)}
+                  placeholder="https://idp.example.com/oauth2/v1/keys"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] uppercase tracking-wide text-text-secondary">
+                  Client ID
+                </label>
+                <input
+                  data-testid="settings-sso-client-id-input"
+                  className="input-base w-full text-sm"
+                  value={ssoForm.client_id}
+                  onChange={(e) => updateSsoForm('client_id', e.target.value)}
+                  placeholder="insightdesk"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] uppercase tracking-wide text-text-secondary">
+                  Client secret
+                </label>
+                <input
+                  data-testid="settings-sso-client-secret-input"
+                  className="input-base w-full text-sm"
+                  type="password"
+                  value={ssoForm.client_secret}
+                  onChange={(e) => updateSsoForm('client_secret', e.target.value)}
+                  placeholder={ssoConfig?.client_secret_configured ? 'Configured; leave blank to keep' : 'Optional'}
+                />
+                <label className="mt-2 flex items-center gap-2 text-[11px] text-text-secondary">
+                  <input
+                    data-testid="settings-sso-clear-client-secret-input"
+                    type="checkbox"
+                    checked={ssoForm.clear_client_secret}
+                    onChange={(e) => updateSsoForm('clear_client_secret', e.target.checked)}
+                    className="accent-accent-blue"
+                  />
+                  Clear stored client secret
+                </label>
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] uppercase tracking-wide text-text-secondary">
+                  Scopes
+                </label>
+                <input
+                  data-testid="settings-sso-scopes-input"
+                  className="input-base w-full text-sm"
+                  value={ssoForm.scopes}
+                  onChange={(e) => updateSsoForm('scopes', e.target.value)}
+                  placeholder="openid email profile"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[11px] uppercase tracking-wide text-text-secondary">
+                  Session TTL seconds
+                </label>
+                <input
+                  data-testid="settings-sso-session-ttl-input"
+                  className="input-base w-full text-sm"
+                  type="number"
+                  min={300}
+                  max={604800}
+                  value={ssoForm.session_ttl_seconds}
+                  onChange={(e) => updateSsoForm('session_ttl_seconds', Number(e.target.value || 28800))}
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="mb-1 block text-[11px] uppercase tracking-wide text-text-secondary">
+                  Allowed email domains
+                </label>
+                <input
+                  data-testid="settings-sso-allowed-domains-input"
+                  className="input-base w-full text-sm"
+                  value={ssoForm.allowed_domains}
+                  onChange={(e) => updateSsoForm('allowed_domains', e.target.value)}
+                  placeholder="example.com, ops.example.com"
+                />
+              </div>
+            </div>
+
+            <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-text-secondary">
+              <span>Provider: <span className="text-text-primary">{ssoConfig?.provider ?? '-'}</span></span>
+              <span>Mode: <span className="text-text-primary">{ssoConfig?.mode ?? '-'}</span></span>
+              <span>Auth URL: <span className="text-text-primary">{ssoConfig?.authorization_endpoint_configured ? 'Set' : 'Missing'}</span></span>
+              <span>JWKS: <span className="text-text-primary">{ssoConfig?.jwks_url_configured ? 'Set' : 'Missing'}</span></span>
+            </div>
+            {ssoConfig?.allowed_domains.length ? (
+              <p className="mt-2 text-[11px] text-text-secondary">
+                Allowed domains: {ssoConfig.allowed_domains.join(', ')}
+              </p>
+            ) : null}
+            {ssoError && (
+              <div className="mt-3 rounded-lg border border-accent-red/30 bg-accent-red/10 px-3 py-2 text-xs text-accent-red">
+                {ssoError}
+              </div>
+            )}
+            <div className="mt-4 flex flex-wrap items-center gap-2">
+              <Button
+                data-testid="settings-sso-save"
+                variant="outline"
+                onClick={handleSaveSsoConfig}
+                loading={savingSsoConfig}
+              >
+                <Check size={14} />
+                Save SSO
+              </Button>
+              <Button
+                data-testid="settings-sso-login"
+                variant="primary"
+                onClick={handleStartSsoLogin}
+                loading={ssoLoginStarting}
+                disabled={!ssoConfig?.ready}
+              >
+                <LogIn size={14} />
+                使用 SSO 登录
+              </Button>
+              <Button variant="ghost" onClick={loadSsoConfig} loading={loadingSsoConfig}>
+                <RefreshCw size={14} />
+                刷新 SSO
+              </Button>
+            </div>
+          </div>
 
           <div>
             <label className="block text-xs font-medium text-text-secondary uppercase tracking-wide mb-2">
@@ -1327,6 +1672,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
       {/* Roles Tab */}
       {tab === 'roles' && (
         <div className="space-y-4">
+          <IdentityAdminPanel />
+          <ResourceAccessPanel />
+
           {(isCreating || editingPrompt) ? (
             <div className="grid gap-4 rounded-xl border border-bg-border bg-bg-tertiary p-4 lg:grid-cols-[minmax(0,1.15fr)_minmax(18rem,0.85fr)]">
               <p className="text-xs font-medium text-text-primary lg:col-span-2">
@@ -1635,6 +1983,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ open, onClose }) =
           )}
         </div>
       )}
+
+      {/* Trace Operations Tab */}
+      {tab === 'traces' && <TraceOperationsPanel />}
+
+      {/* MCP Approvals Tab */}
+      {tab === 'mcp_approvals' && <McpApprovalsPanel />}
+
+      {/* Integrations Tab */}
+      {tab === 'integrations' && <IntegratorConnectorsPanel />}
+
+      {/* Security Audit Tab */}
+      {tab === 'security_audit' && <SecurityAuditSummaryPanel />}
 
       {/* KB Monitor Tab */}
       {tab === 'kb_monitor' && (

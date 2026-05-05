@@ -9,12 +9,19 @@ import {
   Layers3,
   X,
 } from 'lucide-react'
-import { exportArtifact, getDeck } from '../../api/client'
-import type { DeckSpec } from '../../api/client'
+import { exportArtifact, getArtifact, getDeck } from '../../api/client'
+import type {
+  ClaimEvidenceChain,
+  ClaimVerificationSummary,
+  DeckSpec,
+  ReportArtifactContent,
+} from '../../api/client'
 import { useChatStore } from '../../stores/chatStore'
 import { createAndTrackTask, useTaskStore } from '../../stores/taskStore'
 import { TaskProgressCard } from '../cards/TaskProgressCard'
 import { InlineNotice } from '../ui/InlineNotice'
+import { ClaimEvidenceChains } from '../research/ClaimEvidenceChains'
+import { ResearchCitationPanel } from '../research/ResearchCitationPanel'
 import { ArtifactMatrix } from './ArtifactMatrix'
 import { DeckEditorModal } from './DeckEditorModal'
 import { DeckGenerationModal } from './DeckGenerationModal'
@@ -28,6 +35,8 @@ interface ReportPreviewModalProps {
   answerGroupId?: string
   panelId?: string
   artifactId?: string
+  claimEvidenceChains?: ClaimEvidenceChain[]
+  claimVerificationSummary?: ClaimVerificationSummary
 }
 
 const ReportMarkdown = React.lazy(() => import('./ReportMarkdown'))
@@ -55,6 +64,8 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
   answerGroupId,
   panelId,
   artifactId,
+  claimEvidenceChains,
+  claimVerificationSummary,
 }) => {
   const panels = useChatStore((s) => s.panels)
   const knowledgeBaseEnabled = useChatStore((s) => s.knowledgeBaseEnabled)
@@ -64,6 +75,13 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
   const [activeArtifactId, setActiveArtifactId] = useState<string | undefined>(artifactId)
   const [activeAnswerGroupId, setActiveAnswerGroupId] = useState(answerGroupId)
   const [activePanelId, setActivePanelId] = useState(panelId)
+  const [activeClaimEvidenceChains, setActiveClaimEvidenceChains] = useState<ClaimEvidenceChain[]>(
+    claimEvidenceChains ?? [],
+  )
+  const [activeClaimVerificationSummary, setActiveClaimVerificationSummary] = useState<
+    ClaimVerificationSummary | undefined
+  >(claimVerificationSummary)
+  const [loadingEvidenceChains, setLoadingEvidenceChains] = useState(false)
   const [currentSlide, setCurrentSlide] = useState(0)
   const [copied, setCopied] = useState(false)
   const [downloading, setDownloading] = useState(false)
@@ -90,7 +108,36 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
     setActiveArtifactId(artifactId)
     setActiveAnswerGroupId(answerGroupId)
     setActivePanelId(panelId)
-  }, [answerGroupId, artifactId, markdown, panelId, title])
+    setActiveClaimEvidenceChains(claimEvidenceChains ?? [])
+    setActiveClaimVerificationSummary(claimVerificationSummary)
+  }, [answerGroupId, artifactId, claimEvidenceChains, claimVerificationSummary, markdown, panelId, title])
+
+  useEffect(() => {
+    if (!open || !activeArtifactId || activeClaimEvidenceChains.length > 0) return
+
+    let disposed = false
+    setLoadingEvidenceChains(true)
+    getArtifact(activeArtifactId)
+      .then((artifact) => {
+        if (disposed || artifact.artifact_type !== 'report') return
+        const content = artifact.content as ReportArtifactContent
+        setActiveClaimEvidenceChains(content.claim_evidence_chains ?? [])
+        setActiveClaimVerificationSummary(content.claim_verification_summary)
+      })
+      .catch(() => {
+        if (!disposed) {
+          setActiveClaimEvidenceChains([])
+          setActiveClaimVerificationSummary(undefined)
+        }
+      })
+      .finally(() => {
+        if (!disposed) setLoadingEvidenceChains(false)
+      })
+
+    return () => {
+      disposed = true
+    }
+  }, [activeArtifactId, activeClaimEvidenceChains.length, open])
 
   useEffect(() => {
     if (!open) return
@@ -358,6 +405,23 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                 </div>
               </div>
 
+              {loadingEvidenceChains && (
+                <div className="rounded-2xl border border-bg-border bg-bg-secondary/70 px-4 py-3 text-xs text-text-secondary">
+                  Loading claim evidence chains...
+                </div>
+              )}
+
+              <ClaimEvidenceChains
+                chains={activeClaimEvidenceChains}
+                summary={activeClaimVerificationSummary}
+              />
+
+              <ResearchCitationPanel
+                chains={activeClaimEvidenceChains}
+                summary={activeClaimVerificationSummary}
+                sessionId={sessionId}
+              />
+
               <div className="flex shrink-0 items-center justify-between gap-3 rounded-2xl border border-bg-border bg-bg-secondary/95 px-4 py-3">
                 <button
                   onClick={goPrev}
@@ -404,6 +468,8 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
                   setActiveMarkdown(artifact.markdown)
                   setActiveAnswerGroupId(artifact.answerGroupId)
                   setActivePanelId(artifact.panelId)
+                  setActiveClaimEvidenceChains(artifact.claimEvidenceChains ?? [])
+                  setActiveClaimVerificationSummary(artifact.claimVerificationSummary)
                   setCurrentSlide(0)
                   setError(null)
                 }}

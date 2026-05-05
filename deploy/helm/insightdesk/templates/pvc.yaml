@@ -1,0 +1,17 @@
+{{- if .Values.runtime.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "insightdesk.fullname" . }}-runtime
+  labels:
+    {{- include "insightdesk.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.runtime.persistence.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.runtime.persistence.size | quote }}
+  {{- if .Values.runtime.persistence.storageClassName }}
+  storageClassName: {{ .Values.runtime.persistence.storageClassName | quote }}
+  {{- end }}
+{{- end }}

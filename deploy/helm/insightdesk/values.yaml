@@ -1,0 +1,238 @@
+replicaCount: 1
+
+image:
+  repository: insightdesk
+  tag: latest
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 8000
+
+config:
+  reloadStrategy: rolloutOnConfigChange
+  hotReload:
+    enabled: false
+    mountPath: /app/runtime/config
+    fileName: insightdesk.env
+    checkIntervalSeconds: "15"
+  serverHost: 0.0.0.0
+  serverPort: "8000"
+  appDbPath: /app/runtime/chat_history.db
+  vectorStorePath: /app/runtime/vector_store
+  taskBackend: memory
+  databaseProvider: sqlite
+  databaseUrl: postgresql://postgres:postgres@postgres:5432/insightdesk
+  vectorStoreProvider: faiss
+  qdrantUrl: http://qdrant:6333
+  qdrantCollection: insightdesk_kb
+  ollamaBaseUrl: http://ollama:11434
+  redisUrl: redis://redis:6379/0
+  arqQueueName: insightdesk:tasks
+  arqWorkerMaxJobs: "4"
+  arqKeepResultSeconds: "3600"
+
+env: []
+
+runtime:
+  persistence:
+    enabled: true
+    storageClassName: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 10Gi
+
+api:
+  terminationGracePeriodSeconds: 30
+  lifecycle:
+    preStop:
+      exec:
+        command:
+          - sh
+          - -c
+          - sleep 5
+  command:
+    - sh
+    - -lc
+  args:
+    - >-
+      mkdir -p /app/runtime/vector_store
+      && touch /app/runtime/chat_history.db
+      && ln -sf /app/runtime/chat_history.db /app/chat_history.db
+      && uvicorn backend.api_server:app --host 0.0.0.0 --port 8000
+  resources: {}
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    initialDelaySeconds: 20
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+worker:
+  enabled: false
+  replicaCount: 1
+  terminationGracePeriodSeconds: 60
+  lifecycle:
+    preStop:
+      exec:
+        command:
+          - sh
+          - -c
+          - sleep 5
+  command:
+    - sh
+    - -lc
+  args:
+    - >-
+      mkdir -p /app/runtime/vector_store
+      && touch /app/runtime/chat_history.db
+      && ln -sf /app/runtime/chat_history.db /app/chat_history.db
+      && arq backend.tasks.worker.WorkerSettings
+  resources: {}
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+networkPolicy:
+  enabled: false
+  api:
+    enabled: true
+    ingress:
+      - from:
+          - namespaceSelector: {}
+        ports:
+          - protocol: TCP
+            port: 8000
+    egress:
+      - to:
+          - namespaceSelector: {}
+        ports:
+          - protocol: UDP
+            port: 53
+          - protocol: TCP
+            port: 53
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: redis
+        ports:
+          - protocol: TCP
+            port: 6379
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: qdrant
+        ports:
+          - protocol: TCP
+            port: 6333
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: postgres
+        ports:
+          - protocol: TCP
+            port: 5432
+  worker:
+    enabled: true
+    ingress: []
+    egress:
+      - to:
+          - namespaceSelector: {}
+        ports:
+          - protocol: UDP
+            port: 53
+          - protocol: TCP
+            port: 53
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: redis
+        ports:
+          - protocol: TCP
+            port: 6379
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: qdrant
+        ports:
+          - protocol: TCP
+            port: 6333
+      - to:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: postgres
+        ports:
+          - protocol: TCP
+            port: 5432
+  dependencies:
+    redis:
+      enabled: true
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: redis
+      ingress:
+        - from:
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/component: api
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/component: worker
+          ports:
+            - protocol: TCP
+              port: 6379
+      egress: []
+    qdrant:
+      enabled: true
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: qdrant
+      ingress:
+        - from:
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/component: api
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/component: worker
+          ports:
+            - protocol: TCP
+              port: 6333
+      egress: []
+    postgres:
+      enabled: true
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: postgres
+      ingress:
+        - from:
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/component: api
+            - podSelector:
+                matchLabels:
+                  app.kubernetes.io/component: worker
+          ports:
+            - protocol: TCP
+              port: 5432
+      egress: []

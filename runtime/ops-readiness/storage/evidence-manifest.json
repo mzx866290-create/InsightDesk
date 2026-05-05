@@ -1,0 +1,98 @@
+{
+  "reports": {
+    "storage_migration_execute": {
+      "archive_path": "runtime\\ops-readiness\\storage\\archive\\storage_migration_execute-20260505-195236.json",
+      "blockers": [],
+      "finished_at": "2026-05-05T11:52:36Z",
+      "gate": {
+        "execute": {
+          "configured": true,
+          "env": "STORAGE_MIGRATION_EXECUTE",
+          "required": true,
+          "status": "passed"
+        },
+        "rollback": {
+          "configured": false,
+          "env": "STORAGE_MIGRATION_ROLLBACK",
+          "required": false,
+          "status": "skipped"
+        }
+      },
+      "history_path": "runtime\\ops-readiness\\storage\\history.json",
+      "id": "storage_migration_execute",
+      "manifest_path": "runtime\\ops-readiness\\storage\\evidence-manifest.json",
+      "ok": true,
+      "report_path": "runtime\\ops-readiness\\storage\\storage-real-migration.json",
+      "status": "executed"
+    },
+    "storage_real_integration": {
+      "archive_path": "runtime\\ops-readiness\\storage\\archive\\storage_real_integration-20260505-195400.json",
+      "blockers": [],
+      "finished_at": "2026-05-05T11:54:00Z",
+      "gate": {
+        "configured": true,
+        "env": "STORAGE_INTEGRATION_TEST",
+        "required_value": "1",
+        "status": "passed"
+      },
+      "history_path": "runtime\\ops-readiness\\storage\\history.json",
+      "id": "storage_real_integration",
+      "manifest_path": "runtime\\ops-readiness\\storage\\evidence-manifest.json",
+      "ok": true,
+      "report_path": "runtime\\ops-readiness\\storage\\storage-real-integration.json",
+      "status": "passed"
+    },
+    "storage_real_migration_contract": {
+      "archive_path": "runtime\\ops-readiness\\storage\\archive\\storage_real_migration_contract-20260505-195347.json",
+      "blockers": [],
+      "finished_at": "2026-05-05T11:53:47Z",
+      "gate": {
+        "execute": {
+          "configured": true,
+          "env": "STORAGE_MIGRATION_EXECUTE",
+          "required": true,
+          "status": "passed"
+        },
+        "rollback": {
+          "configured": false,
+          "env": "STORAGE_MIGRATION_ROLLBACK",
+          "required": false,
+          "status": "skipped"
+        }
+      },
+      "history_path": "runtime\\ops-readiness\\storage\\history.json",
+      "id": "storage_real_migration_contract",
+      "manifest_path": "runtime\\ops-readiness\\storage\\evidence-manifest.json",
+      "ok": true,
+      "report_path": "runtime\\ops-readiness\\storage\\storage-real-migration.json",
+      "status": "executed"
+    },
+    "storage_real_rollback_contract": {
+      "archive_path": "runtime\\ops-readiness\\storage\\archive\\storage_real_rollback_contract-20260505-195409.json",
+      "blockers": [],
+      "finished_at": "2026-05-05T11:54:09Z",
+      "gate": {
+        "execute": {
+          "configured": false,
+          "env": "STORAGE_MIGRATION_EXECUTE",
+          "required": false,
+          "status": "skipped"
+        },
+        "rollback": {
+          "configured": true,
+          "env": "STORAGE_MIGRATION_ROLLBACK",
+          "required": true,
+          "status": "passed"
+        }
+      },
+      "history_path": "runtime\\ops-readiness\\storage\\history.json",
+      "id": "storage_real_rollback_contract",
+      "manifest_path": "runtime\\ops-readiness\\storage\\evidence-manifest.json",
+      "ok": true,
+      "report_path": "runtime\\ops-readiness\\storage\\storage-real-rollback.json",
+      "status": "executed"
+    }
+  },
+  "schema_version": "1",
+  "updated_at": "2026-05-05T11:54:09Z"
+}

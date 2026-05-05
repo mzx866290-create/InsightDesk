@@ -1,0 +1,141 @@
+{
+  "continue_on_error": false,
+  "evidence": {
+    "archive_dir": "runtime\\ops-readiness\\real-ops\\archive",
+    "archive_path": "runtime\\ops-readiness\\real-ops\\archive\\real_ops_evidence_runner-20260504-160704.json",
+    "history_path": "runtime\\ops-readiness\\real-ops\\history.json",
+    "id": "real_ops_evidence_runner",
+    "report_path": "runtime\\ops-readiness\\real-ops\\arq-smoke-runner.json"
+  },
+  "execute": true,
+  "mode": "execute",
+  "ok": false,
+  "plan": {
+    "checks": [
+      {
+        "archive_dir": "runtime\\ops-readiness\\arq\\archive",
+        "area": "1.2_async_queue",
+        "blockers": [],
+        "checklist": [
+          "docker_cli",
+          "docker_daemon",
+          "redis_service",
+          "arq_worker_started",
+          "persisted_task_completed",
+          "evidence_archive"
+        ],
+        "command": [
+          "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+          "deploy/run_arq_e2e_smoke.py",
+          "--timeout-seconds",
+          "90",
+          "--compose-timeout-seconds",
+          "600",
+          "--json",
+          "--report-path",
+          "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+          "--archive-dir",
+          "runtime\\ops-readiness\\arq\\archive",
+          "--history-path",
+          "runtime\\ops-readiness\\arq\\history.json",
+          "--manifest-path",
+          "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+          "--docker-start-hint",
+          "--skip-if-unavailable"
+        ],
+        "description": "Run Redis/ARQ worker E2E smoke and confirm persisted task completion.",
+        "evidence_manifest_path": "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+        "history_path": "runtime\\ops-readiness\\arq\\history.json",
+        "id": "arq_long_running_smoke",
+        "included": true,
+        "probes": {
+          "docker": {
+            "blocker": "docker_daemon_unavailable",
+            "detail": "\"29.2.1\"",
+            "ok": true,
+            "returncode": 0
+          }
+        },
+        "real_environment": true,
+        "report_fields": [
+          "ok",
+          "skipped",
+          "blockers",
+          "task_id",
+          "job_id",
+          "evidence.decision",
+          "archive_path"
+        ],
+        "report_path": "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+        "required_env": [],
+        "required_tools": [
+          "docker"
+        ],
+        "runnable": true,
+        "safe_to_run": false,
+        "status": "ready"
+      }
+    ],
+    "execute": false,
+    "mode": "plan",
+    "ok": true,
+    "probe_tools": true,
+    "summary": {
+      "all_runnable": true,
+      "blocked": 0,
+      "runnable": 1,
+      "selected": 1
+    },
+    "unknown_ids": []
+  },
+  "probe_tools": true,
+  "results": [
+    {
+      "area": "1.2_async_queue",
+      "command": [
+        "F:\\项目\\AI智能体\\venv312\\Scripts\\python.exe",
+        "deploy/run_arq_e2e_smoke.py",
+        "--timeout-seconds",
+        "90",
+        "--compose-timeout-seconds",
+        "600",
+        "--json",
+        "--report-path",
+        "runtime\\ops-readiness\\arq\\arq-long-running-smoke.json",
+        "--archive-dir",
+        "runtime\\ops-readiness\\arq\\archive",
+        "--history-path",
+        "runtime\\ops-readiness\\arq\\history.json",
+        "--manifest-path",
+        "runtime\\ops-readiness\\arq\\evidence-manifest.json",
+        "--docker-start-hint",
+        "--skip-if-unavailable"
+      ],
+      "execution": {
+        "duration_ms": 627475,
+        "error": "",
+        "ok": false,
+        "returncode": 1,
+        "stderr": "Traceback (most recent call last):\n  File \"F:\\项目\\AI智能体\\deploy\\run_arq_e2e_smoke.py\", line 420, in <module>\n    raise SystemExit(main())\n                     ^^^^^^\n  File \"F:\\项目\\AI智能体\\deploy\\run_arq_e2e_smoke.py\", line 404, in main\n    return run_smoke(\n           ^^^^^^^^^^\n  File \"F:\\项目\\AI智能体\\deploy\\run_arq_e2e_smoke.py\", line 304, in run_smoke\n    result = _run(\n             ^^^^^\n  File \"F:\\项目\\AI智能体\\deploy\\run_arq_e2e_smoke.py\", line 33, in _run\n    return subprocess.run(\n           ^^^^^^^^^^^^^^^\n  File \"C:\\Users\\MSI\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\subprocess.py\", line 550, in run\n    stdout, stderr = process.communicate(input, timeout=timeout)\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\MSI\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\subprocess.py\", line 1209, in communicate\n    stdout, stderr = self._communicate(input, endtime, timeout)\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\MSI\\AppData\\Local\\Programs\\Python\\Python312\\Lib\\subprocess.py\", line 1628, in _communicate\n    raise TimeoutExpired(self.args, orig_timeout)\nsubprocess.TimeoutExpired: Command '['docker', 'compose', '-f', 'F:\\\\项目\\\\AI智能体\\\\deploy\\\\compose.arq-worker.yml', 'up', '--build', '-d', 'redis', 'arq-worker']' timed out after 600 seconds",
+        "stdout": "+ docker info\n+ docker compose -f F:\\项目\\AI智能体\\deploy\\compose.arq-worker.yml up --build -d redis arq-worker"
+      },
+      "id": "arq_long_running_smoke",
+      "ok": false
+    }
+  ],
+  "strict_plan": true,
+  "strict_verifier": false,
+  "summary": {
+    "all_runnable": true,
+    "blocked": 0,
+    "blocked_ids": [],
+    "executed": 1,
+    "failed": 1,
+    "passed": 0,
+    "runnable": 1,
+    "selected": 1,
+    "unknown_ids": []
+  },
+  "timeout_seconds": 1800,
+  "verifier": null
+}

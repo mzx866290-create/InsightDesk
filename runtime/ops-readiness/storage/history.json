@@ -1,0 +1,152 @@
+[
+  {
+    "archive_path": "runtime\\ops-readiness\\storage\\archive\\storage_migration_preflight-20260503-142139.json",
+    "errors": [],
+    "executed": false,
+    "id": "storage_migration_preflight",
+    "mode": "preflight",
+    "ok": true,
+    "recorded_at": 1777789299.990732,
+    "report_path": "runtime\\ops-readiness\\storage\\manual-preflight.json",
+    "warnings": [
+      "postgres:postgres_dsn_missing"
+    ]
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\storage\\archive\\storage_migration_preflight-20260503-142140.json",
+    "errors": [],
+    "executed": false,
+    "id": "storage_migration_preflight",
+    "mode": "preflight",
+    "ok": true,
+    "recorded_at": 1777789300.26898,
+    "report_path": "runtime\\ops-readiness\\storage\\storage-migration-preflight.json",
+    "warnings": [
+      "postgres:postgres_dsn_missing"
+    ]
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\storage\\archive\\storage_migration_rollback_plan-20260503-142140.json",
+    "errors": [],
+    "executed": false,
+    "id": "storage_migration_rollback_plan",
+    "mode": "rollback_plan",
+    "ok": true,
+    "recorded_at": 1777789300.4985101,
+    "report_path": "runtime\\ops-readiness\\storage\\storage-rollback-plan.json",
+    "warnings": [
+      "postgres:postgres_dsn_missing"
+    ]
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\storage\\archive\\storage_migration_preflight-20260503-142343.json",
+    "errors": [],
+    "executed": false,
+    "id": "storage_migration_preflight",
+    "mode": "preflight",
+    "ok": true,
+    "recorded_at": 1777789423.5694413,
+    "report_path": "runtime\\ops-readiness\\storage\\storage-migration-preflight.json",
+    "warnings": [
+      "postgres:postgres_dsn_missing"
+    ]
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\storage\\archive\\storage_migration_rollback_plan-20260503-142343.json",
+    "errors": [],
+    "executed": false,
+    "id": "storage_migration_rollback_plan",
+    "mode": "rollback_plan",
+    "ok": true,
+    "recorded_at": 1777789423.729651,
+    "report_path": "runtime\\ops-readiness\\storage\\storage-rollback-plan.json",
+    "warnings": [
+      "postgres:postgres_dsn_missing"
+    ]
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\storage\\archive\\storage_migration_execute-20260505-195154.json",
+    "errors": [
+      "postgres_migration_failed:RuntimeError",
+      "qdrant_migration_failed:RuntimeError"
+    ],
+    "evidence_bundle_id": "storage_migration_execute",
+    "executed": true,
+    "history_path": "runtime\\ops-readiness\\storage\\history.json",
+    "id": "storage_migration_execute",
+    "manifest_path": "runtime\\ops-readiness\\storage\\evidence-manifest.json",
+    "mode": "execute",
+    "ok": false,
+    "recorded_at": 1777981914.9208455,
+    "report_path": "runtime\\ops-readiness\\storage\\storage-real-migration.json",
+    "status": "blocked",
+    "warnings": []
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\storage\\archive\\storage_migration_execute-20260505-195236.json",
+    "errors": [],
+    "evidence_bundle_id": "storage_migration_execute",
+    "executed": true,
+    "history_path": "runtime\\ops-readiness\\storage\\history.json",
+    "id": "storage_migration_execute",
+    "manifest_path": "runtime\\ops-readiness\\storage\\evidence-manifest.json",
+    "mode": "execute",
+    "ok": true,
+    "recorded_at": 1777981956.71466,
+    "report_path": "runtime\\ops-readiness\\storage\\storage-real-migration.json",
+    "status": "executed",
+    "warnings": [
+      "qdrant:qdrant_embedding_backfill_required"
+    ]
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\storage\\archive\\storage_real_migration_contract-20260505-195347.json",
+    "errors": [],
+    "evidence_bundle_id": "storage_real_migration_contract",
+    "executed": true,
+    "history_path": "runtime\\ops-readiness\\storage\\history.json",
+    "id": "storage_real_migration_contract",
+    "manifest_path": "runtime\\ops-readiness\\storage\\evidence-manifest.json",
+    "mode": "execute",
+    "ok": true,
+    "recorded_at": 1777982027.727442,
+    "report_path": "runtime\\ops-readiness\\storage\\storage-real-migration.json",
+    "status": "executed",
+    "warnings": [
+      "qdrant:qdrant_embedding_backfill_required"
+    ]
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\storage\\archive\\storage_real_integration-20260505-195400.json",
+    "checked": [
+      "postgres",
+      "qdrant"
+    ],
+    "errors": [],
+    "evidence_bundle_id": "storage_real_integration",
+    "history_path": "runtime\\ops-readiness\\storage\\history.json",
+    "id": "storage_real_integration",
+    "integration_enabled": true,
+    "manifest_path": "runtime\\ops-readiness\\storage\\evidence-manifest.json",
+    "ok": true,
+    "recorded_at": 1777982040.0642254,
+    "report_path": "runtime\\ops-readiness\\storage\\storage-real-integration.json",
+    "skipped": [],
+    "status": "passed"
+  },
+  {
+    "archive_path": "runtime\\ops-readiness\\storage\\archive\\storage_real_rollback_contract-20260505-195409.json",
+    "errors": [],
+    "evidence_bundle_id": "storage_real_rollback_contract",
+    "executed": true,
+    "history_path": "runtime\\ops-readiness\\storage\\history.json",
+    "id": "storage_real_rollback_contract",
+    "manifest_path": "runtime\\ops-readiness\\storage\\evidence-manifest.json",
+    "mode": "rollback",
+    "ok": true,
+    "recorded_at": 1777982049.8316195,
+    "report_path": "runtime\\ops-readiness\\storage\\storage-real-rollback.json",
+    "status": "executed",
+    "warnings": []
+  }
+]

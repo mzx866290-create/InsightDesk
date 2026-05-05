@@ -1,0 +1,635 @@
+{
+  "blockers": [],
+  "contracts": {
+    "config_reload": {
+      "checksum_rollout_annotation": true,
+      "expected_refresh_mechanism": "checksum_rollout",
+      "hot_reload_checklist": [
+        {
+          "evidence": "values.yaml config.reloadStrategy",
+          "id": "reload_strategy_defaults_to_rollout",
+          "passed": true,
+          "required": true
+        },
+        {
+          "evidence": "Deployment pod-template checksum/config annotation",
+          "id": "configmap_checksum_drives_rollout",
+          "passed": true,
+          "required": true
+        },
+        {
+          "evidence": "runtime-config ConfigMap volume gated by config.hotReload.enabled",
+          "id": "mounted_hot_reload_is_optional",
+          "passed": true,
+          "required": true
+        },
+        {
+          "evidence": "ConfigMap CONFIG_HOT_RELOAD_* keys",
+          "id": "hot_reload_env_is_reported",
+          "passed": true,
+          "required": true
+        }
+      ],
+      "hot_reload_default_enabled": false,
+      "hot_reload_env_keys": [
+        "CONFIG_RELOAD_STRATEGY:",
+        "CONFIG_HOT_RELOAD_ENABLED:",
+        "CONFIG_HOT_RELOAD_PATH:",
+        "CONFIG_HOT_RELOAD_CHECK_INTERVAL_SECONDS:"
+      ],
+      "missing_env_keys": [],
+      "mounted_config_supported": true,
+      "ready": true,
+      "report_fields": [
+        "strategy_default",
+        "hot_reload_default_enabled",
+        "expected_refresh_mechanism",
+        "checksum_rollout_annotation",
+        "mounted_config_supported",
+        "hot_reload_env_keys",
+        "missing_env_keys",
+        "hot_reload_checklist"
+      ],
+      "strategy_default": "rolloutOnConfigChange"
+    },
+    "graceful_shutdown": {
+      "api_template_applies_shutdown_controls": true,
+      "api_termination_grace_period_configured": true,
+      "graceful_shutdown_checklist": [
+        {
+          "evidence": "values.yaml api.terminationGracePeriodSeconds",
+          "id": "api_termination_grace_period_configured",
+          "passed": true,
+          "required": true
+        },
+        {
+          "evidence": "values.yaml worker.terminationGracePeriodSeconds",
+          "id": "worker_termination_grace_period_configured",
+          "passed": true,
+          "required": true
+        },
+        {
+          "evidence": "values.yaml api/worker lifecycle.preStop sleep",
+          "id": "pre_stop_delay_configured",
+          "passed": true,
+          "required": true
+        },
+        {
+          "evidence": "templates/deployment-api.yaml terminationGracePeriodSeconds/lifecycle",
+          "id": "api_template_applies_shutdown_controls",
+          "passed": true,
+          "required": true
+        },
+        {
+          "evidence": "templates/deployment-worker.yaml terminationGracePeriodSeconds/lifecycle",
+          "id": "worker_template_applies_shutdown_controls",
+          "passed": true,
+          "required": true
+        }
+      ],
+      "pre_stop_delay_configured": true,
+      "ready": true,
+      "report_fields": [
+        "api_termination_grace_period_configured",
+        "worker_termination_grace_period_configured",
+        "pre_stop_delay_configured",
+        "api_template_applies_shutdown_controls",
+        "worker_template_applies_shutdown_controls",
+        "graceful_shutdown_checklist"
+      ],
+      "worker_template_applies_shutdown_controls": true,
+      "worker_termination_grace_period_configured": true
+    },
+    "real_cluster": {
+      "archiveable_when_enabled": true,
+      "commands_inert_without_gate": true,
+      "evidence_paths": {
+        "archive_dir": "runtime\\ops-readiness\\k8s\\archive",
+        "history_path": "runtime\\ops-readiness\\k8s\\history.json",
+        "manifest_path": "runtime\\ops-readiness\\k8s\\evidence-manifest.json",
+        "report_path": "runtime\\ops-readiness\\k8s\\k8s-config-reload-drill.json"
+      },
+      "gate_enabled": true,
+      "gate_env": "OPS_REAL_CLUSTER_TEST",
+      "required_env": [
+        "OPS_REAL_CLUSTER_TEST"
+      ],
+      "required_tools": [
+        "helm",
+        "kubectl"
+      ],
+      "safe_without_gate": true,
+      "skipped_without_gate": true
+    }
+  },
+  "gate": "OPS_REAL_CLUSTER_TEST",
+  "generated_steps": [
+    {
+      "command": [
+        "helm",
+        "template",
+        "insightdesk",
+        "F:\\项目\\AI智能体\\deploy\\helm\\insightdesk"
+      ],
+      "id": "helm_template",
+      "ok": true
+    },
+    {
+      "command": [
+        "kubectl",
+        "config",
+        "current-context"
+      ],
+      "id": "kubectl_current_context",
+      "ok": true
+    },
+    {
+      "command": [
+        "kubectl",
+        "get",
+        "namespace",
+        "default"
+      ],
+      "id": "kubectl_namespace_probe",
+      "ok": true
+    },
+    {
+      "command": [
+        "kubectl",
+        "get",
+        "deployment",
+        "insightdesk-api",
+        "-n",
+        "default"
+      ],
+      "id": "kubectl_api_deployment_probe",
+      "ok": true
+    },
+    {
+      "command": [
+        "kubectl",
+        "rollout",
+        "status",
+        "deployment/insightdesk-api",
+        "-n",
+        "default",
+        "--timeout=120s"
+      ],
+      "id": "kubectl_api_rollout_status",
+      "ok": true
+    }
+  ],
+  "id": "k8s_rollout_drill",
+  "namespace": "default",
+  "ok": true,
+  "paths": {
+    "archive_dir": "runtime\\ops-readiness\\k8s\\archive",
+    "archive_path": "runtime\\ops-readiness\\k8s\\archive\\k8s_rollout_drill-20260505-195849.json",
+    "history_path": "runtime\\ops-readiness\\k8s\\history.json",
+    "manifest_path": "runtime\\ops-readiness\\k8s\\evidence-manifest.json",
+    "report_path": "runtime\\ops-readiness\\k8s\\k8s-config-reload-drill.json"
+  },
+  "recorded_at": 1777982329.349998,
+  "release": "insightdesk",
+  "reports": {
+    "k8s-config-reload-drill": {
+      "blockers": [],
+      "contracts": {
+        "config_reload": {
+          "checksum_rollout_annotation": true,
+          "expected_refresh_mechanism": "checksum_rollout",
+          "hot_reload_checklist": [
+            {
+              "evidence": "values.yaml config.reloadStrategy",
+              "id": "reload_strategy_defaults_to_rollout",
+              "passed": true,
+              "required": true
+            },
+            {
+              "evidence": "Deployment pod-template checksum/config annotation",
+              "id": "configmap_checksum_drives_rollout",
+              "passed": true,
+              "required": true
+            },
+            {
+              "evidence": "runtime-config ConfigMap volume gated by config.hotReload.enabled",
+              "id": "mounted_hot_reload_is_optional",
+              "passed": true,
+              "required": true
+            },
+            {
+              "evidence": "ConfigMap CONFIG_HOT_RELOAD_* keys",
+              "id": "hot_reload_env_is_reported",
+              "passed": true,
+              "required": true
+            }
+          ],
+          "hot_reload_default_enabled": false,
+          "hot_reload_env_keys": [
+            "CONFIG_RELOAD_STRATEGY:",
+            "CONFIG_HOT_RELOAD_ENABLED:",
+            "CONFIG_HOT_RELOAD_PATH:",
+            "CONFIG_HOT_RELOAD_CHECK_INTERVAL_SECONDS:"
+          ],
+          "missing_env_keys": [],
+          "mounted_config_supported": true,
+          "ready": true,
+          "report_fields": [
+            "strategy_default",
+            "hot_reload_default_enabled",
+            "expected_refresh_mechanism",
+            "checksum_rollout_annotation",
+            "mounted_config_supported",
+            "hot_reload_env_keys",
+            "missing_env_keys",
+            "hot_reload_checklist"
+          ],
+          "strategy_default": "rolloutOnConfigChange"
+        },
+        "graceful_shutdown": {
+          "api_template_applies_shutdown_controls": true,
+          "api_termination_grace_period_configured": true,
+          "graceful_shutdown_checklist": [
+            {
+              "evidence": "values.yaml api.terminationGracePeriodSeconds",
+              "id": "api_termination_grace_period_configured",
+              "passed": true,
+              "required": true
+            },
+            {
+              "evidence": "values.yaml worker.terminationGracePeriodSeconds",
+              "id": "worker_termination_grace_period_configured",
+              "passed": true,
+              "required": true
+            },
+            {
+              "evidence": "values.yaml api/worker lifecycle.preStop sleep",
+              "id": "pre_stop_delay_configured",
+              "passed": true,
+              "required": true
+            },
+            {
+              "evidence": "templates/deployment-api.yaml terminationGracePeriodSeconds/lifecycle",
+              "id": "api_template_applies_shutdown_controls",
+              "passed": true,
+              "required": true
+            },
+            {
+              "evidence": "templates/deployment-worker.yaml terminationGracePeriodSeconds/lifecycle",
+              "id": "worker_template_applies_shutdown_controls",
+              "passed": true,
+              "required": true
+            }
+          ],
+          "pre_stop_delay_configured": true,
+          "ready": true,
+          "report_fields": [
+            "api_termination_grace_period_configured",
+            "worker_termination_grace_period_configured",
+            "pre_stop_delay_configured",
+            "api_template_applies_shutdown_controls",
+            "worker_template_applies_shutdown_controls",
+            "graceful_shutdown_checklist"
+          ],
+          "worker_template_applies_shutdown_controls": true,
+          "worker_termination_grace_period_configured": true
+        },
+        "real_cluster": {
+          "archiveable_when_enabled": true,
+          "commands_inert_without_gate": true,
+          "evidence_paths": {
+            "archive_dir": "runtime\\ops-readiness\\k8s\\archive",
+            "history_path": "runtime\\ops-readiness\\k8s\\history.json",
+            "manifest_path": "runtime\\ops-readiness\\k8s\\evidence-manifest.json",
+            "report_path": "runtime\\ops-readiness\\k8s\\k8s-config-reload-drill.json"
+          },
+          "gate_enabled": true,
+          "gate_env": "OPS_REAL_CLUSTER_TEST",
+          "required_env": [
+            "OPS_REAL_CLUSTER_TEST"
+          ],
+          "required_tools": [
+            "helm",
+            "kubectl"
+          ],
+          "safe_without_gate": true,
+          "skipped_without_gate": true
+        }
+      },
+      "gate": "OPS_REAL_CLUSTER_TEST",
+      "generated_steps": [
+        {
+          "command": [
+            "helm",
+            "template",
+            "insightdesk",
+            "F:\\项目\\AI智能体\\deploy\\helm\\insightdesk"
+          ],
+          "id": "helm_template",
+          "ok": true
+        },
+        {
+          "command": [
+            "kubectl",
+            "config",
+            "current-context"
+          ],
+          "id": "kubectl_current_context",
+          "ok": true
+        },
+        {
+          "command": [
+            "kubectl",
+            "get",
+            "namespace",
+            "default"
+          ],
+          "id": "kubectl_namespace_probe",
+          "ok": true
+        },
+        {
+          "command": [
+            "kubectl",
+            "get",
+            "deployment",
+            "insightdesk-api",
+            "-n",
+            "default"
+          ],
+          "id": "kubectl_api_deployment_probe",
+          "ok": true
+        },
+        {
+          "command": [
+            "kubectl",
+            "rollout",
+            "status",
+            "deployment/insightdesk-api",
+            "-n",
+            "default",
+            "--timeout=120s"
+          ],
+          "id": "kubectl_api_rollout_status",
+          "ok": true
+        }
+      ],
+      "id": "k8s_rollout_drill",
+      "namespace": "default",
+      "ok": true,
+      "paths": {
+        "archive_dir": "runtime\\ops-readiness\\k8s\\archive",
+        "archive_path": "runtime\\ops-readiness\\k8s\\archive\\k8s_rollout_drill-20260505-195849.json",
+        "history_path": "runtime\\ops-readiness\\k8s\\history.json",
+        "manifest_path": "runtime\\ops-readiness\\k8s\\evidence-manifest.json",
+        "report_path": "runtime\\ops-readiness\\k8s\\k8s-config-reload-drill.json"
+      },
+      "recorded_at": 1777982329.349998,
+      "release": "insightdesk",
+      "required_evidence": [
+        "real_cluster_contract",
+        "config_reload_contract",
+        "hot_reload_checklist",
+        "graceful_shutdown_contract",
+        "graceful_shutdown_checklist",
+        "helm_template",
+        "kubectl_current_context",
+        "kubectl_namespace_probe",
+        "kubectl_api_deployment_probe",
+        "kubectl_api_rollout_status",
+        "json_report",
+        "history_entry",
+        "archive_entry"
+      ],
+      "skipped": false,
+      "status": "ready"
+    },
+    "k8s-real-cluster-probe": {
+      "blockers": [],
+      "contracts": {
+        "config_reload": {
+          "checksum_rollout_annotation": true,
+          "expected_refresh_mechanism": "checksum_rollout",
+          "hot_reload_checklist": [
+            {
+              "evidence": "values.yaml config.reloadStrategy",
+              "id": "reload_strategy_defaults_to_rollout",
+              "passed": true,
+              "required": true
+            },
+            {
+              "evidence": "Deployment pod-template checksum/config annotation",
+              "id": "configmap_checksum_drives_rollout",
+              "passed": true,
+              "required": true
+            },
+            {
+              "evidence": "runtime-config ConfigMap volume gated by config.hotReload.enabled",
+              "id": "mounted_hot_reload_is_optional",
+              "passed": true,
+              "required": true
+            },
+            {
+              "evidence": "ConfigMap CONFIG_HOT_RELOAD_* keys",
+              "id": "hot_reload_env_is_reported",
+              "passed": true,
+              "required": true
+            }
+          ],
+          "hot_reload_default_enabled": false,
+          "hot_reload_env_keys": [
+            "CONFIG_RELOAD_STRATEGY:",
+            "CONFIG_HOT_RELOAD_ENABLED:",
+            "CONFIG_HOT_RELOAD_PATH:",
+            "CONFIG_HOT_RELOAD_CHECK_INTERVAL_SECONDS:"
+          ],
+          "missing_env_keys": [],
+          "mounted_config_supported": true,
+          "ready": true,
+          "report_fields": [
+            "strategy_default",
+            "hot_reload_default_enabled",
+            "expected_refresh_mechanism",
+            "checksum_rollout_annotation",
+            "mounted_config_supported",
+            "hot_reload_env_keys",
+            "missing_env_keys",
+            "hot_reload_checklist"
+          ],
+          "strategy_default": "rolloutOnConfigChange"
+        },
+        "graceful_shutdown": {
+          "api_template_applies_shutdown_controls": true,
+          "api_termination_grace_period_configured": true,
+          "graceful_shutdown_checklist": [
+            {
+              "evidence": "values.yaml api.terminationGracePeriodSeconds",
+              "id": "api_termination_grace_period_configured",
+              "passed": true,
+              "required": true
+            },
+            {
+              "evidence": "values.yaml worker.terminationGracePeriodSeconds",
+              "id": "worker_termination_grace_period_configured",
+              "passed": true,
+              "required": true
+            },
+            {
+              "evidence": "values.yaml api/worker lifecycle.preStop sleep",
+              "id": "pre_stop_delay_configured",
+              "passed": true,
+              "required": true
+            },
+            {
+              "evidence": "templates/deployment-api.yaml terminationGracePeriodSeconds/lifecycle",
+              "id": "api_template_applies_shutdown_controls",
+              "passed": true,
+              "required": true
+            },
+            {
+              "evidence": "templates/deployment-worker.yaml terminationGracePeriodSeconds/lifecycle",
+              "id": "worker_template_applies_shutdown_controls",
+              "passed": true,
+              "required": true
+            }
+          ],
+          "pre_stop_delay_configured": true,
+          "ready": true,
+          "report_fields": [
+            "api_termination_grace_period_configured",
+            "worker_termination_grace_period_configured",
+            "pre_stop_delay_configured",
+            "api_template_applies_shutdown_controls",
+            "worker_template_applies_shutdown_controls",
+            "graceful_shutdown_checklist"
+          ],
+          "worker_template_applies_shutdown_controls": true,
+          "worker_termination_grace_period_configured": true
+        },
+        "real_cluster": {
+          "archiveable_when_enabled": true,
+          "commands_inert_without_gate": true,
+          "evidence_paths": {
+            "archive_dir": "runtime\\ops-readiness\\k8s\\archive",
+            "history_path": "runtime\\ops-readiness\\k8s\\history.json",
+            "manifest_path": "runtime\\ops-readiness\\k8s\\evidence-manifest.json",
+            "report_path": "runtime\\ops-readiness\\k8s\\k8s-real-cluster-probe.json"
+          },
+          "gate_enabled": true,
+          "gate_env": "OPS_REAL_CLUSTER_TEST",
+          "required_env": [
+            "OPS_REAL_CLUSTER_TEST"
+          ],
+          "required_tools": [
+            "helm",
+            "kubectl"
+          ],
+          "safe_without_gate": true,
+          "skipped_without_gate": true
+        }
+      },
+      "gate": "OPS_REAL_CLUSTER_TEST",
+      "generated_steps": [
+        {
+          "command": [
+            "helm",
+            "template",
+            "insightdesk",
+            "F:\\项目\\AI智能体\\deploy\\helm\\insightdesk"
+          ],
+          "id": "helm_template",
+          "ok": true
+        },
+        {
+          "command": [
+            "kubectl",
+            "config",
+            "current-context"
+          ],
+          "id": "kubectl_current_context",
+          "ok": true
+        },
+        {
+          "command": [
+            "kubectl",
+            "get",
+            "namespace",
+            "default"
+          ],
+          "id": "kubectl_namespace_probe",
+          "ok": true
+        },
+        {
+          "command": [
+            "kubectl",
+            "get",
+            "deployment",
+            "insightdesk-api",
+            "-n",
+            "default"
+          ],
+          "id": "kubectl_api_deployment_probe",
+          "ok": true
+        },
+        {
+          "command": [
+            "kubectl",
+            "rollout",
+            "status",
+            "deployment/insightdesk-api",
+            "-n",
+            "default",
+            "--timeout=120s"
+          ],
+          "id": "kubectl_api_rollout_status",
+          "ok": true
+        }
+      ],
+      "id": "k8s_rollout_drill",
+      "namespace": "default",
+      "ok": true,
+      "paths": {
+        "archive_dir": "runtime\\ops-readiness\\k8s\\archive",
+        "archive_path": "runtime\\ops-readiness\\k8s\\archive\\k8s_rollout_drill-20260505-195839.json",
+        "history_path": "runtime\\ops-readiness\\k8s\\history.json",
+        "manifest_path": "runtime\\ops-readiness\\k8s\\evidence-manifest.json",
+        "report_path": "runtime\\ops-readiness\\k8s\\k8s-real-cluster-probe.json"
+      },
+      "recorded_at": 1777982319.0983663,
+      "release": "insightdesk",
+      "required_evidence": [
+        "real_cluster_contract",
+        "config_reload_contract",
+        "hot_reload_checklist",
+        "graceful_shutdown_contract",
+        "graceful_shutdown_checklist",
+        "helm_template",
+        "kubectl_current_context",
+        "kubectl_namespace_probe",
+        "kubectl_api_deployment_probe",
+        "kubectl_api_rollout_status",
+        "json_report",
+        "history_entry",
+        "archive_entry"
+      ],
+      "skipped": false,
+      "status": "ready"
+    }
+  },
+  "required_evidence": [
+    "real_cluster_contract",
+    "config_reload_contract",
+    "hot_reload_checklist",
+    "graceful_shutdown_contract",
+    "graceful_shutdown_checklist",
+    "helm_template",
+    "kubectl_current_context",
+    "kubectl_namespace_probe",
+    "kubectl_api_deployment_probe",
+    "kubectl_api_rollout_status",
+    "json_report",
+    "history_entry",
+    "archive_entry"
+  ],
+  "skipped": false,
+  "status": "ready"
+}

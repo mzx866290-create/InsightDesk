@@ -1,139 +1,69 @@
-import asyncio
-import logging
-import time
-import uuid
-from typing import Any, Awaitable, Callable, Optional
+"""Compatibility re-export for ``backend.helpers.task_runtime_helpers``."""
 
-from backend.api_task_store import TaskRecord, TaskStatus
+from backend.helpers.task_runtime_helpers import (
+    attach_current_kb_status,
+    enqueue_task,
+    list_tasks_payload,
+    task_record_payload,
+)
+from backend.tasks.registry import (
+    DEFAULT_ARQ_PENDING_STALE_SECONDS,
+    DEFAULT_ARQ_QUEUE_NAME,
+    DEFAULT_ARQ_KEEP_RESULT_SECONDS,
+    DEFAULT_ARQ_RUNNING_STALE_SECONDS,
+    DEFAULT_ARQ_QUEUE_WARNING_LENGTH,
+    DEFAULT_ARQ_WORKER_MAX_JOBS,
+    arq_pending_stale_seconds_from_env,
+    arq_keep_result_from_env,
+    arq_queue_health_payload,
+    arq_queue_name_from_env,
+    arq_queue_warning_length_from_env,
+    arq_retry_defer_seconds_from_env,
+    arq_retry_runtime_settings_from_env,
+    arq_running_stale_seconds_from_env,
+    arq_runtime_config_payload,
+    arq_should_retry_failed_task,
+    arq_should_start_task_record,
+    arq_task_stale_thresholds_from_env,
+    arq_worker_drain_settings_from_env,
+    arq_worker_runtime_settings_from_env,
+    arq_worker_max_jobs_from_env,
+    enqueue_arq_task,
+    normalize_task_backend,
+    task_stale_health_payload,
+    task_stale_warning_payloads,
+    task_backend_from_env,
+)
 
-
-def task_record_payload(
-    record: TaskRecord,
-    *,
-    params_override: Optional[dict[str, Any]] = None,
-) -> dict[str, Any]:
-    return {
-        "task_id": record.task_id,
-        "status": record.status,
-        "task_type": record.task_type,
-        "progress": record.progress,
-        "result": record.result,
-        "error": record.error,
-        "params": params_override if params_override is not None else record.params,
-        "session_id": record.session_id,
-        "created_at": record.created_at,
-        "updated_at": record.updated_at,
-    }
-
-
-def attach_current_kb_status(
-    payload: dict[str, Any],
-    *,
-    vector_store_path: str,
-    lookup_task: Callable[[str, str], TaskRecord | None],
-) -> dict[str, Any]:
-    attachments = list(payload.get("attachments") or [])
-    summary = dict(payload.get("summary") or {})
-    indexed_count = 0
-    indexing_count = 0
-
-    for attachment in attachments:
-        status = "idle"
-        task_id = None
-        updated_at = None
-        in_current_kb = False
-
-        if str(attachment.get("kind") or "").strip() == "file":
-            task = lookup_task(
-                str(attachment.get("attachment_id") or "").strip(),
-                vector_store_path,
-            )
-            if task is not None:
-                status = task.status.value
-                task_id = task.task_id
-                updated_at = task.updated_at
-                in_current_kb = task.status == TaskStatus.COMPLETED
-                if in_current_kb:
-                    indexed_count += 1
-                elif task.status in {TaskStatus.PENDING, TaskStatus.RUNNING}:
-                    indexing_count += 1
-
-        attachment["current_vector_store_path"] = vector_store_path
-        attachment["promotion_status"] = status
-        attachment["promotion_task_id"] = task_id
-        attachment["promotion_updated_at"] = updated_at
-        attachment["is_in_current_kb"] = in_current_kb
-
-    summary["indexed_in_current_kb_count"] = indexed_count
-    summary["indexing_in_current_kb_count"] = indexing_count
-    return {
-        "attachments": attachments,
-        "summary": summary,
-        "current_vector_store_path": vector_store_path,
-    }
-
-
-async def enqueue_task(
-    tasks: dict[str, TaskRecord],
-    tasks_lock: asyncio.Lock,
-    *,
-    task_type: str,
-    params: dict[str, Any],
-    session_id: Optional[str],
-    prune_in_memory: Callable[[float | None], None],
-    persist_record: Callable[[TaskRecord], None],
-    prune_persisted: Callable[[], None],
-    run_task: Callable[[TaskRecord], Awaitable[None]],
-    spawn_background_task: Callable[[Awaitable[None]], Any],
-    logger: logging.Logger,
-    on_record_created: Optional[Callable[[TaskRecord], None]] = None,
-) -> dict[str, Any]:
-    task_id = str(uuid.uuid4())
-    now = time.time()
-    record = TaskRecord(
-        task_id=task_id,
-        task_type=task_type,
-        status=TaskStatus.PENDING,
-        params=params,
-        session_id=session_id,
-        created_at=now,
-        updated_at=now,
-    )
-    async with tasks_lock:
-        tasks[task_id] = record
-        prune_in_memory(now)
-    persist_record(record)
-    prune_persisted()
-    if on_record_created is not None:
-        try:
-            on_record_created(record)
-        except Exception:
-            logger.exception("task_id=%s on_record_created callback failed", task_id)
-
-    spawn_background_task(run_task(record))
-    logger.info("task_id=%s task_type=%s created", task_id, task_type)
-
-    payload = task_record_payload(record)
-    return {
-        "task_id": payload["task_id"],
-        "status": payload["status"],
-        "task_type": payload["task_type"],
-        "params": payload["params"],
-        "session_id": payload["session_id"],
-        "created_at": payload["created_at"],
-    }
-
-
-def list_tasks_payload(
-    *,
-    in_memory_tasks: list[TaskRecord],
-    persisted_tasks: list[TaskRecord],
-    limit: int,
-) -> dict[str, Any]:
-    all_tasks_by_id = {task.task_id: task for task in persisted_tasks}
-    for task in in_memory_tasks:
-        all_tasks_by_id[task.task_id] = task
-
-    all_tasks = list(all_tasks_by_id.values())
-    all_tasks.sort(key=lambda t: (t.updated_at, t.created_at), reverse=True)
-    return {"tasks": [task_record_payload(task) for task in all_tasks[:limit]]}
+__all__ = [
+    "DEFAULT_ARQ_PENDING_STALE_SECONDS",
+    "DEFAULT_ARQ_QUEUE_NAME",
+    "DEFAULT_ARQ_KEEP_RESULT_SECONDS",
+    "DEFAULT_ARQ_QUEUE_WARNING_LENGTH",
+    "DEFAULT_ARQ_RUNNING_STALE_SECONDS",
+    "DEFAULT_ARQ_WORKER_MAX_JOBS",
+    "attach_current_kb_status",
+    "arq_pending_stale_seconds_from_env",
+    "arq_keep_result_from_env",
+    "arq_queue_health_payload",
+    "arq_queue_name_from_env",
+    "arq_queue_warning_length_from_env",
+    "arq_retry_defer_seconds_from_env",
+    "arq_retry_runtime_settings_from_env",
+    "arq_running_stale_seconds_from_env",
+    "arq_runtime_config_payload",
+    "arq_should_retry_failed_task",
+    "arq_should_start_task_record",
+    "arq_task_stale_thresholds_from_env",
+    "arq_worker_drain_settings_from_env",
+    "arq_worker_runtime_settings_from_env",
+    "arq_worker_max_jobs_from_env",
+    "enqueue_arq_task",
+    "enqueue_task",
+    "list_tasks_payload",
+    "normalize_task_backend",
+    "task_stale_health_payload",
+    "task_stale_warning_payloads",
+    "task_backend_from_env",
+    "task_record_payload",
+]

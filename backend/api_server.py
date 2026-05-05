@@ -4,8 +4,10 @@ FastAPI 后端 API 服务
 """
 
 import asyncio
+import base64
 from dataclasses import dataclass
 import hashlib
+import httpx
 import importlib
 import ipaddress
 import json
@@ -14,13 +16,12 @@ import os
 from pathlib import Path
 import re
 import secrets
-import shutil
 import sys
 import threading
 import time
 from urllib.parse import quote
 import uuid
-from typing import Any, AsyncGenerator, Literal, Optional
+from typing import Any, AsyncGenerator, Optional
 
 BACKEND_DIR = Path(__file__).resolve().parent
 if str(BACKEND_DIR) not in sys.path:
@@ -66,34 +67,190 @@ for _module_alias in (
 ):
     _alias_backend_module(_module_alias)
 
-import httpx
-from backend.api_config_store import SQLiteAppConfigStore
-from backend.api_chat_routes import build_chat_router
-from backend.api_content_routes import build_content_router
-from backend.api_kb_routes import build_kb_router
-from backend.api_operations_routes import build_operations_router
-from backend.api_prompt_routes import build_prompt_router
-from backend.api_session_routes import build_session_router
-from backend.api_security_helpers import (
+from backend.core import session_summary_runtime
+from backend.core import task_runtime
+from backend.core import security_runtime
+from backend.core.config_runtime import (
+    cloud_model_api_key_config_key,
+    delete_cloud_model_api_key,
+    normalize_cloud_model_api_key_ref,
+    resolve_model_api_key,
+    stored_config_value,
+    sync_runtime_secret_from_store,
+    upsert_cloud_model_api_key,
+    validate_tavily_api_key,
+)
+from backend.core.static_assets import mount_frontend_static
+from backend.core.router_registration import (
+    register_core_routers,
+    register_deferred_routers,
+)
+from backend.core.runtime_metrics import (
+    new_runtime_metrics_state,
+    record_runtime_error,
+    record_runtime_request,
+    runtime_llm_metrics_payload,
+    runtime_operations_summary_payload,
+    runtime_request_metrics_payload,
+    runtime_status_class,
+)
+from backend.helpers.security_helpers import (
     auth_capabilities_for_role as _build_auth_capabilities_for_role,
     build_auth_token_catalog_payload as _build_auth_token_catalog_payload,
     build_auth_whoami_payload,
+    build_role_permission_matrix_payload as _build_role_permission_matrix_payload,
+    build_security_audit_action_catalog_payload as _build_security_audit_action_catalog_payload,
+    build_security_audit_summary_payload as _build_security_audit_summary_payload,
     build_security_status_payload as _build_security_status_payload,
+    build_sso_config_payload as _build_sso_config_payload,
+    build_sso_login_payload as _build_sso_login_payload,
+    security_audit_category_for_action as _security_audit_category_for_action,
 )
-from backend.api_security_routes import build_security_router
-from artifact_service import (
+from backend.helpers.identity_helpers import sync_external_identity as _sync_external_identity
+from backend.helpers import delete_kb_directory
+from backend.helpers import (
+    ChatRouteRuntime,
+    build_parallel_agent_streams,
+    build_share_url,
+    build_single_agent_stream,
+    create_session_record,
+    decode_share_token,
+    delete_session_memory_payload,
+    encode_share_token,
+    kb_health_payload,
+    knowledge_bases_payload,
+    load_integrator_connectors,
+    open_shared_resource_payload,
+    pin_session_memory_payload,
+    prepare_attachment_promotion,
+    prepare_chat_route_runtime,
+    reorder_sessions_payload,
+    session_memory_payload,
+    session_memory_updates,
+    session_attachments_payload,
+    session_update_requested,
+    sse_streaming_response,
+    summarize_session_memory_payload,
+    update_session_memory_payload,
+    workspaces_payload,
+)
+from backend.schemas.api_models import (
+    ModelConfig,
+    ImageInput,
+    FileInput,
+    ChatRequest,
+    SingleChatRequest,
+    CreateSessionRequest,
+    UpdateSessionRequest,
+    ReorderSessionsRequest,
+    CreateBookmarkRequest,
+    ShareLinkResponse,
+    RevokeShareLinkResponse,
+    ShareLinkAuditListResponse,
+    SecurityStatusResponse,
+    AuthWhoAmIResponse,
+    AuthTokenCatalogResponse,
+    SsoConfigResponse,
+    SsoLoginResponse,
+    SsoCallbackResponse,
+    SecurityAuditEventListResponse,
+    SecurityAuditCleanupResponse,
+    SecurityAuditActionCatalogResponse,
+    SecurityAuditSummaryResponse,
+    SecurityAuditSiemExportResponse,
+    SecurityAuditAggregateReportResponse,
+    SecurityAuditArchivePolicyResponse,
+    SecurityAuditLegalHoldResponse,
+    RuntimeOperationsResponse,
+    CreateWorkspaceRequest,
+    UpdateWorkspaceRequest,
+    SetMessageFeedbackRequest,
+    TruncateSessionMessagesRequest,
+    ImportSessionMessagesRequest,
+    SetRetrievalFeedbackRequest,
+    PinSessionMemoryRequest,
+    UpdateSessionMemoryRequest,
+    GenerateReportRequest,
+    CreateDeckRequest,
+    GenerateArtifactRequest,
+    UpdateArtifactRequest,
+    UpdateDeckRequest,
+    RegenerateDeckSlideRequest,
+    UpsertOrganizationRequest,
+    UpsertUserRequest,
+    SetMembershipRequest,
+    SyncExternalIdentityRequest,
+    OrganizationResponse,
+    UserResponse,
+    MembershipResponse,
+    IdentityCatalogResponse,
+    SyncExternalIdentityResponse,
+    UpsertResourceGrantRequest,
+    DeleteResourceGrantRequest,
+    ResourceGrantResponse,
+    ResourceGrantListResponse,
+    ResourceAccessResponse,
+    RolePermissionMatrixResponse,
+    CreateTaskRequest,
+    CreateMultiAgentWorkflowTaskRequest,
+    ApprovalPolicyRequest,
+    ApprovalTaskDecisionRequest,
+)
+from backend.routes import (
+    build_access_router,
+    build_chat_router,
+    build_content_router,
+    build_identity_router,
+    build_kb_router,
+    build_operations_router,
+    build_prompt_router,
+    build_security_router,
+    build_session_router,
+)
+from backend.routes.operations_routes import run_integrator_scheduler_tick
+from backend.stores.factory import (
+    create_app_config_store,
+    create_artifact_store,
+    create_deck_store,
+    create_identity_store,
+    create_resource_access_store,
+    create_security_audit_store,
+    create_share_link_store,
+    create_sso_session_store,
+    create_task_store,
+)
+from backend.stores import (
+    SQLiteAppConfigStore,
+    SQLiteSecurityAuditStore,
+    SQLiteShareLinkStore,
+    SQLiteTaskStore,
+    TaskRecord,
+    TaskStatus,
+)
+from backend.services.artifact_service import (
     SQLiteArtifactStore,
     artifact_export_formats,
     build_deck_artifact,
     build_report_artifact,
+    build_research_archive_artifact,
     sync_deck_artifact,
 )
 from agent_mcp_helpers import (
+    add_mcp_approved_connector,
+    approve_runtime_mcp_connector as _approve_runtime_mcp_connector,
+    clear_runtime_mcp_approved_connectors as _clear_runtime_mcp_approved_connectors,
+    current_mcp_approved_connectors_payload as _current_mcp_approved_connectors_payload,
     default_mcp_server_names,
+    get_mcp_runtime_health_history as _get_mcp_runtime_health_history,
     list_mcp_server_catalog,
+    list_mcp_server_runtime_health as _list_mcp_server_runtime_health,
+    normalize_mcp_approved_connectors,
     normalize_mcp_server_names,
+    remove_mcp_approved_connector,
+    revoke_runtime_mcp_connector as _revoke_runtime_mcp_connector,
+    set_runtime_mcp_approved_connectors as _set_runtime_mcp_approved_connectors,
 )
-from api_session_helpers import (
+from backend.helpers.session_helpers import (
     build_answer_group_review_payload as _build_answer_group_review_payload,
     build_session_messages_payload as _build_session_messages_payload,
     collect_session_attachments as _collect_session_attachments,
@@ -101,11 +258,7 @@ from api_session_helpers import (
     render_shared_deck_html as _render_shared_deck_html,
     render_shared_session_html as _render_shared_session_html,
 )
-from api_attachment_route_helpers import (
-    prepare_attachment_promotion,
-    session_attachments_payload,
-)
-from api_chat_input_helpers import (
+from backend.helpers.chat_input_helpers import (
     build_message_with_files as _build_message_with_files_impl,
     build_user_input as _build_user_input_impl,
     chat_file_suffix as _chat_file_suffix_impl,
@@ -116,11 +269,11 @@ from api_chat_input_helpers import (
     user_input_has_images as _user_input_has_images_impl,
     validate_chat_payload as _validate_chat_payload_impl,
 )
-from api_chat_file_helpers import (
+from backend.helpers.chat_file_helpers import (
     ChatFileConfig,
     prepare_chat_files as _prepare_chat_files_impl,
 )
-from api_agent_stream_helpers import (
+from backend.helpers.agent_stream_helpers import (
     dashboard_prompt_excerpt,
     fail_dashboard_task,
     finalize_dashboard_task,
@@ -128,19 +281,7 @@ from api_agent_stream_helpers import (
     stream_agent_item,
     task_created_event,
 )
-from api_chat_route_helpers import (
-    build_parallel_agent_streams,
-    build_single_agent_stream,
-    prepare_chat_route_runtime,
-    sse_streaming_response,
-)
-from api_workspace_session_helpers import (
-    create_session_record,
-    reorder_sessions_payload,
-    session_update_requested,
-    workspaces_payload,
-)
-from api_document_helpers import (
+from backend.helpers.document_helpers import (
     build_chat_report_title,
     build_upload_documents_task_record,
     cleanup_temp_paths,
@@ -151,7 +292,7 @@ from api_document_helpers import (
     stage_upload_files_with_limits,
     upload_documents_response,
 )
-from api_deck_report_helpers import (
+from backend.helpers.deck_report_helpers import (
     apply_deck_update,
     build_create_deck_kwargs,
     build_regenerate_deck_kwargs,
@@ -162,7 +303,7 @@ from api_deck_report_helpers import (
     report_download_payload,
     report_markdown_payload,
 )
-from api_chat_stream_helpers import (
+from backend.helpers.chat_stream_helpers import (
     answer_chunks,
     build_agent_config_payload,
     done_event as _done_event,
@@ -170,7 +311,7 @@ from api_chat_stream_helpers import (
     stream_parallel_sse,
     stream_single_sse,
 )
-from api_session_memory_helpers import (
+from backend.helpers.session_memory_helpers import (
     build_phase_summary_content,
     build_phase_summary_llm_prompt,
     covered_turns_from_summary,
@@ -181,40 +322,19 @@ from api_session_memory_helpers import (
     summary_llm_timeout_seconds,
     summary_turns,
 )
-from api_session_memory_route_helpers import (
-    delete_session_memory_payload,
-    pin_session_memory_payload,
-    session_memory_payload,
-    session_memory_updates,
-    summarize_session_memory_payload,
-    update_session_memory_payload,
-)
-from backend.api_security_audit_store import SQLiteSecurityAuditStore
-from api_kb_helpers import (
+from backend.helpers.kb_helpers import (
     filter_kb_chunks,
     kb_collect_chunks as _kb_collect_chunks,
     kb_docstore_dict as _kb_docstore_dict,
     kb_rebuild_from_documents as _kb_rebuild_from_documents,
     kb_safe_metadata as _kb_safe_metadata,
 )
-from api_kb_delete_helpers import delete_kb_directory
-from api_kb_management_helpers import (
-    kb_health_payload,
-    knowledge_bases_payload,
-)
-from api_kb_chunk_route_helpers import (
+from backend.helpers.kb_chunk_route_helpers import (
     delete_kb_chunk_payload,
     list_kb_chunks_payload,
     update_kb_chunk_payload,
 )
-from api_share_helpers import (
-    build_share_url as _build_share_url,
-    decode_share_token as _decode_share_token,
-    encode_share_token as _encode_share_token,
-    SQLiteShareLinkStore,
-)
-from api_shared_resource_helpers import open_shared_resource_payload
-from api_task_helpers import (
+from backend.helpers.task_helpers import (
     contains_dashboard_card as _contains_dashboard_card,
     create_inline_task_record,
     prune_task_records,
@@ -223,25 +343,30 @@ from api_task_helpers import (
     summarize_dashboard_task_error as _summarize_dashboard_task_error,
     summarize_dashboard_task_result as _summarize_dashboard_task_result,
 )
-from api_task_runtime_helpers import (
+from backend.helpers.task_runtime_helpers import (
+    arq_runtime_config_for_tasks,
     attach_current_kb_status,
     enqueue_task,
     list_tasks_payload,
+    task_runtime_health_summary,
     task_record_payload,
 )
-from api_task_execution_helpers import (
+from backend.tasks.health import arq_queue_health_payload, task_stale_health_payload
+from backend.helpers.task_execution_helpers import (
+    persist_multi_agent_workflow_task_placeholder,
+    persist_multi_agent_workflow_task_result,
     persist_web_research_task_placeholder,
     persist_web_research_task_result,
     run_analyze_knowledge_base_task,
     run_generate_deck_task,
+    run_multi_agent_workflow_task,
     run_generate_report_task,
     run_placeholder_task,
     run_promote_attachment_to_kb_task,
     run_upload_documents_task,
     run_web_research_task,
 )
-from api_task_store import SQLiteTaskStore, TaskRecord, TaskStatus
-from deck_service import (
+from backend.services.deck_service import (
     DeckSlide,
     SQLiteDeckStore,
     build_deck,
@@ -258,7 +383,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 load_dotenv()
 
@@ -266,123 +391,304 @@ _log_format = configure_logging()
 logger = logging.getLogger(__name__)
 logger.info("日志格式: %s", _log_format)
 
-_app_config_store = SQLiteAppConfigStore()
+_app_config_store = create_app_config_store()
+MCP_APPROVED_CONNECTORS_CONFIG_KEY = "mcp_approved_connectors"
+MCP_RUNTIME_HEALTH_HISTORY_CONFIG_KEY = "mcp_runtime_health_history"
 
 
 def _get_app_config_store() -> SQLiteAppConfigStore:
     return _app_config_store
 
 
-def _stored_config_value(key: str, default: str = "") -> str:
+def _mcp_runtime_health_history_limit(raw_limit: Any = None) -> int:
     try:
-        return _get_app_config_store().get_value(key, default)
+        limit = int(raw_limit or os.getenv("MCP_RUNTIME_HEALTH_HISTORY_LIMIT") or 20)
+    except (TypeError, ValueError):
+        limit = 20
+    return min(200, max(1, limit))
+
+
+def _sanitize_mcp_runtime_health_history_item(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+
+    summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
+    servers = item.get("servers") if isinstance(item.get("servers"), list) else []
+    try:
+        timestamp = float(item.get("timestamp") or 0.0)
+    except (TypeError, ValueError):
+        timestamp = time.time()
+
+    return {
+        "timestamp": timestamp,
+        "status": str(item.get("status") or "unknown"),
+        "summary": {
+            "total": int(summary.get("total", 0) or 0),
+            "healthy": int(summary.get("healthy", 0) or 0),
+            "unhealthy": int(summary.get("unhealthy", 0) or 0),
+            "tool_count": int(summary.get("tool_count", 0) or 0),
+            "status_counts": dict(summary.get("status_counts") or {}),
+            "alert_count": int(summary.get("alert_count", 0) or 0),
+            "unhealthy_connectors": list(summary.get("unhealthy_connectors") or []),
+            "slow_connectors": list(summary.get("slow_connectors") or []),
+        },
+        "servers": [
+            {
+                "name": str(server.get("name") or ""),
+                "status": str(server.get("status") or "unknown"),
+                "healthy": bool(server.get("healthy")),
+                "tool_count": int(server.get("tool_count", 0) or 0),
+                "duration_ms": float(server.get("duration_ms", 0.0) or 0.0),
+                "error": str(server.get("error") or "").strip() or None,
+            }
+            for server in servers
+            if isinstance(server, dict)
+        ],
+    }
+
+
+def _stored_mcp_runtime_health_history(limit: Any = None) -> list[dict[str, Any]]:
+    safe_limit = _mcp_runtime_health_history_limit(limit)
+    raw_value = _get_app_config_store().get_value(
+        MCP_RUNTIME_HEALTH_HISTORY_CONFIG_KEY,
+        "[]",
+    )
+    try:
+        decoded = json.loads(raw_value or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        decoded = []
+    if not isinstance(decoded, list):
+        decoded = []
+
+    history: list[dict[str, Any]] = []
+    for item in decoded:
+        sanitized = _sanitize_mcp_runtime_health_history_item(item)
+        if sanitized is not None:
+            history.append(sanitized)
+        if len(history) >= safe_limit:
+            break
+    return history
+
+
+def _persist_mcp_runtime_health_history_item(
+    snapshot: dict[str, Any],
+    history_limit: int,
+) -> None:
+    sanitized = _sanitize_mcp_runtime_health_history_item(snapshot)
+    if sanitized is None:
+        return
+    safe_limit = _mcp_runtime_health_history_limit(history_limit)
+    history = [sanitized, *_stored_mcp_runtime_health_history(safe_limit)]
+    history = history[:safe_limit]
+    _get_app_config_store().set(
+        MCP_RUNTIME_HEALTH_HISTORY_CONFIG_KEY,
+        json.dumps(history, ensure_ascii=False, separators=(",", ":")),
+    )
+
+
+def get_mcp_runtime_health_history(limit: Any = 10) -> dict[str, Any]:
+    safe_limit = _mcp_runtime_health_history_limit(limit)
+    try:
+        history = _stored_mcp_runtime_health_history(safe_limit)
+        persistence_enabled = True
     except Exception:
-        logger.exception("Failed to read persisted app config key=%s", key)
-        return str(default or "")
+        logger.exception("Failed to read persisted MCP runtime-health history")
+        history = _get_mcp_runtime_health_history(safe_limit)
+        persistence_enabled = False
+    return {
+        "history": history,
+        "history_limit": safe_limit,
+        "persistence": {
+            "enabled": persistence_enabled,
+            "config_key": MCP_RUNTIME_HEALTH_HISTORY_CONFIG_KEY,
+        },
+    }
+
+
+async def list_mcp_server_runtime_health(**kwargs: Any) -> dict[str, Any]:
+    kwargs.setdefault("history_recorder", _persist_mcp_runtime_health_history_item)
+    kwargs.setdefault("history_reader", _stored_mcp_runtime_health_history)
+    return await _list_mcp_server_runtime_health(**kwargs)
+
+
+def _stored_mcp_approved_connectors() -> list[str]:
+    raw_value = _get_app_config_store().get_value(
+        MCP_APPROVED_CONNECTORS_CONFIG_KEY,
+        "",
+    )
+    return normalize_mcp_approved_connectors(raw_value)
+
+
+def _persist_mcp_approved_connectors(connector_names: Any) -> list[str]:
+    names = normalize_mcp_approved_connectors(connector_names)
+    if names:
+        _get_app_config_store().set(
+            MCP_APPROVED_CONNECTORS_CONFIG_KEY,
+            ",".join(names),
+        )
+    else:
+        _get_app_config_store().delete(MCP_APPROVED_CONNECTORS_CONFIG_KEY)
+    _set_runtime_mcp_approved_connectors(names)
+    return names
+
+
+def _hydrate_runtime_mcp_approved_connectors_from_store() -> list[str]:
+    names = _stored_mcp_approved_connectors()
+    _set_runtime_mcp_approved_connectors(names)
+    return names
+
+
+def _mcp_approvals_payload_with_persistence() -> dict[str, Any]:
+    persisted = _hydrate_runtime_mcp_approved_connectors_from_store()
+    payload = _current_mcp_approved_connectors_payload()
+    payload["persisted_connectors"] = persisted
+    payload["persistence"] = {
+        "enabled": True,
+        "config_key": MCP_APPROVED_CONNECTORS_CONFIG_KEY,
+    }
+    return payload
+
+
+def current_mcp_approved_connectors_payload() -> dict[str, Any]:
+    return _mcp_approvals_payload_with_persistence()
+
+
+def set_runtime_mcp_approved_connectors(raw_value: Any) -> list[str]:
+    return _persist_mcp_approved_connectors(raw_value)
+
+
+def clear_runtime_mcp_approved_connectors() -> list[str]:
+    return _persist_mcp_approved_connectors([])
+
+
+def approve_runtime_mcp_connector(connector_name: Any) -> dict[str, Any]:
+    name = str(connector_name or "").strip()
+    if not name:
+        raise ValueError("connector name is required")
+    before = _stored_mcp_approved_connectors()
+    updated = _persist_mcp_approved_connectors(
+        add_mcp_approved_connector(before, name)
+    )
+    payload = _mcp_approvals_payload_with_persistence()
+    payload["connector"] = {
+        "name": name,
+        "changed": updated != before,
+        "runtime_approved": name in payload["runtime_connectors"]
+        or "*" in payload["runtime_connectors"],
+        "effective_approved": name in payload["approved_connectors"]
+        or "*" in payload["approved_connectors"],
+    }
+    return payload
+
+
+def revoke_runtime_mcp_connector(connector_name: Any) -> dict[str, Any]:
+    name = str(connector_name or "").strip()
+    if not name:
+        raise ValueError("connector name is required")
+    before = _stored_mcp_approved_connectors()
+    updated = _persist_mcp_approved_connectors(
+        remove_mcp_approved_connector(before, name)
+    )
+    payload = _mcp_approvals_payload_with_persistence()
+    payload["connector"] = {
+        "name": name,
+        "removed": updated != before,
+        "runtime_approved": name in payload["runtime_connectors"]
+        or "*" in payload["runtime_connectors"],
+        "effective_approved": name in payload["approved_connectors"]
+        or "*" in payload["approved_connectors"],
+    }
+    return payload
+
+
+try:
+    _hydrate_runtime_mcp_approved_connectors_from_store()
+except Exception:
+    logger.exception("Failed to hydrate persisted MCP connector approvals")
+
+
+def _get_identity_store():
+    return _identity_store
+
+
+def _get_resource_access_store():
+    return _resource_access_store
+
+
+def _stored_config_value(key: str, default: str = "") -> str:
+    return stored_config_value(_get_app_config_store(), logger, key, default)
+
+
+def _stored_sso_config_value(field: str) -> str | None:
+    spec = _SSO_CONFIG_FIELDS.get(field)
+    if spec is None:
+        return None
+    _, _, config_key, _ = spec
+    try:
+        record = _get_app_config_store().get(config_key)
+    except Exception:
+        logger.exception("Failed to read persisted SSO config field=%s", field)
+        return None
+    return record.value if record is not None else None
+
+
+def _effective_sso_config_value(field: str) -> str:
+    spec = _SSO_CONFIG_FIELDS[field]
+    attr_name, _, _, default = spec
+    current_value = str(globals().get(attr_name, default) or "").strip()
+    initial_value = _INITIAL_SSO_CONFIG_VALUES.get(attr_name, str(default)).strip()
+    if current_value != initial_value:
+        return current_value
+    stored_value = _stored_sso_config_value(field)
+    if stored_value is not None:
+        return str(stored_value or "").strip()
+    return current_value
+
+
+def _effective_sso_session_ttl_seconds() -> int:
+    raw_value = _effective_sso_config_value("session_ttl_seconds")
+    try:
+        return max(300, int(raw_value or str(8 * 60 * 60)))
+    except (TypeError, ValueError):
+        return 8 * 60 * 60
 
 
 def _sync_runtime_secret_from_store(env_name: str, config_key: str) -> str:
-    persisted_value = _stored_config_value(config_key, "")
-    if persisted_value:
-        os.environ[env_name] = persisted_value
-        return persisted_value
-    return str(os.getenv(env_name) or "").strip()
-
-
-_CLOUD_MODEL_API_KEY_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{5,127}$")
+    return sync_runtime_secret_from_store(
+        _get_app_config_store(),
+        logger,
+        env_name,
+        config_key,
+    )
 
 
 def _normalize_cloud_model_api_key_ref(value: Any, *, allow_empty: bool = False) -> str:
-    normalized = str(value or "").strip()
-    if not normalized:
-        if allow_empty:
-            return ""
-        raise HTTPException(status_code=400, detail="Cloud model API key ref 不能为空。")
-    if not _CLOUD_MODEL_API_KEY_REF_PATTERN.fullmatch(normalized):
-        raise HTTPException(status_code=400, detail="Cloud model API key ref 格式无效。")
-    return normalized
+    return normalize_cloud_model_api_key_ref(value, allow_empty=allow_empty)
 
 
 def _cloud_model_api_key_config_key(api_key_ref: str) -> str:
-    normalized_ref = _normalize_cloud_model_api_key_ref(api_key_ref)
-    return f"cloud_model_api_key:{normalized_ref}"
+    return cloud_model_api_key_config_key(api_key_ref)
 
 
 def _upsert_cloud_model_api_key(api_key_ref: str | None, api_key: str) -> str:
-    normalized_api_key = str(api_key or "").strip()
-    if not normalized_api_key:
-        raise HTTPException(status_code=400, detail="Cloud model API Key 不能为空。")
-
-    normalized_ref = (
-        _normalize_cloud_model_api_key_ref(api_key_ref, allow_empty=True)
-        if api_key_ref is not None
-        else ""
-    )
-    if not normalized_ref:
-        normalized_ref = f"cmk-{uuid.uuid4().hex}"
-
-    _get_app_config_store().set(
-        _cloud_model_api_key_config_key(normalized_ref),
-        normalized_api_key,
-    )
-    return normalized_ref
+    return upsert_cloud_model_api_key(_get_app_config_store(), api_key_ref, api_key)
 
 
 def _delete_cloud_model_api_key(api_key_ref: str) -> bool:
-    return _get_app_config_store().delete(_cloud_model_api_key_config_key(api_key_ref))
+    return delete_cloud_model_api_key(_get_app_config_store(), api_key_ref)
 
 
 def _resolve_model_api_key(mc: "ModelConfig | dict[str, Any]") -> str:
-    data = _model_config_payload(mc)
-    direct_api_key = str(data.get("api_key") or "").strip()
-    if direct_api_key:
-        return direct_api_key
-
-    api_key_ref = str(data.get("api_key_ref") or "").strip()
-    if not api_key_ref:
-        return ""
-
-    try:
-        return _stored_config_value(_cloud_model_api_key_config_key(api_key_ref), "")
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Failed to resolve cloud model API key ref=%s", api_key_ref)
-        return ""
+    return resolve_model_api_key(
+        _get_app_config_store(),
+        logger,
+        mc,
+        model_config_payload=_model_config_payload,
+    )
 
 
 async def _validate_tavily_api_key(api_key: str) -> None:
-    normalized_key = str(api_key or "").strip()
-    if not normalized_key:
-        raise HTTPException(status_code=400, detail="Tavily API Key 不能为空。")
-
-    payload = {
-        "api_key": normalized_key,
-        "query": "OpenAI",
-        "max_results": 1,
-        "search_depth": "basic",
-        "include_answer": False,
-        "include_raw_content": False,
-    }
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post("https://api.tavily.com/search", json=payload)
-    except httpx.TimeoutException as exc:
-        raise HTTPException(status_code=502, detail="Tavily API Key 校验超时，请稍后重试。") from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Tavily API Key 校验失败，无法连接 Tavily：{exc}",
-        ) from exc
-
-    if response.status_code == 401:
-        raise HTTPException(status_code=400, detail="Tavily API Key 无效，保存失败。")
-    if response.status_code >= 400:
-        detail = response.text.strip() or f"HTTP {response.status_code}"
-        raise HTTPException(
-            status_code=502,
-            detail=f"Tavily API Key 校验失败：{detail}",
-        )
+    await validate_tavily_api_key(api_key)
 
 
 _sync_runtime_secret_from_store("TAVILY_API_KEY", "tavily_api_key")
@@ -409,33 +715,69 @@ def _env_int_setting(
             source = "invalid_env"
 
     if minimum is not None and value < minimum:
-        logger.warning("%s=%r is below minimum=%s; using %s", name, raw, minimum, minimum)
+        logger.warning(
+            "%s=%r is below minimum=%s; using %s", name, raw, minimum, minimum
+        )
         value = int(minimum)
         source = f"{source}_clamped"
 
     if maximum is not None and value > maximum:
-        logger.warning("%s=%r is above maximum=%s; using %s", name, raw, maximum, maximum)
+        logger.warning(
+            "%s=%r is above maximum=%s; using %s", name, raw, maximum, maximum
+        )
         value = int(maximum)
         source = f"{source}_clamped"
 
     return int(value), source
 
+
+def _env_bool_setting(name: str, default: bool) -> tuple[bool, str]:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default), "default"
+
+    normalized = str(raw).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True, "env"
+    if normalized in {"0", "false", "no", "off"}:
+        return False, "env"
+
+    logger.warning("Invalid %s=%r; using default=%s", name, raw, default)
+    return bool(default), "invalid_env"
+
+
+def _integrator_scheduler_config_from_env() -> dict[str, Any]:
+    enabled, enabled_source = _env_bool_setting(
+        "INTEGRATOR_SCHEDULER_ENABLED",
+        False,
+    )
+    interval_seconds, interval_source = _env_int_setting(
+        "INTEGRATOR_SCHEDULER_INTERVAL_SECONDS",
+        60,
+        minimum=1,
+    )
+    return {
+        "enabled": enabled,
+        "enabled_source": enabled_source,
+        "interval_seconds": interval_seconds,
+        "interval_source": interval_source,
+    }
+
+
 PROJECT_ROOT = BACKEND_DIR.parent
 UPLOAD_CHUNK_SIZE = 1024 * 1024
 TASK_HISTORY_LIMIT = 200
 TASK_HISTORY_TTL_SECONDS = int(os.getenv("TASK_HISTORY_TTL_SECONDS", str(6 * 60 * 60)))
+TASK_BACKEND = os.getenv("TASK_BACKEND", "memory").strip().lower() or "memory"
+enqueue_external_task = None
 KB_METADATA_TTL_SECONDS = 30
 CHAT_FILE_CONTEXT_START_MARKER = "[[CHAT_FILE_CONTEXT_START]]"
 CHAT_FILE_CONTEXT_END_MARKER = "[[CHAT_FILE_CONTEXT_END]]"
 CHAT_FILE_MAX_COUNT = int(os.getenv("CHAT_FILE_MAX_COUNT", "6"))
 CHAT_FILE_MAX_BYTES = int(os.getenv("CHAT_FILE_MAX_BYTES", str(10 * 1024 * 1024)))
-CHAT_FILE_MAX_CHARS_PER_FILE = int(
-    os.getenv("CHAT_FILE_MAX_CHARS_PER_FILE", "8000")
-)
+CHAT_FILE_MAX_CHARS_PER_FILE = int(os.getenv("CHAT_FILE_MAX_CHARS_PER_FILE", "8000"))
 CHAT_FILE_MAX_TOTAL_CHARS = int(os.getenv("CHAT_FILE_MAX_TOTAL_CHARS", "24000"))
-CHAT_ATTACHMENT_PREVIEW_CHARS = int(
-    os.getenv("CHAT_ATTACHMENT_PREVIEW_CHARS", "4000")
-)
+CHAT_ATTACHMENT_PREVIEW_CHARS = int(os.getenv("CHAT_ATTACHMENT_PREVIEW_CHARS", "4000"))
 SHARE_LINK_SECRET = os.getenv("SHARE_LINK_SECRET", "local-share-secret")
 SHARE_LINK_TTL_SECONDS = int(os.getenv("SHARE_LINK_TTL_SECONDS", str(7 * 24 * 60 * 60)))
 DEFAULT_SHARE_LINK_SECRET = "local-share-secret"
@@ -448,18 +790,78 @@ DEFAULT_AUTH_USER_IDS = {
     "editor": "editor",
     "admin": "admin",
 }
+SSO_PROVIDER = os.getenv("SSO_PROVIDER", "none")
+OIDC_ISSUER_URL = os.getenv("OIDC_ISSUER_URL", "")
+OIDC_AUTHORIZATION_ENDPOINT = os.getenv("OIDC_AUTHORIZATION_ENDPOINT", "")
+OIDC_TOKEN_ENDPOINT = os.getenv("OIDC_TOKEN_ENDPOINT", "")
+OIDC_JWKS_URL = os.getenv("OIDC_JWKS_URL", "")
+OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "")
+OIDC_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET", "")
+OIDC_ALLOWED_DOMAINS = os.getenv("OIDC_ALLOWED_DOMAINS", "")
+OIDC_SCOPES = os.getenv("OIDC_SCOPES", "openid email profile")
+SSO_LOGIN_STATE_TTL_SECONDS = 10 * 60
+SSO_SESSION_TTL_SECONDS = int(os.getenv("SSO_SESSION_TTL_SECONDS", str(8 * 60 * 60)))
+SSO_DEFAULT_ROLE = os.getenv("SSO_DEFAULT_ROLE", DEFAULT_AUTH_ROLE)
+_SSO_CONFIG_FIELDS = {
+    "provider": ("SSO_PROVIDER", "SSO_PROVIDER", "sso.provider", "none"),
+    "issuer_url": ("OIDC_ISSUER_URL", "OIDC_ISSUER_URL", "sso.oidc_issuer_url", ""),
+    "authorization_endpoint": (
+        "OIDC_AUTHORIZATION_ENDPOINT",
+        "OIDC_AUTHORIZATION_ENDPOINT",
+        "sso.oidc_authorization_endpoint",
+        "",
+    ),
+    "token_endpoint": (
+        "OIDC_TOKEN_ENDPOINT",
+        "OIDC_TOKEN_ENDPOINT",
+        "sso.oidc_token_endpoint",
+        "",
+    ),
+    "jwks_url": ("OIDC_JWKS_URL", "OIDC_JWKS_URL", "sso.oidc_jwks_url", ""),
+    "client_id": ("OIDC_CLIENT_ID", "OIDC_CLIENT_ID", "sso.oidc_client_id", ""),
+    "client_secret": (
+        "OIDC_CLIENT_SECRET",
+        "OIDC_CLIENT_SECRET",
+        "sso.oidc_client_secret",
+        "",
+    ),
+    "allowed_domains": (
+        "OIDC_ALLOWED_DOMAINS",
+        "OIDC_ALLOWED_DOMAINS",
+        "sso.oidc_allowed_domains",
+        "",
+    ),
+    "scopes": ("OIDC_SCOPES", "OIDC_SCOPES", "sso.oidc_scopes", "openid email profile"),
+    "default_role": ("SSO_DEFAULT_ROLE", "SSO_DEFAULT_ROLE", "sso.default_role", DEFAULT_AUTH_ROLE),
+    "session_ttl_seconds": (
+        "SSO_SESSION_TTL_SECONDS",
+        "SSO_SESSION_TTL_SECONDS",
+        "sso.session_ttl_seconds",
+        str(8 * 60 * 60),
+    ),
+}
+_INITIAL_SSO_CONFIG_VALUES = {
+    attr_name: str(globals().get(attr_name, default) or "").strip()
+    for attr_name, _, _, default in _SSO_CONFIG_FIELDS.values()
+}
 SECURITY_AUDIT_MEMORY_WINDOW_LIMIT = 200
 SECURITY_AUDIT_HISTORY_LIMIT, SECURITY_AUDIT_HISTORY_LIMIT_SOURCE = _env_int_setting(
     "SECURITY_AUDIT_HISTORY_LIMIT",
     2000,
     minimum=1,
 )
-REMOTE_MANAGEMENT_RATE_LIMIT_WINDOW_SECONDS, REMOTE_MANAGEMENT_RATE_LIMIT_WINDOW_SECONDS_SOURCE = _env_int_setting(
+(
+    REMOTE_MANAGEMENT_RATE_LIMIT_WINDOW_SECONDS,
+    REMOTE_MANAGEMENT_RATE_LIMIT_WINDOW_SECONDS_SOURCE,
+) = _env_int_setting(
     "REMOTE_MANAGEMENT_RATE_LIMIT_WINDOW_SECONDS",
     60,
     minimum=1,
 )
-REMOTE_MANAGEMENT_RATE_LIMIT_MAX_REQUESTS, REMOTE_MANAGEMENT_RATE_LIMIT_MAX_REQUESTS_SOURCE = _env_int_setting(
+(
+    REMOTE_MANAGEMENT_RATE_LIMIT_MAX_REQUESTS,
+    REMOTE_MANAGEMENT_RATE_LIMIT_MAX_REQUESTS_SOURCE,
+) = _env_int_setting(
     "REMOTE_MANAGEMENT_RATE_LIMIT_MAX_REQUESTS",
     30,
     minimum=1,
@@ -502,6 +904,7 @@ DOCUMENT_UPLOAD_MAX_FILE_BYTES = int(
 DOCUMENT_UPLOAD_MAX_TOTAL_BYTES = int(
     os.getenv("DOCUMENT_UPLOAD_MAX_TOTAL_BYTES", str(100 * 1024 * 1024))
 )
+DOCUMENT_UPLOAD_STAGING_DIR = str(os.getenv("DOCUMENT_UPLOAD_STAGING_DIR", "")).strip() or None
 
 
 @dataclass
@@ -558,628 +961,688 @@ def _is_loopback_host(host: Optional[str]) -> bool:
 
 
 def _hash_secret(secret: str) -> str:
-    if not secret:
-        return "no-key"
-    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:12]
+    return security_runtime._hash_secret(sys.modules[__name__], secret)
 
 
 def _token_fingerprint(token: str) -> str:
-    normalized = str(token or "").strip()
-    if not normalized:
-        return "empty"
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+    return security_runtime._token_fingerprint(sys.modules[__name__], token)
 
 
 def _token_preview(token: str) -> str:
-    normalized = str(token or "").strip()
-    if len(normalized) <= 10:
-        return normalized
-    return f"{normalized[:6]}...{normalized[-4:]}"
+    return security_runtime._token_preview(sys.modules[__name__], token)
 
 
 def _auth_token_preview(token: str) -> str:
-    normalized = str(token or "").strip()
-    if not normalized:
-        return "empty"
-    if len(normalized) <= 4:
-        return "*" * len(normalized)
-    if len(normalized) <= 8:
-        return f"{normalized[:2]}...{normalized[-2:]}"
-    return f"{normalized[:4]}...{normalized[-2:]}"
+    return security_runtime._auth_token_preview(sys.modules[__name__], token)
 
 
 def _request_client_ip(request: Request) -> str:
-    client = getattr(request, "client", None)
-    host = getattr(client, "host", "") if client is not None else ""
-    return str(host or "").strip()
+    return security_runtime._request_client_ip(sys.modules[__name__], request)
 
 
 def _request_user_agent(request: Request) -> str:
-    return str(request.headers.get("user-agent") or "").strip()
+    return security_runtime._request_user_agent(sys.modules[__name__], request)
 
 
 def _request_is_local(request: Request) -> bool:
-    client = getattr(request, "client", None)
-    host = getattr(client, "host", "") if client is not None else ""
-    return _is_loopback_host(host)
+    return security_runtime._request_is_local(sys.modules[__name__], request)
 
 
 def _current_admin_api_token() -> str:
-    return str(os.getenv("ADMIN_API_TOKEN", "") or "").strip()
+    return security_runtime._current_admin_api_token(sys.modules[__name__])
 
 
 def _normalize_auth_role(role: Any, *, default: str = DEFAULT_AUTH_ROLE) -> str:
-    normalized = str(role or "").strip().lower()
-    if normalized in AUTH_ROLE_RANKS:
-        return normalized
-    return default
-
-
-def _role_rank(role: str) -> int:
-    return AUTH_ROLE_RANKS.get(_normalize_auth_role(role), 0)
-
-
-def _sanitize_log_value(value: Any, *, max_length: int = 256) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    text = re.sub(r"[\r\n\t]+", " ", text)
-    text = re.sub(r"\s{2,}", " ", text)
-    if len(text) > max_length:
-        return f"{text[: max_length - 3]}..."
-    return text
-
-
-def _auth_capabilities_for_role(role: str) -> list[str]:
-    return _build_auth_capabilities_for_role(
-        role,
-        normalize_auth_role=_normalize_auth_role,
-        role_rank=_role_rank,
+    return security_runtime._normalize_auth_role(
+        sys.modules[__name__], role, default=default
     )
 
 
+def _role_rank(role: str) -> int:
+    return security_runtime._role_rank(sys.modules[__name__], role)
+
+
+def _sanitize_log_value(value: Any, *, max_length: int = 256) -> str:
+    return security_runtime._sanitize_log_value(
+        sys.modules[__name__], value, max_length=max_length
+    )
+
+
+def _auth_capabilities_for_role(role: str) -> list[str]:
+    return security_runtime._auth_capabilities_for_role(sys.modules[__name__], role)
+
+
 def _auth_token_is_weak(token: Any) -> bool:
-    normalized = str(token or "").strip()
-    return len(normalized) < MIN_AUTH_TOKEN_RECOMMENDED_LENGTH
+    return security_runtime._auth_token_is_weak(sys.modules[__name__], token)
 
 
 def _auth_token_hygiene_summary(
     auth_records: list[dict[str, str]] | None = None,
 ) -> dict[str, int | bool]:
-    records = auth_records if auth_records is not None else _configured_auth_token_records()
-    weak_count = 0
-    legacy_count = 0
-    for record in records:
-        token = record.get("token") or ""
-        auth_source = str(record.get("auth_source") or "").strip()
-        if _auth_token_is_weak(token):
-            weak_count += 1
-        if auth_source.startswith("legacy_"):
-            legacy_count += 1
-    return {
-        "weak_count": int(weak_count),
-        "legacy_count": int(legacy_count),
-        "healthy": weak_count == 0 and legacy_count == 0,
-    }
+    return security_runtime._auth_token_hygiene_summary(
+        sys.modules[__name__], auth_records
+    )
 
 
 def _configured_auth_token_records() -> list[dict[str, str]]:
-    token_records: dict[str, dict[str, str]] = {}
-
-    def _add_token_record(
-        token: Any,
-        *,
-        role: Any,
-        user_id: Any = "",
-        auth_source: Any = "",
-    ) -> None:
-        normalized_token = str(token or "").strip()
-        if not normalized_token or normalized_token in token_records:
-            return
-        normalized_role = _normalize_auth_role(role)
-        normalized_user_id = _sanitize_log_value(
-            user_id or DEFAULT_AUTH_USER_IDS[normalized_role],
-            max_length=128,
-        )
-        token_records[normalized_token] = {
-            "token": normalized_token,
-            "role": normalized_role,
-            "user_id": normalized_user_id,
-            "auth_source": _sanitize_log_value(auth_source, max_length=64)
-            or "token_catalog",
-        }
-
-    raw_catalog = str(os.getenv("APP_AUTH_TOKENS_JSON", "") or "").strip()
-    if raw_catalog:
-        try:
-            parsed_catalog = json.loads(raw_catalog)
-        except json.JSONDecodeError:
-            logger.warning("Failed to parse APP_AUTH_TOKENS_JSON")
-        else:
-            catalog_entries: list[Any] = []
-            if isinstance(parsed_catalog, list):
-                catalog_entries = parsed_catalog
-            elif isinstance(parsed_catalog, dict):
-                if isinstance(parsed_catalog.get("tokens"), list):
-                    catalog_entries = parsed_catalog.get("tokens") or []
-                else:
-                    catalog_entries = [
-                        {"token": token, **value}
-                        for token, value in parsed_catalog.items()
-                        if isinstance(value, dict)
-                    ]
-            for entry in catalog_entries:
-                if not isinstance(entry, dict):
-                    continue
-                _add_token_record(
-                    entry.get("token") or entry.get("api_token"),
-                    role=entry.get("role"),
-                    user_id=entry.get("user_id") or entry.get("name"),
-                    auth_source=entry.get("auth_source") or "app_auth_tokens_json",
-                )
-
-    _add_token_record(
-        _current_admin_api_token(),
-        role="admin",
-        user_id="admin",
-        auth_source="legacy_admin_token",
-    )
-    _add_token_record(
-        os.getenv("EDITOR_API_TOKEN"),
-        role="editor",
-        user_id="editor",
-        auth_source="legacy_editor_token",
-    )
-    _add_token_record(
-        os.getenv("VIEWER_API_TOKEN"),
-        role="viewer",
-        user_id="viewer",
-        auth_source="legacy_viewer_token",
-    )
-    return list(token_records.values())
+    return security_runtime._configured_auth_token_records(sys.modules[__name__])
 
 
 def _configured_auth_token_map() -> dict[str, dict[str, str]]:
-    return {
-        record["token"]: {
-            "role": record["role"],
-            "user_id": record["user_id"],
-            "auth_source": record["auth_source"],
-        }
-        for record in _configured_auth_token_records()
-    }
+    return security_runtime._configured_auth_token_map(sys.modules[__name__])
 
 
 def _extract_request_token(request: Request) -> str:
-    header_token = str(request.headers.get("X-API-Token") or "").strip()
-    if header_token:
-        return header_token
-    header_token = str(request.headers.get("X-Admin-Token") or "").strip()
-    if header_token:
-        return header_token
-    authorization = str(request.headers.get("Authorization") or "").strip()
-    if authorization.lower().startswith("bearer "):
-        return authorization[7:].strip()
-    return ""
+    return security_runtime._extract_request_token(sys.modules[__name__], request)
 
 
 def _extract_admin_token(request: Request) -> str:
-    return _extract_request_token(request)
+    return security_runtime._extract_admin_token(sys.modules[__name__], request)
 
 
 def _request_auth_mode(request: Request) -> str:
-    if not ALLOW_REMOTE_CLIENTS:
-        return "local_only_mode"
-    if _request_is_local(request):
-        return "local"
-    if str(request.headers.get("X-API-Token") or "").strip():
-        return "header"
-    if str(request.headers.get("X-Admin-Token") or "").strip():
-        return "header"
-    authorization = str(request.headers.get("Authorization") or "").strip()
-    if authorization.lower().startswith("bearer "):
-        return "bearer"
-    return "missing"
+    return security_runtime._request_auth_mode(sys.modules[__name__], request)
 
 
 def _admin_auth_mode(request: Request) -> str:
-    return _request_auth_mode(request)
+    return security_runtime._admin_auth_mode(sys.modules[__name__], request)
 
 
 def _resolve_request_auth(request: Request) -> dict[str, Any]:
-    cached = getattr(request.state, "resolved_auth", None)
-    if isinstance(cached, dict):
-        return cached
-
-    is_local_request = _request_is_local(request)
-    bypass_enabled = (not ALLOW_REMOTE_CLIENTS) or is_local_request
-    auth_mode = _request_auth_mode(request)
-    token_present = False
-    token_valid = False
-    trusted_user_id = ""
-    trusted_role = ""
-    trusted_source = ""
-
-    if bypass_enabled:
-        trusted_user_id = (
-            _sanitize_log_value(request.headers.get("X-User-Id"), max_length=128)
-            or "local"
-        )
-        trusted_role = "admin"
-        trusted_source = "local_bypass" if is_local_request else "local_only_mode"
-        token_valid = True
-    else:
-        request_token = _extract_request_token(request)
-        token_present = bool(request_token)
-        auth_record = _configured_auth_token_map().get(request_token)
-        if auth_record is not None:
-            trusted_user_id = str(auth_record.get("user_id") or "").strip()
-            trusted_role = _normalize_auth_role(auth_record.get("role"))
-            trusted_source = str(auth_record.get("auth_source") or "").strip()
-            token_valid = True
-
-    resolved_auth = {
-        "is_local": bool(is_local_request),
-        "bypass_enabled": bool(bypass_enabled),
-        "auth_mode": auth_mode,
-        "token_present": token_present,
-        "token_valid": token_valid,
-        "user_id": trusted_user_id,
-        "role": trusted_role,
-        "auth_source": trusted_source,
-    }
-    request.state.resolved_auth = resolved_auth
-    return resolved_auth
+    return security_runtime._resolve_request_auth(sys.modules[__name__], request)
 
 
 def _request_user_id(request: Request) -> str:
-    return str(_resolve_request_auth(request).get("user_id") or "").strip()
+    return security_runtime._request_user_id(sys.modules[__name__], request)
 
 
 def _request_user_role(request: Request) -> str:
-    return str(_resolve_request_auth(request).get("role") or "").strip()
+    return security_runtime._request_user_role(sys.modules[__name__], request)
 
 
 def _request_auth_source(request: Request) -> str:
-    return str(_resolve_request_auth(request).get("auth_source") or "").strip()
+    return security_runtime._request_auth_source(sys.modules[__name__], request)
 
 
 def _sanitize_request_path(path: str) -> str:
-    normalized = str(path or "").strip() or "/"
-    if normalized.startswith("/api/share-links/"):
-        return "/api/share-links/<token>"
-    if normalized.startswith("/shared/"):
-        return "/shared/<token>"
-    return normalized
+    return security_runtime._sanitize_request_path(sys.modules[__name__], path)
 
 
 def _remote_management_rate_limit_applies(request: Request) -> bool:
-    if not REMOTE_MANAGEMENT_RATE_LIMIT_ENABLED:
-        return False
-    if not ALLOW_REMOTE_CLIENTS or _request_is_local(request):
-        return False
-    if str(request.method or "").strip().upper() == "OPTIONS":
-        return False
-    path = _sanitize_request_path(request.url.path)
-    return any(path.startswith(prefix) for prefix in _REMOTE_MANAGEMENT_RATE_LIMIT_PATH_PREFIXES)
+    return security_runtime._remote_management_rate_limit_applies(
+        sys.modules[__name__], request
+    )
 
 
 def _remote_management_rate_limit_principal(request: Request) -> str:
-    token = _extract_request_token(request)
-    if token:
-        return f"token:{_token_fingerprint(token)}"
-    ip = _request_client_ip(request) or "unknown"
-    return f"ip:{ip}"
+    return security_runtime._remote_management_rate_limit_principal(
+        sys.modules[__name__], request
+    )
 
 
 def _ceil_seconds(seconds: float) -> int:
-    normalized = float(seconds or 0.0)
-    if normalized <= 0:
-        return 0
-    truncated = int(normalized)
-    if float(truncated) < normalized:
-        truncated += 1
-    return max(1, truncated)
+    return security_runtime._ceil_seconds(sys.modules[__name__], seconds)
 
 
 def _consume_remote_management_rate_limit(request: Request) -> dict[str, Any] | None:
-    if not _remote_management_rate_limit_applies(request):
-        return None
-
-    now = time.time()
-    window_seconds = int(REMOTE_MANAGEMENT_RATE_LIMIT_WINDOW_SECONDS)
-    max_requests = int(REMOTE_MANAGEMENT_RATE_LIMIT_MAX_REQUESTS)
-    principal = _remote_management_rate_limit_principal(request)
-    path = _sanitize_request_path(request.url.path)
-
-    with _remote_management_rate_limit_lock:
-        expired_cutoff = now - float(window_seconds)
-        stale_principals = [
-            key
-            for key, value in _remote_management_rate_limits.items()
-            if float(value.get("window_started_at", 0.0) or 0.0) <= expired_cutoff
-        ]
-        for key in stale_principals:
-            _remote_management_rate_limits.pop(key, None)
-
-        state = _remote_management_rate_limits.get(principal)
-        if state is None or (now - float(state.get("window_started_at", 0.0) or 0.0)) >= float(window_seconds):
-            state = {
-                "window_started_at": float(now),
-                "count": 0.0,
-            }
-
-        current_count = int(state.get("count", 0.0) or 0)
-        allowed = current_count < max_requests
-        if allowed:
-            current_count += 1
-            state["count"] = float(current_count)
-            _remote_management_rate_limits[principal] = state
-        else:
-            _remote_management_rate_limits[principal] = state
-
-        remaining = max(0, max_requests - current_count)
-        reset_after_seconds = max(
-            0.0,
-            float(window_seconds) - (now - float(state.get("window_started_at", now) or now)),
-        )
-        retry_after = _ceil_seconds(reset_after_seconds) if not allowed else 0
-
-    return {
-        "allowed": bool(allowed),
-        "principal": principal,
-        "path": path,
-        "limit": max_requests,
-        "remaining": remaining,
-        "window_seconds": window_seconds,
-        "retry_after": retry_after,
-        "reset_after_seconds": _ceil_seconds(reset_after_seconds),
-    }
+    return security_runtime._consume_remote_management_rate_limit(
+        sys.modules[__name__], request
+    )
 
 
 def _current_share_link_secret() -> str:
-    return str(os.getenv("SHARE_LINK_SECRET", SHARE_LINK_SECRET) or "").strip()
+    return security_runtime._current_share_link_secret(sys.modules[__name__])
 
 
 def _share_link_secret_is_weak() -> bool:
-    secret = _current_share_link_secret()
-    return (
-        not secret
-        or secret == DEFAULT_SHARE_LINK_SECRET
-        or len(secret) < MIN_SHARE_LINK_SECRET_LENGTH
+    return security_runtime._share_link_secret_is_weak(sys.modules[__name__])
+
+
+def _require_remote_role(
+    request: Request, *, minimum_role: str = "admin"
+) -> dict[str, Any]:
+    return security_runtime._require_remote_role(
+        sys.modules[__name__], request, minimum_role=minimum_role
     )
-
-
-def _require_remote_role(request: Request, *, minimum_role: str = "admin") -> dict[str, Any]:
-    auth = _resolve_request_auth(request)
-    if auth["bypass_enabled"]:
-        return auth
-
-    configured_records = _configured_auth_token_records()
-    if not configured_records:
-        _audit_security_event(
-            "remote_auth_guard",
-            request,
-            result="blocked",
-            details=f"reason=auth_not_configured required_role={minimum_role}",
-        )
-        raise HTTPException(
-            status_code=503,
-            detail="Remote access is disabled until API tokens are configured.",
-        )
-
-    if not auth["token_valid"]:
-        reason = "missing_token" if not auth["token_present"] else "invalid_token"
-        _audit_security_event(
-            "remote_auth_guard",
-            request,
-            result="rejected",
-            details=f"reason={reason} required_role={minimum_role}",
-        )
-        raise HTTPException(status_code=403, detail="Missing or invalid API token.")
-
-    actual_role = str(auth["role"] or "").strip()
-    if _role_rank(actual_role) < _role_rank(minimum_role):
-        _audit_security_event(
-            "remote_auth_guard",
-            request,
-            result="rejected",
-            details=(
-                f"reason=insufficient_role required_role={minimum_role} "
-                f"actual_role={actual_role or '<none>'}"
-            ),
-        )
-        raise HTTPException(
-            status_code=403,
-            detail=f"Insufficient role: {minimum_role} required.",
-        )
-    return auth
 
 
 def _require_remote_viewer(request: Request) -> dict[str, Any]:
-    return _require_remote_role(request, minimum_role="viewer")
+    return security_runtime._require_remote_viewer(sys.modules[__name__], request)
 
 
 def _require_remote_editor(request: Request) -> dict[str, Any]:
-    return _require_remote_role(request, minimum_role="editor")
+    return security_runtime._require_remote_editor(sys.modules[__name__], request)
 
 
 def _require_remote_admin(request: Request) -> dict[str, Any]:
-    return _require_remote_role(request, minimum_role="admin")
+    return security_runtime._require_remote_admin(sys.modules[__name__], request)
 
 
 def _require_remote_share_secret(request: Request) -> None:
-    if not ALLOW_REMOTE_CLIENTS or _request_is_local(request):
-        return
-    if _share_link_secret_is_weak():
-        _audit_security_event(
-            "remote_share_guard",
-            request,
-            result="blocked",
-            details="reason=weak_share_link_secret",
-        )
-        raise HTTPException(
-            status_code=503,
-            detail="Remote sharing is disabled until SHARE_LINK_SECRET is strong enough.",
-        )
+    return security_runtime._require_remote_share_secret(sys.modules[__name__], request)
 
 
 def _content_hash(value: Any) -> str:
-    if value in (None, ""):
-        return ""
-    if isinstance(value, str):
-        payload = value
-    else:
-        payload = json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return security_runtime._content_hash(sys.modules[__name__], value)
 
 
 def _audit_security_event(
-    action: str,
-    request: Request,
-    *,
-    result: str = "ok",
-    details: str = "",
+    action: str, request: Request, *, result: str = "ok", details: str = ""
 ) -> None:
-    request_id = getattr(request.state, "request_id", "")
-    event = {
-        "timestamp": time.time(),
-        "request_id": str(request_id or "").strip(),
-        "action": _sanitize_log_value(action, max_length=128),
-        "result": _sanitize_log_value(result, max_length=32),
-        "ip": _sanitize_log_value(_request_client_ip(request), max_length=64),
-        "is_local": bool(_request_is_local(request)),
-        "auth_mode": _sanitize_log_value(_request_auth_mode(request), max_length=32),
-        "auth_source": _sanitize_log_value(_request_auth_source(request), max_length=64),
-        "user_id": _sanitize_log_value(_request_user_id(request), max_length=128),
-        "user_role": _sanitize_log_value(_request_user_role(request), max_length=64),
-        "details": _sanitize_log_value(details, max_length=512),
-    }
-    with _security_audit_events_lock:
-        _security_audit_events.append(event)
-        del _security_audit_events[:-SECURITY_AUDIT_MEMORY_WINDOW_LIMIT]
-    _persist_security_audit_event(event)
-    logger.info(
-        (
-            "security_event action=%s result=%s request_id=%s ip=%s local=%s "
-            "auth=%s auth_source=%s user_id=%s user_role=%s details=%s"
-        ),
-        event["action"],
-        event["result"],
-        event["request_id"],
-        event["ip"],
-        event["is_local"],
-        event["auth_mode"],
-        event["auth_source"],
-        event["user_id"],
-        event["user_role"],
-        event["details"],
+    return security_runtime._audit_security_event(
+        sys.modules[__name__], action, request, result=result, details=details
     )
 
 
-def _share_link_audit_payload(record: Any, *, now: Optional[float] = None) -> dict[str, Any]:
-    current_time = time.time() if now is None else float(now)
-    revoked_at = getattr(record, "revoked_at", None)
-    expires_at = float(getattr(record, "expires_at", 0) or 0)
-    share_token = str(getattr(record, "share_token", "") or "").strip()
-    return {
-        "resource_type": str(getattr(record, "resource_type", "") or "").strip(),
-        "resource_id": str(getattr(record, "resource_id", "") or "").strip(),
-        "created_at": float(getattr(record, "created_at", 0) or 0),
-        "expires_at": expires_at,
-        "revoked_at": float(revoked_at) if revoked_at is not None else None,
-        "is_active": revoked_at is None and expires_at > current_time,
-        "created_by_ip": str(getattr(record, "created_by_ip", "") or "").strip(),
-        "created_user_agent": str(getattr(record, "created_user_agent", "") or "").strip(),
-        "access_count": int(getattr(record, "access_count", 0) or 0),
-        "last_accessed_at": (
-            float(getattr(record, "last_accessed_at", 0))
-            if getattr(record, "last_accessed_at", None) is not None
-            else None
-        ),
-        "last_accessed_ip": str(getattr(record, "last_accessed_ip", "") or "").strip(),
-        "last_accessed_user_agent": str(
-            getattr(record, "last_accessed_user_agent", "") or ""
-        ).strip(),
-        "share_token_preview": _token_preview(share_token),
-        "share_token_fingerprint": _token_fingerprint(share_token),
-    }
+def _share_link_audit_payload(
+    record: Any, *, now: Optional[float] = None
+) -> dict[str, Any]:
+    return security_runtime._share_link_audit_payload(
+        sys.modules[__name__], record, now=now
+    )
 
 
 def _security_status_payload() -> dict[str, Any]:
-    cors_origins, cors_allow_credentials = _cors_settings()
-    return _build_security_status_payload(
-        allow_remote_clients=ALLOW_REMOTE_CLIENTS,
-        share_link_ttl_seconds=SHARE_LINK_TTL_SECONDS,
-        remote_management_rate_limit_enabled=REMOTE_MANAGEMENT_RATE_LIMIT_ENABLED,
-        remote_management_rate_limit_window_seconds=REMOTE_MANAGEMENT_RATE_LIMIT_WINDOW_SECONDS,
-        remote_management_rate_limit_window_seconds_source=REMOTE_MANAGEMENT_RATE_LIMIT_WINDOW_SECONDS_SOURCE,
-        remote_management_rate_limit_max_requests=REMOTE_MANAGEMENT_RATE_LIMIT_MAX_REQUESTS,
-        remote_management_rate_limit_max_requests_source=REMOTE_MANAGEMENT_RATE_LIMIT_MAX_REQUESTS_SOURCE,
-        security_audit_history_limit=SECURITY_AUDIT_HISTORY_LIMIT,
-        security_audit_history_limit_source=SECURITY_AUDIT_HISTORY_LIMIT_SOURCE,
-        security_audit_memory_window_limit=SECURITY_AUDIT_MEMORY_WINDOW_LIMIT,
-        chat_file_limits={
-            "max_count": int(CHAT_FILE_MAX_COUNT),
-            "max_bytes": int(CHAT_FILE_MAX_BYTES),
-            "max_chars_per_file": int(CHAT_FILE_MAX_CHARS_PER_FILE),
-            "max_total_chars": int(CHAT_FILE_MAX_TOTAL_CHARS),
-            "preview_chars": int(CHAT_ATTACHMENT_PREVIEW_CHARS),
-        },
-        document_upload_limits={
-            "max_count": int(DOCUMENT_UPLOAD_MAX_COUNT),
-            "max_file_bytes": int(DOCUMENT_UPLOAD_MAX_FILE_BYTES),
-            "max_total_bytes": int(DOCUMENT_UPLOAD_MAX_TOTAL_BYTES),
-        },
-        cors_allowed_origins=cors_origins,
-        cors_allow_credentials=cors_allow_credentials,
-        configured_auth_token_records=_configured_auth_token_records,
-        auth_token_hygiene_summary=_auth_token_hygiene_summary,
-        role_rank=_role_rank,
-        share_link_secret_is_weak=_share_link_secret_is_weak,
-        read_security_audit_event_count=lambda: _get_security_audit_store().count_events(),
-        logger=logger,
-    )
+    return security_runtime._security_status_payload(sys.modules[__name__])
 
 
 def _auth_token_catalog_payload() -> dict[str, Any]:
-    return _build_auth_token_catalog_payload(
-        default_role=DEFAULT_AUTH_ROLE,
-        configured_auth_token_records=_configured_auth_token_records,
-        auth_token_hygiene_summary=_auth_token_hygiene_summary,
-        auth_token_preview=_auth_token_preview,
-        token_fingerprint=_token_fingerprint,
-        auth_token_is_weak=_auth_token_is_weak,
-        role_rank=_role_rank,
+    return security_runtime._auth_token_catalog_payload(sys.modules[__name__])
+
+
+def _sso_config_payload() -> dict[str, Any]:
+    return _build_sso_config_payload(
+        provider=_effective_sso_config_value("provider"),
+        issuer_url=_effective_sso_config_value("issuer_url"),
+        authorization_endpoint=_effective_sso_config_value("authorization_endpoint"),
+        token_endpoint=_effective_sso_config_value("token_endpoint"),
+        jwks_url=_effective_sso_config_value("jwks_url"),
+        client_id=_effective_sso_config_value("client_id"),
+        client_secret=_effective_sso_config_value("client_secret"),
+        allowed_domains=_effective_sso_config_value("allowed_domains"),
+        scopes=_effective_sso_config_value("scopes"),
+        default_role=_normalize_auth_role(
+            _effective_sso_config_value("default_role"),
+            default=DEFAULT_AUTH_ROLE,
+        ),
+        session_ttl_seconds=_effective_sso_session_ttl_seconds(),
+    )
+
+
+def _normalize_sso_config_update(field: str, value: Any) -> str:
+    normalized = str(value or "").strip()
+    if field == "provider":
+        normalized = normalized.lower() or "none"
+        if normalized not in {"none", "oidc"}:
+            raise HTTPException(status_code=400, detail="SSO provider must be none or oidc")
+    elif field == "default_role":
+        normalized = _normalize_auth_role(normalized, default=DEFAULT_AUTH_ROLE)
+    elif field == "session_ttl_seconds":
+        try:
+            ttl_seconds = int(value)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="SSO session TTL must be an integer number of seconds",
+            ) from exc
+        if ttl_seconds < 300 or ttl_seconds > 7 * 24 * 60 * 60:
+            raise HTTPException(
+                status_code=400,
+                detail="SSO session TTL must be between 300 and 604800 seconds",
+            )
+        normalized = str(ttl_seconds)
+    return normalized
+
+
+def _set_sso_config_field(field: str, value: str) -> None:
+    attr_name, env_name, config_key, _ = _SSO_CONFIG_FIELDS[field]
+    if value:
+        _get_app_config_store().set(config_key, value)
+        os.environ[env_name] = value
+    else:
+        _get_app_config_store().delete(config_key)
+        os.environ.pop(env_name, None)
+    if attr_name == "SSO_SESSION_TTL_SECONDS":
+        globals()[attr_name] = int(value or str(8 * 60 * 60))
+    else:
+        globals()[attr_name] = value
+
+
+def _save_sso_config_payload(body: Any) -> dict[str, Any]:
+    data = _base_model_payload(body)
+    clear_client_secret = bool(data.pop("clear_client_secret", False))
+    for field in (
+        "provider",
+        "issuer_url",
+        "authorization_endpoint",
+        "token_endpoint",
+        "jwks_url",
+        "client_id",
+        "allowed_domains",
+        "scopes",
+        "default_role",
+        "session_ttl_seconds",
+    ):
+        if field not in data or data[field] is None:
+            continue
+        _set_sso_config_field(field, _normalize_sso_config_update(field, data[field]))
+
+    client_secret = data.get("client_secret")
+    if clear_client_secret:
+        _set_sso_config_field("client_secret", "")
+    elif client_secret is not None and str(client_secret or "").strip():
+        _set_sso_config_field("client_secret", str(client_secret or "").strip())
+
+    return _sso_config_payload()
+
+
+def _sso_callback_url(request: Request) -> str:
+    base_url = str(request.base_url).rstrip("/")
+    return f"{base_url}/api/auth/sso/callback"
+
+
+def _sso_callback_url_for_mode(request: Request, response_mode: str = "") -> str:
+    callback_url = _sso_callback_url(request)
+    if str(response_mode or "").strip().lower() == "fragment":
+        return f"{callback_url}?response_mode=fragment"
+    return callback_url
+
+
+def _pkce_code_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _prune_sso_login_states(now: float | None = None) -> None:
+    current_time = time.time() if now is None else float(now)
+    expired_before = current_time - float(SSO_LOGIN_STATE_TTL_SECONDS)
+    with _sso_login_states_lock:
+        expired = [
+            state
+            for state, record in _sso_login_states.items()
+            if float(record.get("created_at", 0.0) or 0.0) <= expired_before
+        ]
+        for state in expired:
+            _sso_login_states.pop(state, None)
+
+
+def _prune_sso_sessions(now: float | None = None) -> None:
+    current_time = time.time() if now is None else float(now)
+    try:
+        _get_sso_session_store().prune(now=current_time)
+    except Exception:
+        logger.exception("Failed to prune persisted SSO sessions")
+    with _sso_sessions_lock:
+        expired = [
+            token
+            for token, record in _sso_sessions.items()
+            if float(record.get("expires_at", 0.0) or 0.0) <= current_time
+        ]
+        for token in expired:
+            _sso_sessions.pop(token, None)
+
+
+def _issue_sso_session_token(*, user_id: str, role: str) -> dict[str, Any]:
+    normalized_user_id = str(user_id or "").strip()
+    if not normalized_user_id:
+        raise ValueError("user_id is required")
+    normalized_role = _normalize_auth_role(role, default=DEFAULT_AUTH_ROLE)
+    token = f"sso_{secrets.token_urlsafe(32)}"
+    created_at = time.time()
+    expires_at = created_at + float(_effective_sso_session_ttl_seconds())
+    _prune_sso_sessions()
+    session_record = {
+        "user_id": normalized_user_id,
+        "role": normalized_role,
+        "auth_source": "sso_oidc",
+        "expires_at": expires_at,
+        "created_at": created_at,
+    }
+    try:
+        _get_sso_session_store().save(
+            token_hash=_sso_session_token_hash(token),
+            user_id=normalized_user_id,
+            role=normalized_role,
+            auth_source="sso_oidc",
+            created_at=created_at,
+            expires_at=expires_at,
+        )
+    except Exception as exc:
+        raise RuntimeError("Failed to persist SSO session") from exc
+    with _sso_sessions_lock:
+        _sso_sessions[token] = session_record
+    return {
+        "token": token,
+        "expires_at": expires_at,
+        "role": normalized_role,
+    }
+
+
+def _resolve_sso_session_token(token: str) -> dict[str, str] | None:
+    normalized_token = str(token or "").strip()
+    if not normalized_token:
+        return None
+    _prune_sso_sessions()
+    token_hash = _sso_session_token_hash(normalized_token)
+    try:
+        persisted = _get_sso_session_store().get_active(token_hash)
+    except Exception:
+        logger.exception("Failed to resolve persisted SSO session")
+        persisted = None
+    if persisted is not None:
+        return {
+            "user_id": str(persisted.user_id or "").strip(),
+            "role": str(persisted.role or DEFAULT_AUTH_ROLE).strip(),
+            "auth_source": str(persisted.auth_source or "sso_oidc").strip(),
+        }
+    with _sso_sessions_lock:
+        record = _sso_sessions.get(normalized_token)
+        if record is None:
+            return None
+        return {
+            "user_id": str(record.get("user_id") or "").strip(),
+            "role": str(record.get("role") or DEFAULT_AUTH_ROLE).strip(),
+            "auth_source": str(record.get("auth_source") or "sso_oidc").strip(),
+        }
+
+
+def _sso_login_payload(request: Request, response_mode: str = "") -> dict[str, Any]:
+    state = secrets.token_urlsafe(24)
+    nonce = secrets.token_urlsafe(24)
+    code_verifier = secrets.token_urlsafe(48)
+    payload = _build_sso_login_payload(
+        provider=_effective_sso_config_value("provider"),
+        authorization_endpoint=_effective_sso_config_value("authorization_endpoint"),
+        client_id=_effective_sso_config_value("client_id"),
+        redirect_uri=_sso_callback_url_for_mode(request, response_mode=response_mode),
+        state=state,
+        nonce=nonce,
+        code_challenge=_pkce_code_challenge(code_verifier),
+        scopes=_effective_sso_config_value("scopes"),
+    )
+    _prune_sso_login_states()
+    with _sso_login_states_lock:
+        _sso_login_states[state] = {
+            "created_at": time.time(),
+            "nonce": nonce,
+            "code_verifier": code_verifier,
+            "redirect_uri": payload["redirect_uri"],
+        }
+    return payload
+
+
+async def _exchange_oidc_code(
+    *,
+    code: str,
+    redirect_uri: str,
+    code_verifier: str,
+) -> dict[str, Any]:
+    normalized_code = str(code or "").strip()
+    if not normalized_code:
+        raise ValueError("authorization code is required")
+    if _effective_sso_config_value("provider").lower() != "oidc":
+        raise ValueError("SSO_PROVIDER must be oidc")
+    token_endpoint = _effective_sso_config_value("token_endpoint")
+    if not token_endpoint:
+        raise RuntimeError("OIDC_TOKEN_ENDPOINT is required")
+    data = {
+        "grant_type": "authorization_code",
+        "code": normalized_code,
+        "redirect_uri": str(redirect_uri or "").strip(),
+        "client_id": _effective_sso_config_value("client_id"),
+        "code_verifier": str(code_verifier or "").strip(),
+    }
+    client_secret = _effective_sso_config_value("client_secret")
+    if client_secret:
+        data["client_secret"] = client_secret
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                token_endpoint,
+                data=data,
+                headers={"Accept": "application/json"},
+            )
+    except httpx.HTTPError as exc:
+        raise RuntimeError("OIDC token exchange failed") from exc
+    if response.status_code >= 400:
+        raise RuntimeError("OIDC token exchange failed")
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise RuntimeError("OIDC token response is not JSON") from exc
+    if not str(payload.get("id_token") or "").strip():
+        raise RuntimeError("OIDC token response missing id_token")
+    return payload
+
+
+def _verify_oidc_id_token(id_token: str, *, nonce: str) -> dict[str, Any]:
+    normalized_id_token = str(id_token or "").strip()
+    if not normalized_id_token:
+        raise ValueError("id_token is required")
+    jwks_url = _effective_sso_config_value("jwks_url")
+    if not jwks_url:
+        raise RuntimeError("OIDC_JWKS_URL is required")
+    try:
+        import jwt
+        from jwt import PyJWKClient
+    except ImportError as exc:
+        raise RuntimeError("PyJWT[crypto] is required for OIDC ID token verification") from exc
+    try:
+        signing_key = PyJWKClient(jwks_url).get_signing_key_from_jwt(
+            normalized_id_token
+        )
+        claims = jwt.decode(
+            normalized_id_token,
+            signing_key.key,
+            algorithms=["RS256", "ES256"],
+            audience=_effective_sso_config_value("client_id"),
+            issuer=_effective_sso_config_value("issuer_url"),
+        )
+    except Exception as exc:
+        raise ValueError("OIDC ID token verification failed") from exc
+    expected_nonce = str(nonce or "").strip()
+    if expected_nonce and str(claims.get("nonce") or "").strip() != expected_nonce:
+        raise ValueError("OIDC nonce mismatch")
+    return dict(claims)
+
+
+async def _sso_callback_payload(
+    request: Request,
+    *,
+    code: str,
+    state: str,
+) -> dict[str, Any]:
+    normalized_state = str(state or "").strip()
+    if not normalized_state:
+        raise ValueError("state is required")
+    _prune_sso_login_states()
+    with _sso_login_states_lock:
+        state_record = _sso_login_states.pop(normalized_state, None)
+    if state_record is None:
+        raise ValueError("Invalid or expired SSO state")
+
+    token_payload = await _exchange_oidc_code(
+        code=code,
+        redirect_uri=str(state_record.get("redirect_uri") or _sso_callback_url(request)),
+        code_verifier=str(state_record.get("code_verifier") or ""),
+    )
+    claims = _verify_oidc_id_token(
+        str(token_payload.get("id_token") or ""),
+        nonce=str(state_record.get("nonce") or ""),
+    )
+    sync_request = SyncExternalIdentityRequest(
+        claims=claims,
+        provider=_effective_sso_config_value("provider") or "oidc",
+    )
+    payload = _sync_external_identity_payload(sync_request)
+    payload["auth_source"] = "oidc"
+    payload["token_type"] = str(token_payload.get("token_type") or "")
+    expires_in = token_payload.get("expires_in")
+    payload["expires_in"] = int(expires_in) if expires_in is not None else None
+    session = _issue_sso_session_token(
+        user_id=str(payload["user"]["user_id"] or ""),
+        role=_effective_sso_config_value("default_role"),
+    )
+    payload["app_session_token"] = session["token"]
+    payload["app_session_expires_at"] = session["expires_at"]
+    payload["role"] = session["role"]
+    return payload
+
+
+def _sync_external_identity_payload(body: SyncExternalIdentityRequest) -> dict[str, Any]:
+    allowed_domains = body.allowed_domains or [
+        item.strip()
+        for item in _effective_sso_config_value("allowed_domains").split(",")
+        if item.strip()
+    ]
+    return _sync_external_identity(
+        identity_store=_get_identity_store(),
+        claims=body.claims,
+        provider=body.provider or _effective_sso_config_value("provider") or "oidc",
+        allowed_domains=allowed_domains,
+        default_org_id=body.default_org_id,
+        default_role=body.default_role,
+        group_org_map=body.group_org_map,
+        group_role_map=dict(body.group_role_map),
+        now=time.time,
+    )
+
+
+def _security_audit_events_payload(
+    *,
+    limit: int = 50,
+    action: str = "",
+    result: str = "",
+    category: str = "",
+    user_id: str = "",
+    since: Any = None,
+    until: Any = None,
+) -> dict[str, Any]:
+    return security_runtime._security_audit_events_payload(
+        sys.modules[__name__],
+        limit=limit,
+        action=action,
+        result=result,
+        category=category,
+        user_id=user_id,
+        since=since,
+        until=until,
+    )
+
+
+def _security_audit_action_catalog_payload(*, category: str = "") -> dict[str, Any]:
+    return _build_security_audit_action_catalog_payload(category=category)
+
+
+def _security_audit_summary_payload(
+    *, category: str = "", limit: int = 0
+) -> dict[str, Any]:
+    return security_runtime._security_audit_summary_payload(
+        sys.modules[__name__],
+        category=category,
+        limit=limit,
+    )
+
+
+def _security_audit_siem_export_payload(
+    *,
+    format: str = "json",
+    limit: int = 100,
+    action: str = "",
+    result: str = "",
+    category: str = "",
+    user_id: str = "",
+    since: Any = None,
+    until: Any = None,
+) -> dict[str, Any]:
+    return security_runtime._security_audit_siem_export_payload(
+        sys.modules[__name__],
+        format=format,
+        limit=limit,
+        action=action,
+        result=result,
+        category=category,
+        user_id=user_id,
+        since=since,
+        until=until,
+    )
+
+
+def _security_audit_aggregate_report_payload(
+    *,
+    limit: int = 0,
+    action: str = "",
+    result: str = "",
+    category: str = "",
+    user_id: str = "",
+    since: Any = None,
+    until: Any = None,
+) -> dict[str, Any]:
+    return security_runtime._security_audit_aggregate_report_payload(
+        sys.modules[__name__],
+        limit=limit,
+        action=action,
+        result=result,
+        category=category,
+        user_id=user_id,
+        since=since,
+        until=until,
+    )
+
+
+def _security_audit_archive_policy_payload(
+    *,
+    mode: str = "preview",
+    retention_days: int = 365,
+    limit: int = 100,
+    legal_hold: bool = False,
+) -> dict[str, Any]:
+    return security_runtime._security_audit_archive_policy_payload(
+        sys.modules[__name__],
+        mode=mode,
+        retention_days=retention_days,
+        limit=limit,
+        legal_hold=legal_hold,
+    )
+
+
+def _security_audit_legal_hold_payload(
+    *, request_id: str, legal_hold: bool = True
+) -> dict[str, Any]:
+    return security_runtime._security_audit_legal_hold_payload(
+        sys.modules[__name__],
+        request_id=request_id,
+        legal_hold=legal_hold,
+    )
+
+
+def _role_permission_matrix_payload() -> dict[str, Any]:
+    return _build_role_permission_matrix_payload()
+
+
+def _cleanup_security_audit_events(
+    *, keep_latest: int = 0, dry_run: bool = False
+) -> dict[str, Any]:
+    return security_runtime._cleanup_security_audit_events(
+        sys.modules[__name__],
+        keep_latest=keep_latest,
+        dry_run=dry_run,
     )
 
 
 def _runtime_status_class(status_code: int) -> str:
-    if 200 <= status_code < 300:
-        return "2xx"
-    if 300 <= status_code < 400:
-        return "3xx"
-    if 400 <= status_code < 500:
-        return "4xx"
-    if 500 <= status_code < 600:
-        return "5xx"
-    return "other"
+    return runtime_status_class(status_code)
 
 
-def _record_runtime_request(*, status_code: int, timestamp: float | None = None) -> None:
-    recorded_at = time.time() if timestamp is None else float(timestamp)
-    status_class = _runtime_status_class(int(status_code))
-    with _runtime_metrics_lock:
-        _runtime_metrics["total_requests"] += 1
-        _runtime_metrics["by_status_class"][status_class] = (
-            int(_runtime_metrics["by_status_class"].get(status_class, 0)) + 1
-        )
-        _runtime_metrics["last_request_at"] = recorded_at
+def _record_runtime_request(
+    *, status_code: int, timestamp: float | None = None
+) -> None:
+    record_runtime_request(
+        _runtime_metrics,
+        _runtime_metrics_lock,
+        status_code=status_code,
+        timestamp=timestamp,
+    )
 
 
 def _record_runtime_error(
@@ -1190,102 +1653,22 @@ def _record_runtime_error(
     message: str,
     timestamp: float | None = None,
 ) -> None:
-    recorded_at = time.time() if timestamp is None else float(timestamp)
-    error_entry = {
-        "timestamp": recorded_at,
-        "request_id": str(getattr(request.state, "request_id", "") or "").strip(),
-        "path": _sanitize_request_path(request.url.path),
-        "method": str(request.method or "").strip().upper(),
-        "status_code": int(status_code),
-        "error_code": _sanitize_log_value(error_code, max_length=64),
-        "message": _sanitize_log_value(message, max_length=240),
-    }
-    with _runtime_metrics_lock:
-        _runtime_metrics["total_errors"] += 1
-        _runtime_metrics["last_error_at"] = recorded_at
-        recent_errors = list(_runtime_metrics.get("recent_errors") or [])
-        recent_errors.append(error_entry)
-        _runtime_metrics["recent_errors"] = recent_errors[-RUNTIME_RECENT_ERROR_LIMIT:]
+    record_runtime_error(
+        _runtime_metrics,
+        _runtime_metrics_lock,
+        request=request,
+        status_code=status_code,
+        error_code=error_code,
+        message=message,
+        sanitize_request_path=_sanitize_request_path,
+        sanitize_log_value=_sanitize_log_value,
+        recent_error_limit=RUNTIME_RECENT_ERROR_LIMIT,
+        timestamp=timestamp,
+    )
 
 
 def _runtime_request_metrics_payload() -> dict[str, Any]:
-    with _runtime_metrics_lock:
-        by_status_class = {
-            str(key): int(value or 0)
-            for key, value in dict(_runtime_metrics["by_status_class"]).items()
-        }
-        recent_errors = [dict(item) for item in list(_runtime_metrics["recent_errors"])]
-        return {
-            "total_requests": int(_runtime_metrics["total_requests"]),
-            "total_errors": int(_runtime_metrics["total_errors"]),
-            "by_status_class": by_status_class,
-            "last_request_at": _runtime_metrics["last_request_at"],
-            "last_error_at": _runtime_metrics["last_error_at"],
-            "recent_errors": recent_errors,
-        }
-
-
-def _security_audit_events_payload(
-    *,
-    limit: int = 50,
-    action: str = "",
-    result: str = "",
-) -> dict[str, Any]:
-    max_limit = int(SECURITY_AUDIT_HISTORY_LIMIT)
-    try:
-        max_limit = max(max_limit, int(_get_security_audit_store().history_limit))
-    except Exception:
-        logger.exception("Failed to read security audit history limit")
-    normalized_limit = max(1, min(int(limit or 50), max_limit))
-    normalized_action = str(action or "").strip().lower()
-    normalized_result = str(result or "").strip().lower()
-    try:
-        stored_events = _get_security_audit_store().list_events(
-            limit=normalized_limit,
-            action=normalized_action,
-            result=normalized_result,
-        )
-    except Exception:
-        logger.exception("Failed to load persisted security audit events")
-        stored_events = []
-    if stored_events:
-        events = [
-            {
-                "timestamp": record.timestamp,
-                "request_id": record.request_id,
-                "action": record.action,
-                "result": record.result,
-                "ip": record.ip,
-                "is_local": record.is_local,
-                "auth_mode": record.auth_mode,
-                "auth_source": record.auth_source,
-                "user_id": record.user_id,
-                "user_role": record.user_role,
-                "details": record.details,
-            }
-            for record in stored_events
-        ]
-    else:
-        with _security_audit_events_lock:
-            events = [dict(item) for item in _security_audit_events]
-        if normalized_action:
-            events = [
-                item
-                for item in events
-                if str(item.get("action") or "").strip().lower() == normalized_action
-            ]
-        if normalized_result:
-            events = [
-                item
-                for item in events
-                if str(item.get("result") or "").strip().lower() == normalized_result
-            ]
-        events = events[-normalized_limit:]
-    return {
-        "events": events,
-        "total": len(events),
-        "limit": normalized_limit,
-    }
+    return runtime_request_metrics_payload(_runtime_metrics, _runtime_metrics_lock)
 
 
 def _get_security_audit_store() -> SQLiteSecurityAuditStore:
@@ -1293,7 +1676,7 @@ def _get_security_audit_store() -> SQLiteSecurityAuditStore:
     if _security_audit_store is None:
         with _security_audit_store_init_lock:
             if _security_audit_store is None:
-                _security_audit_store = SQLiteSecurityAuditStore(
+                _security_audit_store = create_security_audit_store(
                     history_limit=SECURITY_AUDIT_HISTORY_LIMIT
                 )
     return _security_audit_store
@@ -1310,28 +1693,18 @@ def _persist_security_audit_event(event: dict[str, Any]) -> None:
         )
 
 
-def _cleanup_security_audit_events(*, keep_latest: int = 0) -> dict[str, Any]:
-    normalized_keep_latest = max(
-        0,
-        min(int(keep_latest or 0), int(SECURITY_AUDIT_HISTORY_LIMIT)),
-    )
-    deleted_count = _get_security_audit_store().trim_to_latest(normalized_keep_latest)
-    remaining_count = _get_security_audit_store().count_events()
-    with _security_audit_events_lock:
-        memory_before_count = len(_security_audit_events)
-        if normalized_keep_latest <= 0:
-            _security_audit_events.clear()
-        else:
-            _security_audit_events[:] = _security_audit_events[-normalized_keep_latest:]
-        memory_remaining_count = len(_security_audit_events)
-    return {
-        "keep_latest": normalized_keep_latest,
-        "deleted_count": int(deleted_count),
-        "remaining_count": int(remaining_count),
-        "memory_deleted_count": int(max(0, memory_before_count - memory_remaining_count)),
-        "memory_remaining_count": int(memory_remaining_count),
-        "history_limit": int(SECURITY_AUDIT_HISTORY_LIMIT),
-    }
+def _sso_session_token_hash(token: str) -> str:
+    normalized_token = str(token or "").strip()
+    return hashlib.sha256(normalized_token.encode("utf-8")).hexdigest()
+
+
+def _get_sso_session_store():
+    global _sso_session_store
+    if _sso_session_store is None:
+        with _sso_session_store_init_lock:
+            if _sso_session_store is None:
+                _sso_session_store = create_sso_session_store()
+    return _sso_session_store
 
 
 async def _runtime_task_summary_payload() -> dict[str, Any]:
@@ -1356,6 +1729,11 @@ async def _runtime_task_summary_payload() -> dict[str, Any]:
             latest_task_updated_at is None or updated_at > latest_task_updated_at
         ):
             latest_task_updated_at = updated_at
+    health = task_stale_health_payload(records)
+    if str(TASK_BACKEND or "").strip().lower() in {"arq", "redis"}:
+        health["queue"] = await arq_queue_health_payload()
+        health["runtime"] = arq_runtime_config_for_tasks()
+    health["summary"] = task_runtime_health_summary(health)
     return {
         "in_memory_total": len(records),
         "pending": counts[TaskStatus.PENDING.value],
@@ -1363,14 +1741,18 @@ async def _runtime_task_summary_payload() -> dict[str, Any]:
         "completed": counts[TaskStatus.COMPLETED.value],
         "failed": counts[TaskStatus.FAILED.value],
         "latest_task_updated_at": latest_task_updated_at,
+        "health": health,
     }
 
 
 async def _runtime_operations_payload() -> dict[str, Any]:
     metrics = _runtime_request_metrics_payload()
+    task_summary = await _runtime_task_summary_payload()
+    uptime_seconds = round(max(0.0, time.time() - _runtime_started_at), 3)
+    llm_metrics = runtime_llm_metrics_payload()
     return {
         "started_at": _runtime_started_at,
-        "uptime_seconds": round(max(0.0, time.time() - _runtime_started_at), 3),
+        "uptime_seconds": uptime_seconds,
         "request_metrics": {
             "total_requests": metrics["total_requests"],
             "total_errors": metrics["total_errors"],
@@ -1379,7 +1761,13 @@ async def _runtime_operations_payload() -> dict[str, Any]:
             "last_error_at": metrics["last_error_at"],
         },
         "recent_errors": metrics["recent_errors"],
-        "task_summary": await _runtime_task_summary_payload(),
+        "task_summary": task_summary,
+        "operations_summary": runtime_operations_summary_payload(
+            request_metrics=metrics,
+            task_summary=task_summary,
+            uptime_seconds=uptime_seconds,
+            llm_metrics=llm_metrics,
+        ),
         "security": _security_status_payload(),
     }
 
@@ -1454,9 +1842,7 @@ def _resolve_active_prompt_runtime(
 
     dashboard_template_raw = active_prompt.get("dashboard_template", {})
     dashboard_template = (
-        dict(dashboard_template_raw)
-        if isinstance(dashboard_template_raw, dict)
-        else {}
+        dict(dashboard_template_raw) if isinstance(dashboard_template_raw, dict) else {}
     )
 
     return system_prompt_content, vector_store_path, dashboard_template
@@ -1471,7 +1857,9 @@ def _dashboard_feature_enabled(dashboard_template: Optional[dict[str, Any]]) -> 
 def _effective_vector_store_path(candidate: Optional[str] = None) -> str:
     raw = str(candidate or "").strip()
     if not raw:
-        raw = _active_vector_store_id() or os.getenv("VECTOR_STORE_PATH", "./vector_store")
+        raw = _active_vector_store_id() or os.getenv(
+            "VECTOR_STORE_PATH", "./vector_store"
+        )
     return _faiss_safe_store_path(_resolve_project_subdir(raw))
 
 
@@ -1507,7 +1895,7 @@ def _build_download_content_disposition(filename: str) -> str:
         escaped = raw_filename.replace("\\", "\\\\").replace('"', r"\"")
         return f'attachment; filename="{escaped}"'
 
-    ascii_fallback = re.sub(r'[^A-Za-z0-9._-]+', "_", raw_filename).strip("._")
+    ascii_fallback = re.sub(r"[^A-Za-z0-9._-]+", "_", raw_filename).strip("._")
     if not ascii_fallback:
         ascii_fallback = "download"
     encoded = quote(raw_filename, safe="")
@@ -1519,6 +1907,8 @@ _cors_origins, _cors_allow_credentials = _cors_settings()
 _REMOTE_MANAGEMENT_RATE_LIMIT_PATH_PREFIXES = (
     "/api/security/",
     "/api/auth/",
+    "/api/access/",
+    "/api/identity",
     "/api/operations/runtime",
     "/api/config",
     "/api/prompts",
@@ -1531,9 +1921,11 @@ _REMOTE_MANAGEMENT_RATE_LIMIT_PATH_PREFIXES = (
 )
 
 app = FastAPI(title="InsightDesk API", version="2.0.0")
-_deck_store = SQLiteDeckStore()
-_artifact_store = SQLiteArtifactStore()
-_share_link_store = SQLiteShareLinkStore()
+_deck_store = create_deck_store()
+_artifact_store = create_artifact_store()
+_share_link_store = create_share_link_store()
+_identity_store = create_identity_store()
+_resource_access_store = create_resource_access_store()
 _runtime_started_at = time.time()
 _security_audit_events_lock = threading.Lock()
 _runtime_metrics_lock = threading.Lock()
@@ -1541,24 +1933,17 @@ _remote_management_rate_limit_lock = threading.Lock()
 _security_audit_events: list[dict[str, Any]] = []
 _security_audit_store: SQLiteSecurityAuditStore | None = None
 _security_audit_store_init_lock = threading.Lock()
+_sso_session_store = None
+_sso_session_store_init_lock = threading.Lock()
 _remote_management_rate_limits: dict[str, dict[str, float]] = {}
+_sso_login_states_lock = threading.Lock()
+_sso_login_states: dict[str, dict[str, Any]] = {}
+_sso_sessions_lock = threading.Lock()
+_sso_sessions: dict[str, dict[str, Any]] = {}
 
 
 def _new_runtime_metrics_state() -> dict[str, Any]:
-    return {
-        "total_requests": 0,
-        "total_errors": 0,
-        "by_status_class": {
-            "2xx": 0,
-            "3xx": 0,
-            "4xx": 0,
-            "5xx": 0,
-            "other": 0,
-        },
-        "last_request_at": None,
-        "last_error_at": None,
-        "recent_errors": [],
-    }
+    return new_runtime_metrics_state()
 
 
 _runtime_metrics = _new_runtime_metrics_state()
@@ -1576,34 +1961,6 @@ def _artifact_payload(artifact: Any) -> dict[str, Any]:
     payload = artifact.model_dump(mode="json")
     payload["available_formats"] = artifact_export_formats(artifact)
     return payload
-
-
-def _create_report_artifact(
-    *,
-    session_id: str,
-    messages: list[Any],
-    answer_group_id: str = "",
-    panel_id: str = "",
-) -> tuple[Any, str, str]:
-    qa_pairs = ensure_deckable_chat(messages)
-    title = build_chat_report_title(messages)
-    markdown = build_report_markdown(messages, title)
-    artifact = build_report_artifact(
-        session_id=session_id,
-        title=title,
-        markdown=markdown,
-        qa_pairs=qa_pairs,
-        answer_group_id=answer_group_id,
-        panel_id=panel_id,
-    )
-    _artifact_store.save(artifact)
-    return artifact, title, markdown
-
-
-def _create_deck_artifact(deck: Any) -> Any:
-    artifact = build_deck_artifact(deck)
-    _artifact_store.save(artifact)
-    return artifact
 
 
 def _sync_deck_artifacts(deck: Any) -> None:
@@ -1669,7 +2026,9 @@ async def restrict_remote_clients(request: Request, call_next):
         response = await global_exception_handler(request, exc)
 
     process_time_ms = (time.perf_counter() - started_at) * 1000.0
-    _record_runtime_request(status_code=int(response.status_code), timestamp=time.time())
+    _record_runtime_request(
+        status_code=int(response.status_code), timestamp=time.time()
+    )
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Process-Time-Ms"] = f"{process_time_ms:.2f}"
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -1687,7 +2046,10 @@ async def restrict_remote_clients(request: Request, call_next):
             rate_limit_payload["reset_after_seconds"]
         )
         response.headers["X-RateLimit-Scope"] = "remote-management"
-        if int(response.status_code) == 429 and int(rate_limit_payload["retry_after"]) > 0:
+        if (
+            int(response.status_code) == 429
+            and int(rate_limit_payload["retry_after"]) > 0
+        ):
             response.headers["Retry-After"] = str(rate_limit_payload["retry_after"])
     logger.info(
         "request_id=%s method=%s path=%s status=%s latency_ms=%.2f",
@@ -1704,7 +2066,9 @@ async def restrict_remote_clients(request: Request, call_next):
 async def global_exception_handler(request: Request, exc: Exception):
     err = _classify_error(exc)
     request_id = getattr(request.state, "request_id", "")
-    logger.exception("Unhandled exception request_id=%s on %s", request_id, request.url.path)
+    logger.exception(
+        "Unhandled exception request_id=%s on %s", request_id, request.url.path
+    )
     _record_runtime_error(
         request=request,
         status_code=500,
@@ -1808,7 +2172,7 @@ async def _fallback_generate(
     mc: "ModelConfig", user_message: str, tool_outputs: str
 ) -> str:
     """当 Agent 达到迭代上限时，用单次 LLM 调用基于已有工具结果生成回答"""
-    from agent_core import get_llm
+    from backend.services.agent_core import get_llm
 
     try:
         mc = _normalize_model_config(mc)
@@ -1842,18 +2206,6 @@ async def _fallback_generate(
 # ─────────────────────────────────────────────
 
 
-class ModelConfig(BaseModel):
-    panel_id: str
-    connection_type: Optional[str] = None
-    provider: str = "ollama"
-    model: str = "qwen3.5-2B:latest"
-    base_url: str = "http://localhost:11434"
-    api_key: str = ""
-    api_key_ref: str = ""
-    temperature: float = 0.3
-    agent_mode: str = "auto"
-
-
 def _model_config_payload(mc: ModelConfig | dict[str, Any]) -> dict[str, Any]:
     if isinstance(mc, dict):
         return dict(mc)
@@ -1871,7 +2223,7 @@ def _base_model_payload(model: Any) -> dict[str, Any]:
 
 
 def _normalize_model_config(mc: ModelConfig | dict[str, Any]) -> ModelConfig:
-    from agent_core import (
+    from backend.services.agent_core import (
         default_base_url_for_connection_type,
         default_model_for_connection_type,
         normalize_connection_type,
@@ -1884,12 +2236,12 @@ def _normalize_model_config(mc: ModelConfig | dict[str, Any]) -> ModelConfig:
     )
     data["connection_type"] = connection_type
     data["provider"] = connection_type
-    data["base_url"] = (
-        str(data.get("base_url") or default_base_url_for_connection_type(connection_type)).strip()
-    )
-    data["model"] = (
-        str(data.get("model") or default_model_for_connection_type(connection_type)).strip()
-    )
+    data["base_url"] = str(
+        data.get("base_url") or default_base_url_for_connection_type(connection_type)
+    ).strip()
+    data["model"] = str(
+        data.get("model") or default_model_for_connection_type(connection_type)
+    ).strip()
     data["api_key"] = str(data.get("api_key") or "").strip()
     data["api_key_ref"] = str(data.get("api_key_ref") or "").strip()
     return ModelConfig(**data)
@@ -1903,649 +2255,6 @@ def _resolve_runtime_model_config(mc: ModelConfig | dict[str, Any]) -> ModelConf
             "api_key": _resolve_model_api_key(normalized),
         }
     )
-
-
-class ImageInput(BaseModel):
-    name: str
-    media_type: str
-    data_url: str
-
-
-class FileInput(BaseModel):
-    name: str
-    media_type: str
-    data_url: str
-    size_bytes: int = 0
-    extracted_text: str = ""
-
-
-class ChatRequest(BaseModel):
-    session_id: str
-    message: str = ""
-    images: list[ImageInput] = Field(default_factory=list)
-    files: list[FileInput] = Field(default_factory=list)
-    models: list[ModelConfig]
-    web_search_enabled: bool = False
-    knowledge_base_enabled: bool = True
-    enabled_mcp_servers: list[str] = Field(default_factory=list)
-    answer_group_id: Optional[str] = None
-
-
-class SingleChatRequest(BaseModel):
-    session_id: str
-    message: str = ""
-    images: list[ImageInput] = Field(default_factory=list)
-    files: list[FileInput] = Field(default_factory=list)
-    panel_config: ModelConfig
-    web_search_enabled: bool = False
-    knowledge_base_enabled: bool = True
-    enabled_mcp_servers: list[str] = Field(default_factory=list)
-    answer_group_id: Optional[str] = None
-    persist_user_history: bool = True
-    persist_ai_history: bool = True
-    replace_ai_history: bool = False
-    exclude_ai_answer_group_id: Optional[str] = None
-
-
-class CreateSessionRequest(BaseModel):
-    title: str = ""
-    workspace_id: Optional[str] = None
-
-
-class UpdateSessionRequest(BaseModel):
-    title: Optional[str] = None
-    is_archived: Optional[bool] = None
-    is_favorite: Optional[bool] = None
-    is_pinned: Optional[bool] = None
-    tags: Optional[list[str]] = None
-    workspace_id: Optional[str] = None
-
-
-class ReorderSessionsRequest(BaseModel):
-    session_ids: list[str]
-    workspace_id: Optional[str] = None
-
-
-class CreateBookmarkRequest(BaseModel):
-    session_id: str
-    role: str
-    message_id: Optional[int] = None
-    panel_id: str = ""
-    answer_group_id: str = ""
-    content: str = ""
-    model_id: str = ""
-    session_title: str = ""
-
-
-class ShareLinkResponse(BaseModel):
-    resource_type: str
-    resource_id: str
-    share_token: str
-    share_url: str
-    expires_at: float
-
-
-class RevokeShareLinkResponse(BaseModel):
-    ok: bool
-
-
-class ShareLinkAuditRecord(BaseModel):
-    resource_type: str
-    resource_id: str
-    created_at: float
-    expires_at: float
-    revoked_at: Optional[float] = None
-    is_active: bool
-    created_by_ip: str = ""
-    created_user_agent: str = ""
-    access_count: int = 0
-    last_accessed_at: Optional[float] = None
-    last_accessed_ip: str = ""
-    last_accessed_user_agent: str = ""
-    share_token_preview: str
-    share_token_fingerprint: str
-
-
-class ShareLinkAuditListResponse(BaseModel):
-    share_links: list[ShareLinkAuditRecord]
-    total: int
-    active_count: int
-
-
-class SecurityStatusResponse(BaseModel):
-    allow_remote_clients: bool
-    local_only_mode: bool
-    remote_auth_ready: bool
-    admin_token_configured: bool
-    remote_admin_ready: bool
-    auth_token_count: int
-    configured_roles: list[str]
-    auth_token_hygiene_healthy: bool
-    weak_auth_token_count: int
-    legacy_auth_token_count: int
-    share_link_secret_healthy: bool
-    remote_share_ready: bool
-    remote_management_rate_limit_enabled: bool
-    remote_management_rate_limit_window_seconds: int
-    remote_management_rate_limit_window_seconds_source: str
-    remote_management_rate_limit_max_requests: int
-    remote_management_rate_limit_max_requests_source: str
-    share_link_ttl_seconds: int
-    share_link_ttl_hours: float
-    cors_allow_credentials: bool
-    cors_allowed_origins: list[str]
-    request_id_header: str
-    process_time_header: str
-    security_audit_storage: str
-    security_audit_history_limit: int
-    security_audit_history_limit_source: str
-    security_audit_persisted_count: int
-    security_audit_memory_window_limit: int
-    chat_file_limits: dict[str, int]
-    document_upload_limits: dict[str, int]
-
-
-class AuthWhoAmIResponse(BaseModel):
-    user_id: str
-    role: str
-    auth_mode: str
-    auth_source: str
-    is_local: bool
-    capabilities: list[str]
-
-
-class AuthTokenCatalogRecord(BaseModel):
-    user_id: str
-    role: str
-    auth_source: str
-    token_preview: str
-    token_fingerprint: str
-    is_legacy: bool
-    is_weak: bool
-
-
-class AuthTokenCatalogResponse(BaseModel):
-    tokens: list[AuthTokenCatalogRecord]
-    total: int
-    configured_roles: list[str]
-    healthy: bool
-    weak_count: int
-    legacy_count: int
-
-
-class SecurityAuditEventRecord(BaseModel):
-    timestamp: float
-    request_id: str
-    action: str
-    result: str
-    ip: str
-    is_local: bool
-    auth_mode: str
-    auth_source: str
-    user_id: str
-    user_role: str
-    details: str
-
-
-class SecurityAuditEventListResponse(BaseModel):
-    events: list[SecurityAuditEventRecord]
-    total: int
-    limit: int
-
-
-class SecurityAuditCleanupResponse(BaseModel):
-    deleted_count: int
-    remaining_count: int
-    memory_deleted_count: int
-    memory_remaining_count: int
-    keep_latest: int
-    history_limit: int
-    includes_cleanup_event: bool
-
-
-app.include_router(
-    build_security_router(
-        security_status_response_model=SecurityStatusResponse,
-        auth_whoami_response_model=AuthWhoAmIResponse,
-        auth_token_catalog_response_model=AuthTokenCatalogResponse,
-        security_audit_event_list_response_model=SecurityAuditEventListResponse,
-        security_audit_cleanup_response_model=SecurityAuditCleanupResponse,
-        require_remote_viewer=_require_remote_viewer,
-        require_remote_admin=_require_remote_admin,
-        security_status_payload=lambda: _security_status_payload(),
-        auth_whoami_payload=lambda auth: build_auth_whoami_payload(
-            auth,
-            default_role="admin",
-            normalize_auth_role=_normalize_auth_role,
-            role_rank=_role_rank,
-        ),
-        auth_token_catalog_payload=lambda: _auth_token_catalog_payload(),
-        security_audit_events_payload=lambda **kwargs: _security_audit_events_payload(**kwargs),
-        cleanup_security_audit_events=lambda **kwargs: _cleanup_security_audit_events(**kwargs),
-        audit_security_event=_audit_security_event,
-        get_security_audit_store_count=lambda: _get_security_audit_store().count_events(),
-        get_memory_security_audit_event_count=lambda: len(_security_audit_events),
-        logger=logger,
-    )
-)
-
-
-class RuntimeRequestMetricsResponse(BaseModel):
-    total_requests: int
-    total_errors: int
-    by_status_class: dict[str, int]
-    last_request_at: float | None = None
-    last_error_at: float | None = None
-
-
-class RuntimeRecentErrorResponse(BaseModel):
-    timestamp: float
-    request_id: str
-    path: str
-    method: str
-    status_code: int
-    error_code: str
-    message: str
-
-
-class RuntimeTaskSummaryResponse(BaseModel):
-    in_memory_total: int
-    pending: int
-    running: int
-    completed: int
-    failed: int
-    latest_task_updated_at: float | None = None
-
-
-class RuntimeOperationsResponse(BaseModel):
-    started_at: float
-    uptime_seconds: float
-    request_metrics: RuntimeRequestMetricsResponse
-    recent_errors: list[RuntimeRecentErrorResponse]
-    task_summary: RuntimeTaskSummaryResponse
-    security: dict[str, Any]
-
-
-app.include_router(
-    build_operations_router(
-        runtime_operations_response_model=RuntimeOperationsResponse,
-        require_remote_viewer=_require_remote_viewer,
-        require_remote_admin=_require_remote_admin,
-        runtime_request_metrics_payload=lambda: _runtime_request_metrics_payload(),
-        runtime_task_summary_payload=lambda: _runtime_task_summary_payload(),
-        runtime_operations_payload=lambda: _runtime_operations_payload(),
-        get_runtime_started_at=lambda: _runtime_started_at,
-        sync_runtime_secret_from_store=lambda env_name, config_key: _sync_runtime_secret_from_store(
-            env_name,
-            config_key,
-        ),
-        validate_tavily_api_key=lambda api_key: _validate_tavily_api_key(api_key),
-        get_app_config_store=lambda: _get_app_config_store(),
-        upsert_cloud_model_api_key=lambda api_key_ref, api_key: _upsert_cloud_model_api_key(
-            api_key_ref,
-            api_key,
-        ),
-        delete_cloud_model_api_key=lambda api_key_ref: _delete_cloud_model_api_key(api_key_ref),
-        audit_security_event=_audit_security_event,
-    )
-)
-
-
-app.include_router(
-    build_prompt_router(
-        require_remote_viewer=_require_remote_viewer,
-        require_remote_editor=_require_remote_editor,
-        list_system_prompts=lambda: importlib.import_module("chat_store").get_all_system_prompts(),
-        create_system_prompt=lambda *args, **kwargs: importlib.import_module(
-            "chat_store"
-        ).create_system_prompt(*args, **kwargs),
-        update_system_prompt=lambda *args, **kwargs: importlib.import_module(
-            "chat_store"
-        ).update_system_prompt(*args, **kwargs),
-        delete_system_prompt=lambda prompt_id: importlib.import_module(
-            "chat_store"
-        ).delete_system_prompt(prompt_id),
-        activate_system_prompt=lambda prompt_id: importlib.import_module(
-            "chat_store"
-        ).activate_system_prompt(prompt_id),
-        clear_agent_cache=lambda: _clear_agent_cache(),
-        build_doc_pipeline=lambda vector_store_path: importlib.import_module(
-            "doc_pipeline"
-        ).DocPipeline(vector_store_path=vector_store_path),
-        audit_security_event=_audit_security_event,
-        logger=logger,
-    )
-)
-
-app.include_router(
-    build_kb_router(
-        backend_dir=str(BACKEND_DIR),
-        require_remote_viewer=_require_remote_viewer,
-        require_remote_editor=_require_remote_editor,
-        require_remote_admin=_require_remote_admin,
-        effective_vector_store_path=lambda path: _effective_vector_store_path(path),
-        resolve_project_subdir=lambda candidate: _resolve_project_subdir(candidate),
-        resolve_deletable_knowledge_base=lambda candidate: _resolve_deletable_knowledge_base(
-            candidate
-        ),
-        active_vector_store_id=lambda: _active_vector_store_id(),
-        faiss_safe_store_path=lambda target_path: _faiss_safe_store_path(target_path),
-        build_doc_pipeline=lambda vector_store_path: importlib.import_module(
-            "doc_pipeline"
-        ).DocPipeline(vector_store_path=vector_store_path),
-        list_kb_chunks_payload=lambda **kwargs: list_kb_chunks_payload(**kwargs),
-        update_kb_chunk_payload=lambda **kwargs: update_kb_chunk_payload(**kwargs),
-        delete_kb_chunk_payload=lambda **kwargs: delete_kb_chunk_payload(**kwargs),
-        knowledge_bases_payload=lambda **kwargs: knowledge_bases_payload(**kwargs),
-        kb_health_payload=lambda *args, **kwargs: kb_health_payload(*args, **kwargs),
-        retrieval_test_payload=lambda *args, **kwargs: retrieval_test_payload(*args, **kwargs),
-        kb_collect_chunks=lambda *args, **kwargs: _kb_collect_chunks(*args, **kwargs),
-        filter_kb_chunks=lambda *args, **kwargs: filter_kb_chunks(*args, **kwargs),
-        kb_docstore_dict=lambda *args, **kwargs: _kb_docstore_dict(*args, **kwargs),
-        kb_safe_metadata=lambda *args, **kwargs: _kb_safe_metadata(*args, **kwargs),
-        kb_rebuild_from_documents=lambda *args, **kwargs: _kb_rebuild_from_documents(
-            *args,
-            **kwargs,
-        ),
-        doc_factory=lambda page_content, metadata: importlib.import_module(
-            "langchain_core.documents"
-        ).Document(
-            page_content=page_content,
-            metadata=metadata,
-        ),
-        delete_kb_directory=lambda *args, **kwargs: delete_kb_directory(*args, **kwargs),
-        clear_agent_cache=lambda: _clear_agent_cache(),
-        content_hash=lambda value: _content_hash(value),
-        audit_security_event=_audit_security_event,
-        logger=logger,
-    )
-)
-
-app.include_router(
-    build_chat_router(
-        prepare_chat_route_runtime=prepare_chat_route_runtime,
-        sse_streaming_response=sse_streaming_response,
-        stream_parallel_sse=stream_parallel_sse,
-        stream_single_sse=stream_single_sse,
-        build_parallel_agent_streams=build_parallel_agent_streams,
-        build_single_agent_stream=build_single_agent_stream,
-        list_mcp_server_catalog=list_mcp_server_catalog,
-        default_mcp_server_names=default_mcp_server_names,
-        resolve_active_prompt_runtime=_resolve_active_prompt_runtime,
-        validate_chat_payload=_validate_chat_payload,
-        prepare_chat_files=_prepare_chat_files,
-        build_user_input=_build_user_input,
-        base_model_payload=_base_model_payload,
-        normalize_model_config=_normalize_model_config,
-        model_config_payload=_model_config_payload,
-        invoke_agent_stream=_invoke_agent_stream,
-        clear_agent_cache=_clear_agent_cache,
-        require_remote_admin=_require_remote_admin,
-        audit_security_event=_audit_security_event,
-        chat_request_model=ChatRequest,
-        single_chat_request_model=SingleChatRequest,
-        logger=logger,
-    )
-)
-
-app.include_router(
-    build_session_router(
-        require_remote_share_secret=_require_remote_share_secret,
-        current_share_link_secret=_current_share_link_secret,
-        share_link_response_model=ShareLinkResponse,
-        share_link_ttl_seconds=SHARE_LINK_TTL_SECONDS,
-        request_client_ip=_request_client_ip,
-        request_user_agent=_request_user_agent,
-        audit_security_event=_audit_security_event,
-        token_fingerprint=_token_fingerprint,
-        encode_share_token=_encode_share_token,
-        build_share_url=_build_share_url,
-        create_share_link_payload=create_share_link_payload,
-        share_link_store=_share_link_store,
-        workspaces_payload=workspaces_payload,
-        session_update_requested=session_update_requested,
-        create_session_record=create_session_record,
-        reorder_sessions_payload=reorder_sessions_payload,
-        deck_store=_deck_store,
-        tasks_lock=_tasks_lock,
-        tasks=_tasks,
-        suppressed_task_ids=_suppressed_task_ids,
-        prune_task_records_locked=_prune_task_records_locked,
-        get_task_store=_get_task_store,
-        artifact_store=_artifact_store,
-        build_session_messages_payload=_build_session_messages_payload,
-        build_answer_group_review_payload=_build_answer_group_review_payload,
-        collect_session_attachments=_collect_session_attachments,
-        find_session_attachment=_find_session_attachment,
-        session_attachments_payload=session_attachments_payload,
-        attach_current_kb_status=attach_current_kb_status,
-        get_attachment_promotion_task=_get_attachment_promotion_task,
-        prepare_attachment_promotion=prepare_attachment_promotion,
-        task_record_payload=task_record_payload,
-        enqueue_task=enqueue_task,
-        persist_task_record=_persist_task_record,
-        prune_persisted_tasks=_prune_persisted_tasks,
-        run_task=_run_task,
-        session_memory_payload=session_memory_payload,
-        pin_session_memory_payload=pin_session_memory_payload,
-        session_memory_updates=session_memory_updates,
-        update_session_memory_payload=update_session_memory_payload,
-        summarize_session_memory_payload=summarize_session_memory_payload,
-        delete_session_memory_payload=delete_session_memory_payload,
-        generate_session_phase_summary_memory=_generate_session_phase_summary_memory,
-        validate_chat_payload=_validate_chat_payload,
-        base_model_payload=_base_model_payload,
-        normalize_model_config=_normalize_model_config,
-        model_config_payload=_model_config_payload,
-        chat_attachment_preview_chars=CHAT_ATTACHMENT_PREVIEW_CHARS,
-        effective_vector_store_path=_effective_vector_store_path,
-        require_workspace_session=_require_workspace_session,
-        request_field_set=_request_field_set,
-        artifact_payload=_artifact_payload,
-        clear_agent_cache=_clear_agent_cache,
-        create_workspace_request_model=CreateWorkspaceRequest,
-        update_workspace_request_model=UpdateWorkspaceRequest,
-        create_session_request_model=CreateSessionRequest,
-        update_session_request_model=UpdateSessionRequest,
-        reorder_sessions_request_model=ReorderSessionsRequest,
-        create_bookmark_request_model=CreateBookmarkRequest,
-        set_message_feedback_request_model=SetMessageFeedbackRequest,
-        truncate_session_messages_request_model=TruncateSessionMessagesRequest,
-        import_session_messages_request_model=ImportSessionMessagesRequest,
-        set_retrieval_feedback_request_model=SetRetrievalFeedbackRequest,
-        pin_session_memory_request_model=PinSessionMemoryRequest,
-        update_session_memory_request_model=UpdateSessionMemoryRequest,
-        logger=logger,
-    )
-)
-
-app.include_router(
-    build_content_router(
-        artifact_store=_artifact_store,
-        deck_store=_deck_store,
-        share_link_store=_share_link_store,
-        tasks=_tasks,
-        tasks_lock=_tasks_lock,
-        suppressed_task_ids=_suppressed_task_ids,
-        prune_task_records_locked=_prune_task_records_locked,
-        persist_task_record=_persist_task_record,
-        prune_persisted_tasks=_prune_persisted_tasks,
-        get_task_store=_get_task_store,
-        run_task=_run_task,
-        enqueue_task=enqueue_task,
-        task_record_payload=task_record_payload,
-        list_tasks_payload=list_tasks_payload,
-        task_history_limit=TASK_HISTORY_LIMIT,
-        artifact_payload=_artifact_payload,
-        artifact_export_formats=artifact_export_formats,
-        build_deck_artifact=build_deck_artifact,
-        build_report_artifact=build_report_artifact,
-        sync_deck_artifact=sync_deck_artifact,
-        require_remote_viewer=_require_remote_viewer,
-        require_remote_editor=_require_remote_editor,
-        require_remote_admin=_require_remote_admin,
-        require_remote_share_secret=_require_remote_share_secret,
-        current_share_link_secret=_current_share_link_secret,
-        audit_security_event=_audit_security_event,
-        token_fingerprint=_token_fingerprint,
-        encode_share_token=_encode_share_token,
-        decode_share_token=_decode_share_token,
-        build_share_url=_build_share_url,
-        create_share_link_payload_fn=create_share_link_payload,
-        share_link_ttl_seconds=SHARE_LINK_TTL_SECONDS,
-        request_client_ip=_request_client_ip,
-        request_user_agent=_request_user_agent,
-        share_link_audit_payload=_share_link_audit_payload,
-        share_link_response_model=ShareLinkResponse,
-        revoke_share_link_response_model=RevokeShareLinkResponse,
-        share_link_audit_list_response_model=ShareLinkAuditListResponse,
-        open_shared_resource_payload=open_shared_resource_payload,
-        build_session_messages_payload=_build_session_messages_payload,
-        render_shared_session_html=_render_shared_session_html,
-        render_shared_deck_html=_render_shared_deck_html,
-        build_download_content_disposition=_build_download_content_disposition,
-        build_chat_report_title=build_chat_report_title,
-        build_report_markdown=build_report_markdown,
-        ensure_deckable_chat=ensure_deckable_chat,
-        populate_chat_report_presentation=populate_chat_report_presentation,
-        safe_report_filename=safe_report_filename,
-        stage_upload_files=stage_upload_files,
-        build_upload_documents_task_record=build_upload_documents_task_record,
-        cleanup_temp_paths=cleanup_temp_paths,
-        upload_documents_response=upload_documents_response,
-        effective_vector_store_path=_effective_vector_store_path,
-        resolve_report_messages=_resolve_report_messages,
-        resolve_active_prompt_runtime=_resolve_active_prompt_runtime,
-        normalize_model_config=_resolve_runtime_model_config,
-        build_deck=build_deck,
-        build_create_deck_kwargs=build_create_deck_kwargs,
-        build_regenerate_deck_kwargs=build_regenerate_deck_kwargs,
-        apply_deck_update=apply_deck_update,
-        replace_deck_slide=replace_deck_slide,
-        export_deck_payload=export_deck_payload,
-        export_deck_to_pptx=export_deck_to_pptx,
-        build_export_filename=build_export_filename,
-        normalize_deck_theme=normalize_deck_theme,
-        regenerate_deck_slide=regenerate_deck_slide,
-        sync_deck_artifacts=_sync_deck_artifacts,
-        create_deck_artifact=_create_deck_artifact,
-        report_download_payload=report_download_payload,
-        resolve_report_messages_fn=_resolve_report_messages,
-        create_report_artifact=_create_report_artifact,
-        persist_web_research_task_placeholder=persist_web_research_task_placeholder,
-        document_upload_max_count=DOCUMENT_UPLOAD_MAX_COUNT,
-        document_upload_max_file_bytes=DOCUMENT_UPLOAD_MAX_FILE_BYTES,
-        document_upload_max_total_bytes=DOCUMENT_UPLOAD_MAX_TOTAL_BYTES,
-        create_task_request_model=CreateTaskRequest,
-        create_deck_request_model=CreateDeckRequest,
-        update_deck_request_model=UpdateDeckRequest,
-        regenerate_deck_slide_request_model=RegenerateDeckSlideRequest,
-        generate_report_request_model=GenerateReportRequest,
-        update_artifact_request_model=UpdateArtifactRequest,
-        generate_artifact_request_model=GenerateArtifactRequest,
-        logger=logger,
-    )
-)
-
-
-class WorkspaceToolConfigRequest(BaseModel):
-    web_search_enabled: bool = False
-    knowledge_base_enabled: bool = True
-    mcp_servers_enabled: list[str] = Field(default_factory=default_mcp_server_names)
-
-
-class WorkspaceOutputPresetRequest(BaseModel):
-    deck_theme: Literal["default", "midnight", "sunrise"] = "default"
-    target_slide_count: int = Field(default=8, ge=4, le=10)
-
-
-class WorkspacePresetRequest(BaseModel):
-    default_panels: list[ModelConfig] = Field(default_factory=list)
-    tool_config: WorkspaceToolConfigRequest = Field(
-        default_factory=WorkspaceToolConfigRequest
-    )
-    output_preset: WorkspaceOutputPresetRequest = Field(
-        default_factory=WorkspaceOutputPresetRequest
-    )
-
-
-class CreateWorkspaceRequest(BaseModel):
-    name: str
-    description: str = ""
-    color: str = "blue"
-    activate: bool = True
-    preset: Optional[WorkspacePresetRequest] = None
-
-
-class UpdateWorkspaceRequest(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    color: Optional[str] = None
-    preset: Optional[WorkspacePresetRequest] = None
-
-
-class SetMessageFeedbackRequest(BaseModel):
-    value: int
-    message_id: Optional[int] = None
-    panel_id: str = ""
-    answer_group_id: str = ""
-
-
-class TruncateSessionMessagesRequest(BaseModel):
-    answer_group_id: str
-    content: str = ""
-    images: list[ImageInput] = Field(default_factory=list)
-    files: list[FileInput] = Field(default_factory=list)
-
-
-class ImportedFileInput(BaseModel):
-    name: str
-    media_type: str
-    data_url: str = ""
-    size_bytes: int = 0
-    extracted_text: str = ""
-
-
-class ImportSessionMessageRequest(BaseModel):
-    role: Literal["user", "assistant"]
-    content: str = ""
-    images: list[ImageInput] = Field(default_factory=list)
-    files: list[ImportedFileInput] = Field(default_factory=list)
-    sources: list[dict[str, Any]] = Field(default_factory=list)
-    model_id: str = ""
-    panel_id: str = ""
-    answer_group_id: str = ""
-    workflow_nodes: list[dict[str, Any]] = Field(default_factory=list)
-    task_id: str = ""
-    task_type: str = ""
-
-
-class ImportSessionMessagesRequest(BaseModel):
-    panels: list[ModelConfig] = Field(default_factory=list)
-    messages: list[ImportSessionMessageRequest] = Field(default_factory=list)
-
-
-class SetRetrievalFeedbackRequest(BaseModel):
-    panel_id: str
-    answer_group_id: str
-    source: dict[str, Any]
-    value: int
-
-
-class PinSessionMemoryRequest(BaseModel):
-    content: str
-    kind: str = Field(default="fact")
-
-
-class UpdateSessionMemoryRequest(BaseModel):
-    content: Optional[str] = None
-    kind: Optional[str] = None
-
-
-class GenerateReportRequest(BaseModel):
-    session_id: str
-    answer_group_id: Optional[str] = None
-    panel_id: Optional[str] = None
 
 
 def _resolve_report_messages(
@@ -2565,70 +2274,17 @@ def _resolve_report_messages(
     )
 
 
-class CreateDeckRequest(BaseModel):
-    session_id: str
-    panel_config: ModelConfig
-    knowledge_base_enabled: bool = True
-    target_slide_count: int = Field(default=8, ge=4, le=10)
-    theme: str = "default"
-    answer_group_id: Optional[str] = None
-    panel_id: Optional[str] = None
-
-
-class GenerateArtifactRequest(BaseModel):
-    artifact_type: Literal["report", "deck"]
-    session_id: str
-    answer_group_id: Optional[str] = None
-    panel_id: Optional[str] = None
-    panel_config: Optional[ModelConfig] = None
-    knowledge_base_enabled: bool = True
-    target_slide_count: int = Field(default=8, ge=4, le=10)
-    theme: str = "default"
-
-
-class UpdateArtifactRequest(BaseModel):
-    title: Optional[str] = None
-    markdown: Optional[str] = None
-
-
-class UpdateDeckRequest(BaseModel):
-    title: Optional[str] = None
-    theme: Optional[str] = None
-    slides: Optional[list[DeckSlide]] = None
-
-
-class RegenerateDeckSlideRequest(BaseModel):
-    panel_config: ModelConfig
-    knowledge_base_enabled: Optional[bool] = None
-
-
-class CreateTaskRequest(BaseModel):
-    task_type: str  # e.g. "analyze_knowledge_base", "generate_report"
-    params: dict = {}
-    session_id: Optional[str] = None
-
-
 # ─────────────────────────────────────────────
 # 异步任务状态机
 # ─────────────────────────────────────────────
 
 
 def _update_task_progress(record: TaskRecord, progress: int) -> None:
-    """线程安全之外的轻量进度更新，供同步处理阶段回调使用。"""
-    if record.task_id in _suppressed_task_ids:
-        return
-    record.progress = max(0, min(100, progress))
-    record.updated_at = time.time()
-    _persist_task_record(record)
+    return task_runtime._update_task_progress(sys.modules[__name__], record, progress)
 
 
 async def _drop_suppressed_task(record: TaskRecord) -> bool:
-    if record.task_id not in _suppressed_task_ids:
-        return False
-    async with _tasks_lock:
-        _tasks.pop(record.task_id, None)
-        _prune_task_records_locked()
-    return True
+    return await task_runtime._drop_suppressed_task(sys.modules[__name__], record)
 
 
 async def _create_inline_task_record(
@@ -2638,16 +2294,12 @@ async def _create_inline_task_record(
     session_id: Optional[str] = None,
     progress: int = 10,
 ) -> TaskRecord:
-    return await create_inline_task_record(
-        _tasks,
-        _tasks_lock,
-        task_type=task_type,
-        params=params,
+    return await task_runtime._create_inline_task_record(
+        sys.modules[__name__],
+        task_type,
+        params,
         session_id=session_id,
         progress=progress,
-        prune_in_memory=_prune_task_records_locked,
-        persist_record=_persist_task_record,
-        prune_persisted=_prune_persisted_tasks,
     )
 
 
@@ -2659,239 +2311,65 @@ async def _set_inline_task_state(
     result: Optional[str] = None,
     error: Optional[str] = None,
 ) -> TaskRecord:
-    if record.task_id in _suppressed_task_ids:
-        async with _tasks_lock:
-            _tasks.pop(record.task_id, None)
-            _prune_task_records_locked()
-        record.status = status
-        record.updated_at = time.time()
-        if progress is not None:
-            record.progress = max(0, min(100, progress))
-        if result is not None:
-            record.result = result
-        if error is not None:
-            record.error = error
-        return record
-    return await set_inline_task_state(
-        _tasks,
-        _tasks_lock,
-        record=record,
+    return await task_runtime._set_inline_task_state(
+        sys.modules[__name__],
+        record,
         status=status,
         progress=progress,
         result=result,
         error=error,
-        prune_in_memory=_prune_task_records_locked,
-        persist_record=_persist_task_record,
-        prune_persisted=_prune_persisted_tasks,
     )
 
 
+def _is_deep_research_task(record: TaskRecord) -> bool:
+    return task_runtime._is_deep_research_task(sys.modules[__name__], record)
+
+
+def _get_deep_research_semaphore() -> asyncio.Semaphore:
+    return task_runtime._get_deep_research_semaphore(sys.modules[__name__])
+
+
+def _get_task_store() -> SQLiteTaskStore:
+    return task_runtime._get_task_store(sys.modules[__name__])
+
+
+def _persist_task_record(record: TaskRecord) -> None:
+    return task_runtime._persist_task_record(sys.modules[__name__], record)
+
+
+def _prune_persisted_tasks() -> None:
+    return task_runtime._prune_persisted_tasks(sys.modules[__name__])
+
+
+def _prune_task_records_locked(now: float | None = None) -> None:
+    return task_runtime._prune_task_records_locked(sys.modules[__name__], now)
+
+
+async def _run_task(record: TaskRecord) -> None:
+    return await task_runtime._run_task(sys.modules[__name__], record)
+
+
+async def create_task(request: CreateTaskRequest) -> dict[str, Any]:
+    return await task_runtime.create_task(sys.modules[__name__], request)
+
+
+async def get_task(task_id: str) -> dict[str, Any]:
+    return await task_runtime.get_task(sys.modules[__name__], task_id)
+
+
+async def list_tasks(limit: int = 20) -> dict[str, Any]:
+    return await task_runtime.list_tasks(sys.modules[__name__], limit)
 
 
 _tasks: dict[str, TaskRecord] = {}
 _tasks_lock = asyncio.Lock()
+_integrator_scheduler_tick_lock = asyncio.Lock()
+_integrator_scheduler_task: asyncio.Task | None = None
 _suppressed_task_ids: set[str] = set()
 _deep_research_semaphore_lock = threading.Lock()
 _deep_research_semaphores: dict[int, asyncio.Semaphore] = {}
 _task_store: SQLiteTaskStore | None = None
 _task_store_init_lock = threading.Lock()
-
-
-def _is_deep_research_task(record: TaskRecord) -> bool:
-    return (
-        str(record.task_type or "").strip() == "web_research"
-        and str(record.params.get("research_mode") or "").strip().lower() == "deep"
-    )
-
-
-def _get_deep_research_semaphore() -> asyncio.Semaphore:
-    loop = asyncio.get_running_loop()
-    loop_key = id(loop)
-    with _deep_research_semaphore_lock:
-        semaphore = _deep_research_semaphores.get(loop_key)
-        if semaphore is None:
-            semaphore = asyncio.Semaphore(DEEP_RESEARCH_MAX_CONCURRENCY)
-            _deep_research_semaphores[loop_key] = semaphore
-        return semaphore
-
-
-def _get_task_store() -> SQLiteTaskStore:
-    global _task_store
-    if _task_store is None:
-        with _task_store_init_lock:
-            if _task_store is None:
-                _task_store = SQLiteTaskStore(
-                    history_limit=TASK_HISTORY_LIMIT,
-                    ttl_seconds=TASK_HISTORY_TTL_SECONDS,
-                )
-    return _task_store
-
-
-def _persist_task_record(record: TaskRecord) -> None:
-    if record.task_id in _suppressed_task_ids:
-        logger.info("Skip persisting suppressed task record: %s", record.task_id)
-        return
-    try:
-        _get_task_store().save(record)
-    except Exception:
-        logger.exception("Failed to persist task record: %s", record.task_id)
-
-
-def _prune_persisted_tasks() -> None:
-    try:
-        _get_task_store().prune()
-    except Exception:
-        logger.exception("Failed to prune persisted task records")
-
-
-def _prune_task_records_locked(now: float | None = None) -> None:
-    """Prune expired and excess terminal tasks while holding _tasks_lock."""
-    prune_task_records(
-        _tasks,
-        history_limit=TASK_HISTORY_LIMIT,
-        ttl_seconds=TASK_HISTORY_TTL_SECONDS,
-        now=now,
-        logger=logger,
-    )
-
-
-async def _run_task(record: TaskRecord) -> None:
-    """后台执行任务并更新状态"""
-    deep_research_slot: asyncio.Semaphore | None = None
-    deep_research_acquired = False
-    try:
-        if _is_deep_research_task(record):
-            deep_research_slot = _get_deep_research_semaphore()
-            await deep_research_slot.acquire()
-            deep_research_acquired = True
-
-        async with _tasks_lock:
-            _prune_task_records_locked()
-            record.status = TaskStatus.RUNNING
-            record.updated_at = time.time()
-            record.progress = 10
-        if await _drop_suppressed_task(record):
-            return
-        _persist_task_record(record)
-
-        task_type = record.task_type
-
-        async def _set_progress(progress: int) -> None:
-            if await _drop_suppressed_task(record):
-                return
-            async with _tasks_lock:
-                record.progress = progress
-                record.updated_at = time.time()
-            _persist_task_record(record)
-
-        if task_type == "analyze_knowledge_base":
-            await run_analyze_knowledge_base_task(
-                record,
-                set_progress=_set_progress,
-                effective_vector_store_path=_effective_vector_store_path,
-            )
-
-        elif task_type == "generate_report":
-            await run_generate_report_task(
-                record,
-                set_progress=_set_progress,
-                resolve_report_messages=_resolve_report_messages,
-                ensure_deckable_chat=ensure_deckable_chat,
-                build_chat_report_title=build_chat_report_title,
-                build_report_markdown=build_report_markdown,
-                build_report_artifact=build_report_artifact,
-                save_artifact=_artifact_store.save,
-            )
-
-        elif task_type == "generate_deck":
-            await run_generate_deck_task(
-                record,
-                set_progress=_set_progress,
-                resolve_report_messages=_resolve_report_messages,
-                normalize_model_config=_resolve_runtime_model_config,
-                resolve_active_prompt_runtime=_resolve_active_prompt_runtime,
-                build_deck=build_deck,
-                save_deck=_deck_store.save,
-                build_deck_artifact=build_deck_artifact,
-                save_artifact=_artifact_store.save,
-            )
-
-        elif task_type == "upload_documents":
-            await run_upload_documents_task(
-                record,
-                set_progress=_set_progress,
-                update_progress=_update_task_progress,
-                effective_vector_store_path=_effective_vector_store_path,
-                clear_agent_cache=_clear_agent_cache,
-                logger=logger,
-            )
-
-        elif task_type == "promote_attachment_to_kb":
-            await run_promote_attachment_to_kb_task(
-                record,
-                set_progress=_set_progress,
-                update_progress=_update_task_progress,
-                effective_vector_store_path=_effective_vector_store_path,
-                chat_file_suffix=_chat_file_suffix,
-                decode_data_url=_decode_data_url,
-                clear_agent_cache=_clear_agent_cache,
-                logger=logger,
-            )
-
-        elif task_type == "web_research":
-            from agent_core import get_llm
-
-            await run_web_research_task(
-                record,
-                set_progress=_set_progress,
-                normalize_model_config=_resolve_runtime_model_config,
-                create_llm=get_llm,
-            )
-
-        else:
-            await run_placeholder_task(
-                record,
-                set_progress=_set_progress,
-            )
-
-        if await _drop_suppressed_task(record):
-            return
-        async with _tasks_lock:
-            record.status = TaskStatus.COMPLETED
-            record.progress = 100
-            record.updated_at = time.time()
-            _prune_task_records_locked(record.updated_at)
-        _persist_task_record(record)
-        _prune_persisted_tasks()
-
-    except Exception as exc:
-        logger.exception(
-            "task_id=%s task_type=%s 执行失败", record.task_id, record.task_type
-        )
-        if record.task_type == "upload_documents":
-            for temp_path in record.params.get("temp_paths", []):
-                try:
-                    os.remove(str(temp_path))
-                except OSError:
-                    pass
-        if await _drop_suppressed_task(record):
-            return
-        async with _tasks_lock:
-            record.status = TaskStatus.FAILED
-            record.error = str(exc)
-            record.updated_at = time.time()
-            _prune_task_records_locked(record.updated_at)
-        _persist_task_record(record)
-        if record.task_type == "web_research":
-            persist_web_research_task_result(
-                record,
-                content=f"联网研究任务失败：{record.error}",
-                sources=[],
-            )
-        _prune_persisted_tasks()
-    finally:
-        if deep_research_slot is not None and deep_research_acquired:
-            deep_research_slot.release()
 
 
 # ─────────────────────────────────────────────
@@ -2927,7 +2405,9 @@ def _decode_data_url(data_url: str, file_name: str) -> bytes:
     return _decode_data_url_impl(data_url, file_name)
 
 
-def _clip_attachment_preview_text(text: str, limit: int = CHAT_ATTACHMENT_PREVIEW_CHARS) -> str:
+def _clip_attachment_preview_text(
+    text: str, limit: int = CHAT_ATTACHMENT_PREVIEW_CHARS
+) -> str:
     return _clip_attachment_preview_text_impl(text, limit)
 
 
@@ -2980,58 +2460,37 @@ def _request_field_set(model: BaseModel) -> set[str]:
 
 
 def _clip_text(text: Any, limit: int) -> str:
-    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
-    if limit <= 0 or len(normalized) <= limit:
-        return normalized
-    return normalized[: max(1, limit - 3)].rstrip() + "..."
+    return session_summary_runtime._clip_text(sys.modules[__name__], text, limit)
 
 
 def _summary_llm_enabled() -> bool:
-    return summary_llm_enabled()
+    return session_summary_runtime._summary_llm_enabled(sys.modules[__name__])
 
 
 def _summary_llm_timeout_seconds() -> float:
-    return summary_llm_timeout_seconds(12.0)
+    return session_summary_runtime._summary_llm_timeout_seconds(sys.modules[__name__])
 
 
 def _normalize_llm_text_content(content: Any) -> str:
-    return normalize_llm_text_content(content)
+    return session_summary_runtime._normalize_llm_text_content(
+        sys.modules[__name__], content
+    )
 
 
 def _resolve_summary_model_config(
-    session_id: str,
-    preferred_model_config: Optional[dict[str, Any]] = None,
+    session_id: str, preferred_model_config: Optional[dict[str, Any]] = None
 ) -> Optional[ModelConfig]:
-    from chat_store import get_session_panels
-
-    if preferred_model_config:
-        try:
-            return _normalize_model_config(ModelConfig(**preferred_model_config))
-        except Exception:
-            logger.warning("Invalid preferred model config for summary session_id=%s", session_id)
-
-    panels = get_session_panels(session_id)
-    if not panels:
-        return None
-
-    selected = next((item for item in panels if item.get("is_primary")), panels[0])
-    model_config = dict(selected.get("model_config") or {})
-    if not str(model_config.get("panel_id") or "").strip():
-        model_config["panel_id"] = str(selected.get("panel_id") or "summary")
-
-    try:
-        return _normalize_model_config(ModelConfig(**model_config))
-    except Exception:
-        logger.warning("Cannot resolve summary model config from session panels session_id=%s", session_id)
-        return None
+    return session_summary_runtime._resolve_summary_model_config(
+        sys.modules[__name__], session_id, preferred_model_config
+    )
 
 
 def _build_phase_summary_llm_prompt(
-    turns: list[dict[str, Any]],
-    *,
-    total_turns: int,
+    turns: list[dict[str, Any]], *, total_turns: int
 ) -> str:
-    return build_phase_summary_llm_prompt(turns, total_turns=total_turns)
+    return session_summary_runtime._build_phase_summary_llm_prompt(
+        sys.modules[__name__], turns, total_turns=total_turns
+    )
 
 
 async def _try_llm_phase_summary_content(
@@ -3041,54 +2500,26 @@ async def _try_llm_phase_summary_content(
     total_turns: int,
     preferred_model_config: Optional[dict[str, Any]] = None,
 ) -> Optional[str]:
-    if not _summary_llm_enabled():
-        return None
-
-    model_config = _resolve_summary_model_config(
+    return await session_summary_runtime._try_llm_phase_summary_content(
+        sys.modules[__name__],
         session_id,
+        turns,
+        total_turns=total_turns,
         preferred_model_config=preferred_model_config,
     )
-    if model_config is None:
-        return None
-
-    from agent_core import get_llm
-
-    try:
-        resolved_api_key = _resolve_model_api_key(model_config)
-        llm = get_llm(
-            provider=model_config.connection_type or model_config.provider,
-            model_name=model_config.model,
-            base_url=model_config.base_url,
-            api_key=resolved_api_key or None,
-            temperature=min(max(model_config.temperature, 0.0), 0.4),
-        )
-        prompt = _build_phase_summary_llm_prompt(turns, total_turns=total_turns)
-        timeout_seconds = _summary_llm_timeout_seconds()
-        response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=timeout_seconds)
-        content = _normalize_llm_text_content(getattr(response, "content", response))
-        content = _clip_text(content, max(120, SESSION_MEMORY_AUTO_SUMMARY_MAX_CONTENT_CHARS))
-        if not content:
-            return None
-        return content
-    except Exception:
-        logger.warning(
-            "LLM summary generation failed, fallback to rule summary session_id=%s",
-            session_id,
-            exc_info=True,
-        )
-        return None
 
 
 def _summary_turns(message_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return summary_turns(message_records, clip_text=_clip_text)
+    return session_summary_runtime._summary_turns(
+        sys.modules[__name__], message_records
+    )
 
 
-def _build_phase_summary_content(turns: list[dict[str, Any]], *, total_turns: int) -> str:
-    return build_phase_summary_content(
-        turns,
-        total_turns=total_turns,
-        clip_text=_clip_text,
-        max_chars=SESSION_MEMORY_AUTO_SUMMARY_MAX_CONTENT_CHARS,
+def _build_phase_summary_content(
+    turns: list[dict[str, Any]], *, total_turns: int
+) -> str:
+    return session_summary_runtime._build_phase_summary_content(
+        sys.modules[__name__], turns, total_turns=total_turns
     )
 
 
@@ -3099,82 +2530,13 @@ async def _generate_session_phase_summary_memory(
     force: bool = False,
     preferred_model_config: Optional[dict[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
-    from chat_store import (
-        SQLiteChatMessageHistory,
-        list_session_memory,
-        pin_session_memory,
-    )
-
-    history = SQLiteChatMessageHistory(session_id=session_id)
-    turns = _summary_turns(history.get_all_message_records())
-    total_turns = len(turns)
-    min_turns = max(2, SESSION_MEMORY_AUTO_SUMMARY_MIN_TURNS)
-
-    if not force and total_turns < min_turns:
-        raise ValueError(
-            f"Need at least {min_turns} conversation turns before generating a phase summary memory."
-        )
-
-    summaries = list_session_memory(
+    return await session_summary_runtime._generate_session_phase_summary_memory(
+        sys.modules[__name__],
         session_id,
-        kind="summary",
-        newest_first=True,
-        db_path=history.db_path,
-    )
-    latest_auto = latest_auto_summary(summaries)
-    covered_turns = covered_turns_from_summary(latest_auto)
-
-    new_turns = max(0, total_turns - covered_turns)
-    min_new_turns = max(1, SESSION_MEMORY_AUTO_SUMMARY_MIN_NEW_TURNS)
-    if latest_auto and not force and new_turns < min_new_turns:
-        return {
-            "created": False,
-            "memory": latest_auto,
-            "reason": "up_to_date",
-            "stats": {
-                "total_turns": total_turns,
-                "new_turns": new_turns,
-                "required_new_turns": min_new_turns,
-            },
-        }
-
-    window_size = max(2, SESSION_MEMORY_AUTO_SUMMARY_WINDOW_SIZE)
-    window_turns = turns[-window_size:]
-    content = _build_phase_summary_content(window_turns, total_turns=total_turns)
-    generator = "rules"
-    llm_content = await _try_llm_phase_summary_content(
-        session_id,
-        window_turns,
-        total_turns=total_turns,
+        trigger=trigger,
+        force=force,
         preferred_model_config=preferred_model_config,
     )
-    if llm_content:
-        content = llm_content
-        generator = "llm"
-    meta = summarize_window_meta(
-        total_turns=total_turns,
-        trigger=trigger,
-        generator=generator,
-        window_turns=window_turns,
-    )
-    result = pin_session_memory(
-        session_id,
-        content=content,
-        kind="summary",
-        meta=meta,
-        db_path=history.db_path,
-    )
-    if not result:
-        return None
-    return {
-        **result,
-        "reason": "created" if result.get("created") else "deduped",
-        "stats": {
-            "total_turns": total_turns,
-            "new_turns": new_turns,
-            "required_new_turns": min_new_turns,
-        },
-    }
 
 
 async def _auto_generate_phase_summary_memory(
@@ -3183,20 +2545,12 @@ async def _auto_generate_phase_summary_memory(
     trigger: str,
     preferred_model_config: Optional[dict[str, Any]] = None,
 ) -> None:
-    try:
-        result = await _generate_session_phase_summary_memory(
-            session_id,
-            trigger=trigger,
-            force=False,
-            preferred_model_config=preferred_model_config,
-        )
-        if result and result.get("created"):
-            logger.info("Auto summary memory created session_id=%s", session_id)
-    except ValueError:
-        # Session not long enough yet.
-        return
-    except Exception:
-        logger.exception("Auto summary memory generation failed session_id=%s", session_id)
+    return await session_summary_runtime._auto_generate_phase_summary_memory(
+        sys.modules[__name__],
+        session_id,
+        trigger=trigger,
+        preferred_model_config=preferred_model_config,
+    )
 
 
 def _get_attachment_promotion_task(
@@ -3232,7 +2586,7 @@ async def _get_or_build_agent(
     enabled_mcp_servers: Optional[list[str]] = None,
 ):
     """获取或构建 Agent（带缓存）"""
-    from agent_core import build_agent
+    from backend.services.agent_core import build_agent
 
     mc = _normalize_model_config(mc)
     resolved_api_key = _resolve_model_api_key(mc)
@@ -3428,7 +2782,7 @@ async def _invoke_agent_stream(
 
     except Exception as e:
         logger.exception("Agent invocation failed panel_id=%s", panel_id)
-        if 'dashboard_task_record' in locals() and dashboard_task_record is not None:
+        if "dashboard_task_record" in locals() and dashboard_task_record is not None:
             await fail_dashboard_task(
                 dashboard_task_record,
                 error=str(e),
@@ -3443,20 +2797,147 @@ async def _invoke_agent_stream(
             suggestion=err["suggestion"],
         )
 
-_frontend_dist = os.path.join(os.path.dirname(__file__), "frontend", "dist")
-if os.path.isdir(_frontend_dist):
-    from fastapi.responses import FileResponse
 
-    app.mount(
-        "/assets",
-        StaticFiles(directory=os.path.join(_frontend_dist, "assets")),
-        name="assets",
+async def get_ollama_models(base_url: str = "http://localhost:11434") -> dict[str, Any]:
+    """Backward-compatible Ollama model listing used by tests and scripts."""
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{base_url}/api/tags")
+        resp.raise_for_status()
+        models = resp.json().get("models", [])
+        return {"models": [m["name"] for m in models]}
+    except httpx.HTTPError as exc:
+        logger.warning("Cannot reach Ollama: %s", exc)
+        return {"models": [], "error": str(exc)}
+
+
+async def _run_integrator_scheduler_tick_once(
+    *,
+    now: float | None = None,
+) -> dict[str, Any]:
+    return await run_integrator_scheduler_tick(
+        _get_app_config_store(),
+        tick_lock=_integrator_scheduler_tick_lock,
+        now=now,
+        tasks=lambda: _tasks,
+        tasks_lock=_tasks_lock,
+        prune_task_records_locked=_prune_task_records_locked,
+        persist_task_record=_persist_task_record,
+        prune_persisted_tasks=_prune_persisted_tasks,
+        run_task=_run_task,
+        enqueue_task=enqueue_task,
+        spawn_background_task=asyncio.create_task,
+        logger=logger,
+        task_backend=lambda: TASK_BACKEND,
+        enqueue_external_task=enqueue_external_task,
     )
 
-    @app.get("/{full_path:path}")
-    async def serve_spa(full_path: str):
-        index = os.path.join(_frontend_dist, "index.html")
-        return FileResponse(index)
+
+async def _integrator_scheduler_loop(interval_seconds: int) -> None:
+    logger.info(
+        "Integrator scheduler worker started: interval_seconds=%s",
+        interval_seconds,
+    )
+    try:
+        while True:
+            try:
+                result = await _run_integrator_scheduler_tick_once()
+                if result.get("due_count") or result.get("status") == "skipped":
+                    logger.info(
+                        "Integrator scheduler tick: status=%s checked=%s due=%s executed=%s",
+                        result.get("status", "ok"),
+                        result.get("checked", 0),
+                        result.get("due_count", 0),
+                        result.get("executed", False),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Integrator scheduler tick failed")
+            await asyncio.sleep(interval_seconds)
+    except asyncio.CancelledError:
+        logger.info("Integrator scheduler worker stopped")
+        raise
+
+
+def _start_integrator_scheduler_worker() -> bool:
+    global _integrator_scheduler_task
+
+    config = _integrator_scheduler_config_from_env()
+    if not config["enabled"]:
+        logger.info(
+            "Integrator scheduler worker disabled: enabled_source=%s interval_seconds=%s",
+            config["enabled_source"],
+            config["interval_seconds"],
+        )
+        return False
+
+    if _integrator_scheduler_task is not None and not _integrator_scheduler_task.done():
+        logger.info("Integrator scheduler worker already running")
+        return True
+
+    _integrator_scheduler_task = asyncio.create_task(
+        _integrator_scheduler_loop(int(config["interval_seconds"])),
+        name="integrator-scheduler-worker",
+    )
+    return True
+
+
+async def _stop_integrator_scheduler_worker() -> bool:
+    global _integrator_scheduler_task
+
+    task = _integrator_scheduler_task
+    if task is None:
+        return False
+
+    _integrator_scheduler_task = None
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    return True
+
+
+async def _startup_integrator_scheduler_worker() -> None:
+    app.state.integrator_scheduler_worker_started = _start_integrator_scheduler_worker()
+
+
+async def _shutdown_integrator_scheduler_worker() -> None:
+    app.state.integrator_scheduler_worker_stopped = (
+        await _stop_integrator_scheduler_worker()
+    )
+
+
+def _register_app_lifecycle_handler(event: str, handler: Any) -> None:
+    """Register app lifecycle hooks across FastAPI/Starlette versions."""
+
+    add_event_handler = getattr(app, "add_event_handler", None)
+    if callable(add_event_handler):
+        add_event_handler(event, handler)
+        return
+
+    router = getattr(app, "router", None)
+    hook_list = getattr(router, f"on_{event}", None)
+    if isinstance(hook_list, list):
+        hook_list.append(handler)
+        return
+
+    on_event = getattr(app, "on_event", None)
+    if callable(on_event):
+        on_event(event)(handler)
+        return
+
+    raise RuntimeError(f"FastAPI app does not support {event!r} lifecycle hooks")
+
+
+_register_app_lifecycle_handler("startup", _startup_integrator_scheduler_worker)
+_register_app_lifecycle_handler("shutdown", _shutdown_integrator_scheduler_worker)
+
+
+register_core_routers(sys.modules[__name__])
+register_deferred_routers(sys.modules[__name__])
+mount_frontend_static(app, backend_file=__file__)
 
 
 if __name__ == "__main__":

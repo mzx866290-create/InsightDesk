@@ -1,0 +1,67 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- if .Values.networkPolicy.api.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "insightdesk.fullname" . }}-api
+  labels:
+    {{- include "insightdesk.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "insightdesk.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- toYaml .Values.networkPolicy.api.ingress | nindent 4 }}
+  egress:
+    {{- toYaml .Values.networkPolicy.api.egress | nindent 4 }}
+{{- end }}
+{{- if and .Values.worker.enabled .Values.networkPolicy.worker.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "insightdesk.fullname" . }}-worker
+  labels:
+    {{- include "insightdesk.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "insightdesk.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- toYaml .Values.networkPolicy.worker.ingress | nindent 4 }}
+  egress:
+    {{- toYaml .Values.networkPolicy.worker.egress | nindent 4 }}
+{{- end }}
+{{- range $name, $policy := .Values.networkPolicy.dependencies }}
+{{- if $policy.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "insightdesk.fullname" $ }}-{{ $name }}
+  labels:
+    {{- include "insightdesk.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  podSelector:
+    {{- toYaml $policy.podSelector | nindent 4 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    {{- toYaml $policy.ingress | nindent 4 }}
+  egress:
+    {{- toYaml $policy.egress | nindent 4 }}
+{{- end }}
+{{- end }}
+{{- end }}

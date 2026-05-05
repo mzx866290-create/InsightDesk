@@ -3,6 +3,7 @@
 支持 PDF、Word、Markdown、CSV 等格式的文档加载、分块、向量化和检索
 """
 
+import hashlib
 import logging
 import math
 import os
@@ -27,12 +28,29 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 from sentence_transformers import CrossEncoder
 from dotenv import load_dotenv
+from backend.stores.vector_store import create_vector_store_adapter
+from backend.core.storage_runtime import (
+    VECTOR_STORE_PROVIDER_FAISS,
+    vector_store_runtime_summary,
+)
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 KEYWORD_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_./:-]+|[\u4e00-\u9fff]+")
+VERSION_TOKEN_PATTERN = re.compile(
+    r"(?:^|[^a-z0-9])(?:v(?:ersion)?|版本|rev(?:ision)?|修订)\s*[-_ ]?(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+DATE_TOKEN_PATTERN = re.compile(
+    r"((?:19|20)\d{2})[-/.年](0?[1-9]|1[0-2])[-/.月](0?[1-9]|[12]\d|3[01])日?"
+)
+COMPACT_DATE_TOKEN_PATTERN = re.compile(r"(?<!\d)((?:19|20)\d{2})(0[1-9]|1[0-2])([0-3]\d)(?!\d)")
+EXPIRY_HINT_PATTERN = re.compile(
+    r"(?:有效期至|截止(?:日期)?|失效(?:日期)?|废止(?:日期)?|截止到|截至)\s*[:：]?\s*"
+    r"(((?:19|20)\d{2})[-/.年](0?[1-9]|1[0-2])[-/.月](0?[1-9]|[12]\d|3[01])日?|((?:19|20)\d{2})(0[1-9]|1[0-2])([0-3]\d))"
+)
 
 # 设置标准输出为 UTF-8，避免 Windows 控制台 GBK 编码问题
 if sys.platform == "win32":
@@ -68,6 +86,7 @@ class DocPipeline:
         self.vector_store_path = vector_store_path or os.getenv(
             "VECTOR_STORE_PATH", "./vector_store"
         )
+        self.vector_store_adapter = create_vector_store_adapter(path=self.vector_store_path)
 
         # 延迟加载: 首次使用时才加载模型,避免启动卡顿
         self._embeddings = None
@@ -99,7 +118,227 @@ class DocPipeline:
             "履历", "简历",
         )
 
-        self.vectorstore: Optional[FAISS] = None
+        self.vectorstore: Optional[Any] = None
+
+    @staticmethod
+    def _normalize_source_key(source: Any) -> str:
+        normalized = str(source or "").strip().lower()
+        normalized = normalized.replace("\\", "/")
+        return re.sub(r"\s+", " ", normalized)
+
+    @staticmethod
+    def _normalize_topic_key(source: Any) -> str:
+        stem = Path(str(source or "").strip()).stem.lower()
+        stem = COMPACT_DATE_TOKEN_PATTERN.sub(" ", stem)
+        stem = DATE_TOKEN_PATTERN.sub(" ", stem)
+        stem = VERSION_TOKEN_PATTERN.sub(" ", stem)
+        stem = re.sub(
+            r"(最新版|最新|终版|定稿|旧版|历史版|归档|archive|draft|final|old|new)",
+            " ",
+            stem,
+            flags=re.IGNORECASE,
+        )
+        stem = re.sub(r"[_\W]+", " ", stem)
+        stem = re.sub(r"\s+", " ", stem).strip()
+        return stem or Path(str(source or "").strip()).stem.lower()
+
+    @staticmethod
+    def _parse_date_parts(year: str, month: str, day: str) -> int | None:
+        try:
+            parsed = time.strptime(
+                f"{int(year):04d}-{int(month):02d}-{int(day):02d}",
+                "%Y-%m-%d",
+            )
+        except ValueError:
+            return None
+        return int(time.mktime(parsed))
+
+    def _extract_date_candidates(self, text: Any) -> list[int]:
+        normalized = str(text or "")
+        timestamps: list[int] = []
+        for match in DATE_TOKEN_PATTERN.finditer(normalized):
+            timestamp = self._parse_date_parts(match.group(1), match.group(2), match.group(3))
+            if timestamp is not None:
+                timestamps.append(timestamp)
+        for match in COMPACT_DATE_TOKEN_PATTERN.finditer(normalized):
+            timestamp = self._parse_date_parts(match.group(1), match.group(2), match.group(3))
+            if timestamp is not None:
+                timestamps.append(timestamp)
+        return timestamps
+
+    def _extract_expiry_timestamp(self, text: Any) -> int | None:
+        normalized = str(text or "")
+        match = EXPIRY_HINT_PATTERN.search(normalized)
+        if not match:
+            return None
+        if match.group(2) and match.group(3) and match.group(4):
+            return self._parse_date_parts(match.group(2), match.group(3), match.group(4))
+        if match.group(5) and match.group(6) and match.group(7):
+            return self._parse_date_parts(match.group(5), match.group(6), match.group(7))
+        return None
+
+    @staticmethod
+    def _extract_version_number(text: Any) -> float:
+        match = VERSION_TOKEN_PATTERN.search(str(text or ""))
+        if not match:
+            return 0.0
+        try:
+            return float(match.group(1))
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _extract_version_label(text: Any) -> str:
+        match = VERSION_TOKEN_PATTERN.search(str(text or ""))
+        if not match:
+            return ""
+        return match.group(0).strip(" _-")
+
+    @staticmethod
+    def _content_hash(text: Any) -> str:
+        normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+        return hashlib.sha1(normalized.encode("utf-8", "ignore")).hexdigest()
+
+    def _governance_rank(self, metadata: dict[str, Any]) -> tuple[int, float, int, int, str]:
+        source_updated_at = int(float(metadata.get("kb_source_updated_at") or 0) or 0)
+        effective_ts = int(float(metadata.get("kb_effective_ts") or 0) or 0)
+        version_number = float(metadata.get("kb_version_number") or 0.0)
+        expiry_ts = int(float(metadata.get("kb_expiry_ts") or 0) or 0)
+        is_expired = bool(metadata.get("kb_is_expired")) or (
+            expiry_ts > 0 and expiry_ts < int(time.time())
+        )
+        source_key = str(metadata.get("kb_source_key") or "").strip()
+        return (
+            0 if is_expired else 1,
+            version_number,
+            effective_ts,
+            source_updated_at,
+            source_key,
+        )
+
+    def _apply_document_governance_metadata(self, doc: Document) -> Document:
+        metadata = dict(doc.metadata or {})
+        source = str(metadata.get("source") or metadata.get("title") or "unknown").strip() or "unknown"
+        file_path = str(metadata.get("file_path") or "").strip()
+        source_key = str(metadata.get("kb_source_key") or self._normalize_source_key(source))
+        topic_key = str(metadata.get("kb_topic_key") or self._normalize_topic_key(source))
+        content_hash = str(metadata.get("kb_content_hash") or self._content_hash(doc.page_content))
+        version_label = str(metadata.get("kb_version_label") or self._extract_version_label(source))
+        if not version_label:
+            version_label = self._extract_version_label(str(doc.page_content or "")[:500])
+        version_number = float(metadata.get("kb_version_number") or self._extract_version_number(source))
+        if version_number <= 0:
+            version_number = self._extract_version_number(str(doc.page_content or "")[:500])
+        source_updated_at = float(metadata.get("kb_source_updated_at") or 0.0)
+        if source_updated_at <= 0 and file_path and os.path.exists(file_path):
+            try:
+                source_updated_at = float(os.path.getmtime(file_path))
+            except OSError:
+                source_updated_at = 0.0
+
+        effective_ts = int(float(metadata.get("kb_effective_ts") or 0) or 0)
+        if effective_ts <= 0:
+            source_dates = self._extract_date_candidates(source)
+            effective_ts = max(source_dates) if source_dates else 0
+
+        expiry_ts = int(float(metadata.get("kb_expiry_ts") or 0) or 0)
+        if expiry_ts <= 0:
+            expiry_ts = int(self._extract_expiry_timestamp(str(doc.page_content or "")[:1600]) or 0)
+        is_expired = bool(metadata.get("kb_is_expired")) or (
+            expiry_ts > 0 and expiry_ts < int(time.time())
+        )
+
+        metadata.update(
+            {
+                "kb_source_key": source_key,
+                "kb_topic_key": topic_key,
+                "kb_content_hash": content_hash,
+                "kb_dedupe_signature": f"{topic_key}::{content_hash}",
+                "kb_version_label": version_label,
+                "kb_version_number": version_number,
+                "kb_effective_ts": effective_ts,
+                "kb_expiry_ts": expiry_ts,
+                "kb_is_expired": is_expired,
+                "kb_source_updated_at": source_updated_at,
+            }
+        )
+        return Document(page_content=doc.page_content, metadata=metadata)
+
+    def _dedupe_index_documents(self, documents: List[Document]) -> List[Document]:
+        unique_docs: list[Document] = []
+        seen_signatures: set[str] = set()
+        for doc in documents:
+            signature = str((doc.metadata or {}).get("kb_dedupe_signature") or "").strip()
+            if not signature:
+                signature = self._content_hash(doc.page_content)
+            if signature in seen_signatures:
+                continue
+            seen_signatures.add(signature)
+            unique_docs.append(doc)
+        return unique_docs
+
+    def _apply_topic_version_status(self, documents: List[Document]) -> List[Document]:
+        winning_source_by_topic: dict[str, str] = {}
+        grouped_sources: dict[str, dict[str, tuple[int, float, int, int, str]]] = {}
+
+        for doc in documents:
+            metadata = dict(doc.metadata or {})
+            topic_key = str(metadata.get("kb_topic_key") or "").strip() or "default"
+            source_key = str(metadata.get("kb_source_key") or metadata.get("source") or "").strip() or "unknown"
+            rank = self._governance_rank(metadata)
+            topic_sources = grouped_sources.setdefault(topic_key, {})
+            current_rank = topic_sources.get(source_key)
+            if current_rank is None or rank > current_rank:
+                topic_sources[source_key] = rank
+
+        for topic_key, source_ranks in grouped_sources.items():
+            winning_source_by_topic[topic_key] = max(
+                source_ranks.items(),
+                key=lambda item: item[1],
+            )[0]
+
+        governed_docs: list[Document] = []
+        for doc in documents:
+            metadata = dict(doc.metadata or {})
+            topic_key = str(metadata.get("kb_topic_key") or "").strip() or "default"
+            source_key = str(metadata.get("kb_source_key") or metadata.get("source") or "").strip() or "unknown"
+            expiry_ts = int(float(metadata.get("kb_expiry_ts") or 0) or 0)
+            is_expired = bool(metadata.get("kb_is_expired")) or (
+                expiry_ts > 0 and expiry_ts < int(time.time())
+            )
+            is_latest = winning_source_by_topic.get(topic_key) == source_key
+            lifecycle_status = "expired" if is_expired else ("current" if is_latest else "superseded")
+            metadata.update(
+                {
+                    "kb_is_latest": is_latest,
+                    "kb_lifecycle_status": lifecycle_status,
+                }
+            )
+            governed_docs.append(Document(page_content=doc.page_content, metadata=metadata))
+        return governed_docs
+
+    def _prepare_documents_for_index(self, documents: List[Document]) -> List[Document]:
+        governed_docs = [self._apply_document_governance_metadata(doc) for doc in documents]
+        deduped_docs = self._dedupe_index_documents(governed_docs)
+        return self._apply_topic_version_status(deduped_docs)
+
+    @staticmethod
+    def _document_governance_boost(doc: Document) -> float:
+        metadata = doc.metadata or {}
+        boost = 0.0
+        expiry_ts = int(float(metadata.get("kb_expiry_ts") or 0) or 0)
+        is_expired = bool(metadata.get("kb_is_expired")) or (
+            expiry_ts > 0 and expiry_ts < int(time.time())
+        )
+        if metadata.get("kb_is_latest") is True:
+            boost += 0.16
+        elif metadata.get("kb_is_latest") is False:
+            boost -= 0.08
+        if str(metadata.get("kb_lifecycle_status") or "").strip() == "superseded":
+            boost -= 0.14
+        if is_expired:
+            boost -= 0.35
+        return round(max(-0.5, min(0.25, boost)), 4)
 
     @staticmethod
     def _path_has_non_ascii(path: str) -> bool:
@@ -110,6 +349,8 @@ class DocPipeline:
             return True
 
     def _should_use_faiss_staging_dir(self) -> bool:
+        if self.vector_store_adapter.provider != VECTOR_STORE_PROVIDER_FAISS:
+            return False
         resolved = str(Path(self.vector_store_path).resolve())
         return sys.platform == "win32" and self._path_has_non_ascii(resolved)
 
@@ -119,6 +360,10 @@ class DocPipeline:
         return Path(tempfile.mkdtemp(prefix=f"{prefix}_", dir=str(base_dir)))
 
     def _save_vectorstore_local(self) -> None:
+        if self.vector_store_adapter.provider != VECTOR_STORE_PROVIDER_FAISS:
+            self.vector_store_adapter.save(self.vectorstore, path=self.vector_store_path)
+            return
+
         target_dir = Path(self.vector_store_path)
         target_dir.mkdir(parents=True, exist_ok=True)
         if not self._should_use_faiss_staging_dir():
@@ -137,7 +382,13 @@ class DocPipeline:
         finally:
             shutil.rmtree(staging_dir, ignore_errors=True)
 
-    def _load_vectorstore_local(self) -> FAISS:
+    def _load_vectorstore_local(self) -> Any:
+        if self.vector_store_adapter.provider != VECTOR_STORE_PROVIDER_FAISS:
+            return self.vector_store_adapter.load(
+                embeddings=self.embeddings,
+                path=self.vector_store_path,
+            )
+
         target_dir = Path(self.vector_store_path)
         if not self._should_use_faiss_staging_dir():
             return FAISS.load_local(
@@ -831,8 +1082,19 @@ class DocPipeline:
             if progress_callback is not None:
                 progress_callback(max(0, min(100, progress)))
 
-        if self.vectorstore is None and os.path.exists(self.vector_store_path):
+        existing_docs: list[Document] = []
+        if (
+            self.vectorstore is None
+            and self.vector_store_adapter.provider == VECTOR_STORE_PROVIDER_FAISS
+            and os.path.exists(self.vector_store_path)
+        ):
             self.load_store()
+        if self.vectorstore is not None:
+            try:
+                existing_docs = self._all_index_documents()
+            except Exception:
+                logger.exception("Failed to read existing documents before ingest")
+                existing_docs = []
 
         report(5)
 
@@ -864,18 +1126,26 @@ class DocPipeline:
             raise ValueError(f"没有成功加载任何文档。失败原因: {detail}")
 
         logger.info("开始构建向量索引 (共 %d 个片段)", len(all_docs))
+        prepared_docs = self._prepare_documents_for_index([*existing_docs, *all_docs])
+        logger.info(
+            "Preparing index rebuild: existing=%d new=%d final=%d",
+            len(existing_docs),
+            len(all_docs),
+            len(prepared_docs),
+        )
         embed_start = time.perf_counter()
         report(55)
 
         # 分批向量化，每批 32 个 chunk，避免大文件一次性计算导致长时间阻塞
         BATCH_SIZE = 32
-        total_chunks = len(all_docs)
-        batches = [all_docs[i : i + BATCH_SIZE] for i in range(0, total_chunks, BATCH_SIZE)]
+        total_chunks = len(prepared_docs)
+        batches = [prepared_docs[i : i + BATCH_SIZE] for i in range(0, total_chunks, BATCH_SIZE)]
+        self.vectorstore = None
         logger.info("分批向量化: %d 个片段 / %d 批", total_chunks, len(batches))
 
         for batch_idx, batch in enumerate(batches):
             if self.vectorstore is None:
-                self.vectorstore = FAISS.from_documents(batch, self.embeddings)
+                self.vectorstore = self.vector_store_adapter.from_documents(batch, self.embeddings)
             else:
                 self.vectorstore.add_documents(batch)
             # 更新进度：55% → 90%
@@ -900,7 +1170,7 @@ class DocPipeline:
         )
         report(100)
 
-        return len(all_docs)
+        return len(prepared_docs)
 
     def load_store(self) -> bool:
         """
@@ -909,7 +1179,10 @@ class DocPipeline:
         Returns:
             是否加载成功
         """
-        if not os.path.exists(self.vector_store_path):
+        if (
+            self.vector_store_adapter.provider == VECTOR_STORE_PROVIDER_FAISS
+            and not os.path.exists(self.vector_store_path)
+        ):
             logger.warning("向量库不存在: %s", self.vector_store_path)
             return False
 
@@ -1163,10 +1436,12 @@ class DocPipeline:
                 continue
             feedback_signal = self._feedback_signal_for_doc(doc, feedback_map, source_type="doc")
             feedback_boost = self._feedback_boost(feedback_signal)
-            score_meta["score"] = round(score_meta["score"] + feedback_boost, 4)
+            governance_boost = self._document_governance_boost(doc)
+            score_meta["score"] = round(score_meta["score"] + feedback_boost + governance_boost, 4)
             score_meta["score_breakdown"] = {
                 **score_meta["score_breakdown"],
                 "feedback_boost": feedback_boost,
+                "governance_boost": governance_boost,
             }
             scored_docs.append((doc, score_meta, feedback_signal))
 
@@ -1181,6 +1456,7 @@ class DocPipeline:
                         doc,
                         search_channel="keyword",
                         search_rank=rank,
+                        governance_boost=score_meta["score_breakdown"].get("governance_boost", 0.0),
                         matched_terms=score_meta["matched_terms"],
                         keyword_coverage=score_meta["coverage"],
                         score_breakdown=score_meta["score_breakdown"],
@@ -1229,6 +1505,9 @@ class DocPipeline:
         if not isinstance(matched_terms, list):
             matched_terms = []
         feedback_boost = float(metadata.get("feedback_boost", 0.0) or 0.0)
+        governance_boost = float(
+            metadata.get("governance_boost", self._document_governance_boost(doc)) or 0.0
+        )
         feedback_net = int(metadata.get("feedback_net", 0) or 0)
         feedback_positive_count = int(metadata.get("feedback_positive_count", 0) or 0)
         feedback_negative_count = int(metadata.get("feedback_negative_count", 0) or 0)
@@ -1242,9 +1521,14 @@ class DocPipeline:
             "channel": metadata.get("search_channel", "semantic"),
             "matched_terms": matched_terms,
             "feedback_boost": feedback_boost,
+            "governance_boost": governance_boost,
             "feedback_net": feedback_net,
             "feedback_positive_count": feedback_positive_count,
             "feedback_negative_count": feedback_negative_count,
+            "version_label": metadata.get("kb_version_label") or "",
+            "lifecycle_status": metadata.get("kb_lifecycle_status") or "",
+            "is_latest": bool(metadata.get("kb_is_latest")),
+            "is_expired": bool(metadata.get("kb_is_expired")),
             "score_breakdown": metadata.get("score_breakdown") or {},
             "metadata": metadata,
         }
@@ -1256,18 +1540,22 @@ class DocPipeline:
         for rank, (doc, raw_score) in enumerate(pairs, start=1):
             feedback_signal = self._feedback_signal_for_doc(doc, feedback_map, source_type="doc")
             base_score = round(1.0 / (1.0 + max(float(raw_score), 0.0)), 6)
-            adjusted_score = round(base_score + self._feedback_boost(feedback_signal), 6)
+            feedback_boost = self._feedback_boost(feedback_signal)
+            governance_boost = self._document_governance_boost(doc)
+            adjusted_score = round(base_score + feedback_boost + governance_boost, 6)
             candidates.append(
                 self._apply_feedback_metadata(
                     self._copy_document_with_metadata(
                         doc,
                         search_channel="semantic",
                         search_rank=rank,
+                        governance_boost=governance_boost,
                         # FAISS 距离越小越好，这里转成可比较的正向分值供调试显示。
                         vector_distance=round(float(raw_score), 6),
                         score_breakdown={
                             "semantic_base": base_score,
-                            "feedback_boost": self._feedback_boost(feedback_signal),
+                            "feedback_boost": feedback_boost,
+                            "governance_boost": governance_boost,
                         },
                     ),
                     feedback_signal=feedback_signal,
@@ -1327,6 +1615,7 @@ class DocPipeline:
             semantic_rank = item["semantic_rank"]
             keyword_rank = item["keyword_rank"]
             rrf_score = 0.0
+            governance_boost = self._document_governance_boost(item["doc"])
             if semantic_rank is not None:
                 rrf_score += 1.0 / (60 + semantic_rank)
             if keyword_rank is not None:
@@ -1337,8 +1626,11 @@ class DocPipeline:
                     item["doc"],
                     search_channel="hybrid",
                     rrf_score=round(rrf_score, 6),
+                    governance_boost=governance_boost,
                     search_score=round(
-                        rrf_score + float(item["doc"].metadata.get("feedback_boost", 0.0) or 0.0),
+                        rrf_score
+                        + float(item["doc"].metadata.get("feedback_boost", 0.0) or 0.0)
+                        + governance_boost,
                         6,
                     ),
                     semantic_rank=semantic_rank,
@@ -1357,6 +1649,7 @@ class DocPipeline:
                         if keyword_rank is not None
                         else 0.0,
                         "feedback_boost": float(item["doc"].metadata.get("feedback_boost", 0.0) or 0.0),
+                        "governance_boost": governance_boost,
                     },
                 )
             )
@@ -1410,17 +1703,22 @@ class DocPipeline:
                             doc,
                             search_channel="semantic_rerank",
                             search_score=round(
-                                float(score) + float(doc.metadata.get("feedback_boost", 0.0) or 0.0),
+                                float(score)
+                                + float(doc.metadata.get("feedback_boost", 0.0) or 0.0)
+                                + float(doc.metadata.get("governance_boost", 0.0) or 0.0),
                                 6,
                             ),
                             rerank_score=round(
-                                float(score) + float(doc.metadata.get("feedback_boost", 0.0) or 0.0),
+                                float(score)
+                                + float(doc.metadata.get("feedback_boost", 0.0) or 0.0)
+                                + float(doc.metadata.get("governance_boost", 0.0) or 0.0),
                                 6,
                             ),
                             score_breakdown={
                                 **(doc.metadata.get("score_breakdown") or {}),
                                 "rerank": round(float(score), 6),
                                 "feedback_boost": float(doc.metadata.get("feedback_boost", 0.0) or 0.0),
+                                "governance_boost": float(doc.metadata.get("governance_boost", 0.0) or 0.0),
                             },
                         )
                         for doc, score in ranked_results[:safe_top_k]
@@ -1455,17 +1753,22 @@ class DocPipeline:
                             doc,
                             search_channel="hybrid_rerank",
                             search_score=round(
-                                float(score) + float(doc.metadata.get("feedback_boost", 0.0) or 0.0),
+                                float(score)
+                                + float(doc.metadata.get("feedback_boost", 0.0) or 0.0)
+                                + float(doc.metadata.get("governance_boost", 0.0) or 0.0),
                                 6,
                             ),
                             rerank_score=round(
-                                float(score) + float(doc.metadata.get("feedback_boost", 0.0) or 0.0),
+                                float(score)
+                                + float(doc.metadata.get("feedback_boost", 0.0) or 0.0)
+                                + float(doc.metadata.get("governance_boost", 0.0) or 0.0),
                                 6,
                             ),
                             score_breakdown={
                                 **(doc.metadata.get("score_breakdown") or {}),
                                 "rerank": round(float(score), 6),
                                 "feedback_boost": float(doc.metadata.get("feedback_boost", 0.0) or 0.0),
+                                "governance_boost": float(doc.metadata.get("governance_boost", 0.0) or 0.0),
                             },
                         )
                         for doc, score in ranked_results[:safe_top_k]
@@ -1575,8 +1878,16 @@ class DocPipeline:
         scored_candidates: list[tuple[Document, float, dict[str, Any]]] = []
         for doc, score in zip(candidates, scores):
             feedback_signal = self._feedback_signal_for_doc(doc, feedback_map, source_type="doc")
-            adjusted_score = round(float(score) + self._feedback_boost(feedback_signal), 6)
-            scored_candidates.append((doc, adjusted_score, feedback_signal))
+            feedback_boost = self._feedback_boost(feedback_signal)
+            governance_boost = self._document_governance_boost(doc)
+            adjusted_score = round(float(score) + feedback_boost + governance_boost, 6)
+            scored_candidates.append(
+                (
+                    self._copy_document_with_metadata(doc, governance_boost=governance_boost),
+                    adjusted_score,
+                    feedback_signal,
+                )
+            )
 
         # 按得分降序排序
         ranked_results = sorted(
@@ -1590,9 +1901,16 @@ class DocPipeline:
                     doc,
                     search_channel="semantic_rerank",
                     rerank_score=adjusted_score,
+                    governance_boost=float(doc.metadata.get("governance_boost", 0.0) or 0.0),
                     score_breakdown={
-                        "rerank": adjusted_score,
+                        "rerank": round(
+                            adjusted_score
+                            - self._feedback_boost(feedback_signal)
+                            - float(doc.metadata.get("governance_boost", 0.0) or 0.0),
+                            6,
+                        ),
                         "feedback_boost": self._feedback_boost(feedback_signal),
+                        "governance_boost": float(doc.metadata.get("governance_boost", 0.0) or 0.0),
                     },
                 ),
                 feedback_signal=feedback_signal,
@@ -1621,14 +1939,44 @@ class DocPipeline:
         Returns:
             统计信息字典
         """
+        validation = self.storage_validation_summary()
         if self.vectorstore is None:
-            return {"status": "未初始化", "total_docs": 0}
+            return {
+                "status": "未初始化",
+                "total_docs": 0,
+                "store_path": self.vector_store_path,
+                "vector_store_provider": self.vector_store_adapter.provider,
+                "storage_validation": validation,
+            }
+
+        total_docs = 0
+        index = getattr(self.vectorstore, "index", None)
+        if index is not None:
+            total_docs = int(getattr(index, "ntotal", 0) or 0)
+        else:
+            try:
+                total_docs = len(self._all_index_documents())
+            except Exception:
+                total_docs = 0
 
         return {
             "status": "已加载",
-            "total_docs": self.vectorstore.index.ntotal,
+            "total_docs": total_docs,
             "store_path": self.vector_store_path,
+            "vector_store_provider": self.vector_store_adapter.provider,
+            "storage_validation": validation,
         }
+
+    def storage_validation_summary(self) -> dict[str, Any]:
+        """Return a side-effect-free vector-store validation payload."""
+
+        summary_factory = getattr(self.vector_store_adapter, "validation_summary", None)
+        if callable(summary_factory):
+            return summary_factory(path=self.vector_store_path)
+        return vector_store_runtime_summary(
+            provider=getattr(self.vector_store_adapter, "provider", None),
+            path=self.vector_store_path,
+        )
 
     def delete_store(self) -> bool:
         """
@@ -1640,6 +1988,29 @@ class DocPipeline:
         import shutil
 
         self.vectorstore = None
+        if self.vector_store_adapter.provider != VECTOR_STORE_PROVIDER_FAISS:
+            delete_store = getattr(self.vector_store_adapter, "delete", None)
+            if delete_store is None:
+                logger.info(
+                    "Vector store provider %s does not expose delete().",
+                    self.vector_store_adapter.provider,
+                )
+                return False
+            try:
+                deleted = bool(delete_store(path=self.vector_store_path))
+            except Exception as e:
+                logger.error(
+                    "Vector store provider %s delete failed: %s",
+                    self.vector_store_adapter.provider,
+                    e,
+                )
+                return False
+            logger.info(
+                "Vector store provider %s delete result: %s",
+                self.vector_store_adapter.provider,
+                deleted,
+            )
+            return deleted
         if not os.path.exists(self.vector_store_path):
             return False
         try:

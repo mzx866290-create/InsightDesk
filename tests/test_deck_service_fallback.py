@@ -134,6 +134,13 @@ def test_build_deck_falls_back_to_chat_only_when_kb_has_single_source(monkeypatc
     assert all(slide.quality_state == "manual" for slide in deck.slides)
     assert all(not slide.evidence_refs for slide in deck.slides)
     assert all(slide.type != "appendix_sources" for slide in deck.slides)
+    coverage = deck.generation.evidence_coverage
+    assert coverage.total_slides == 4
+    assert coverage.coverable_slide_count == 2
+    assert coverage.slides_with_evidence == 0
+    assert coverage.total_evidence_refs == 0
+    assert coverage.coverage_ratio == 0.0
+    assert coverage.unsupported_slide_ids == ["slide_content_1", "slide_content_2"]
 
 
 def test_build_deck_falls_back_to_chat_only_when_kb_unavailable(monkeypatch):
@@ -198,3 +205,109 @@ def test_chat_only_serialization_keeps_full_recent_answer_content():
     assert "最近成功问答原文" in serialized
     assert "回答原文" in serialized
     assert tail_marker in serialized
+
+
+def test_chat_only_deck_keeps_research_sources_as_slide_evidence(monkeypatch):
+    messages = [
+        HumanMessage(content="Turn the research report into a deck"),
+        AIMessage(
+            content="Revenue growth is backed by public filings.",
+            additional_kwargs={
+                "sources": [
+                    {
+                        "title": "Company filing",
+                        "url": "https://example.com/filing",
+                        "snippet": "Revenue increased 18% year over year.",
+                    }
+                ],
+                "claim_evidence_chains": [
+                    {
+                        "claim_id": "claim-1",
+                        "claim_text": "Revenue increased 18% year over year.",
+                        "evidence_strength": "high",
+                        "sources": [
+                            {
+                                "source_index": 1,
+                                "title": "Audited annual report",
+                                "url": "https://example.com/annual-report",
+                            }
+                        ],
+                    }
+                ],
+            },
+        ),
+    ]
+
+    pack = deck_service._build_source_pack(
+        session_id="session-research-sources",
+        messages=messages,
+        knowledge_base_enabled=False,
+        vector_store_path=None,
+        target_slide_count=5,
+    )
+
+    assert pack.source_mode == "chat_only"
+    assert [source.title for source in pack.source_registry] == [
+        "Company filing",
+        "Audited annual report",
+    ]
+    assert [excerpt.source_title for excerpt in pack.excerpts] == [
+        "Company filing",
+        "Audited annual report",
+    ]
+
+    deck = deck_service._build_deck_from_generated(
+        session_id="session-research-sources",
+        panel_config=_panel_config(),
+        target_slide_count=5,
+        pack=pack,
+        outline=deck_service.OutlinePlan(
+            title="Research deck",
+            subtitle="Evidence-backed summary",
+            core_message="Revenue growth is supported.",
+            sections=["Summary"],
+            content_slides=[
+                deck_service.OutlineSlidePlan(
+                    title="Revenue Growth",
+                    objective="Show the evidence-backed growth claim",
+                    section="Summary",
+                    evidence_source_ids=["src_report_1"],
+                )
+            ],
+        ),
+        drafted=deck_service.DraftedSlideBundle(
+            content_slides=[
+                deck_service.DraftedContentSlide(
+                    title="Revenue Growth",
+                    subtitle="Public filings support the claim",
+                    key_points=["Revenue increased 18% year over year."],
+                    evidence_excerpt_ids=["ext_report_1"],
+                    quality_state="supported",
+                )
+            ]
+        ),
+    )
+
+    content_slide = next(slide for slide in deck.slides if slide.type == "content")
+    assert content_slide.quality_state == "supported"
+    assert content_slide.evidence_refs[0].source_title == "Company filing"
+    assert "Revenue increased 18%" in content_slide.evidence_refs[0].snippet
+    assert content_slide.blocks[0].content["evidence_ref_ids"] == [
+        content_slide.evidence_refs[0].id
+    ]
+    assert content_slide.blocks[0].content["evidence_source_ids"] == ["src_report_1"]
+    assert content_slide.blocks[0].content["evidence_excerpt_ids"] == ["ext_report_1"]
+    assert deck.source_registry[0].uri == "https://example.com/filing"
+    assert any(slide.type == "appendix_sources" for slide in deck.slides)
+    coverage = deck.generation.evidence_coverage
+    content_coverage = next(
+        item for item in coverage.slides if item.slide_id == content_slide.id
+    )
+    assert coverage.total_slides == 4
+    assert coverage.coverable_slide_count == 1
+    assert coverage.slides_with_evidence == 1
+    assert coverage.total_evidence_refs == 1
+    assert coverage.coverage_ratio == 1.0
+    assert coverage.unsupported_slide_ids == []
+    assert content_coverage.has_evidence is True
+    assert content_coverage.evidence_ref_count == 1

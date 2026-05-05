@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -273,6 +274,252 @@ def test_mcp_connector_catalog_endpoint(monkeypatch, tmp_path):
         ],
         "default_enabled": ["knowledge-base"],
     }
+
+
+def test_mcp_connector_runtime_health_endpoint(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_runtime_health():
+        return {
+            "status": "ok",
+            "servers": [
+                {
+                    "name": "knowledge-base",
+                    "status": "healthy",
+                    "healthy": True,
+                    "tool_count": 1,
+                    "tools": ["knowledge_query"],
+                    "duration_ms": 12.5,
+                    "error": None,
+                }
+            ],
+            "summary": {
+                "total": 1,
+                "healthy": 1,
+                "unhealthy": 0,
+                "tool_count": 1,
+            },
+        }
+
+    monkeypatch.setattr(
+        api_server,
+        "list_mcp_server_runtime_health",
+        fake_runtime_health,
+    )
+
+    client = TestClient(api_server.app)
+    response = client.get("/api/connectors/mcp/runtime-health")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert response.json()["summary"]["tool_count"] == 1
+
+
+def test_mcp_connector_runtime_health_history_persists_limit_and_redacts(
+    monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    store = api_server.SQLiteAppConfigStore(db_path=str(tmp_path / "config.db"))
+    monkeypatch.setattr(api_server, "_app_config_store", store)
+    counter = {"value": 0}
+
+    async def fake_runtime_health(**kwargs):
+        counter["value"] += 1
+        name = f"connector-{counter['value']}"
+        snapshot = {
+            "timestamp": 100.0 + counter["value"],
+            "status": "ok",
+            "servers": [
+                {
+                    "name": name,
+                    "status": "healthy",
+                    "healthy": True,
+                    "tool_count": 1,
+                    "duration_ms": 5.0,
+                    "error": None,
+                    "tools": ["raw_tool_result"],
+                    "env": {"API_KEY": "secret"},
+                    "args": ["--secret"],
+                    "secret": "hidden",
+                }
+            ],
+            "summary": {
+                "total": 1,
+                "healthy": 1,
+                "unhealthy": 0,
+                "tool_count": 1,
+                "status_counts": {"healthy": 1},
+                "alert_count": 0,
+            },
+        }
+        kwargs["history_recorder"](snapshot, 2)
+        history = kwargs["history_reader"](2)
+        return {
+            "status": "ok",
+            "servers": snapshot["servers"],
+            "summary": snapshot["summary"],
+            "history": history,
+            "history_limit": 2,
+        }
+
+    monkeypatch.setattr(api_server, "_list_mcp_server_runtime_health", fake_runtime_health)
+
+    client = TestClient(api_server.app)
+    first = client.get("/api/connectors/mcp/runtime-health")
+    second = client.get("/api/connectors/mcp/runtime-health")
+    history_response = client.get(
+        "/api/connectors/mcp/runtime-health/history?limit=1"
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert history_response.status_code == 200
+    history = history_response.json()["history"]
+    assert [item["servers"][0]["name"] for item in history] == ["connector-2"]
+    persisted_json = store.get_value(
+        api_server.MCP_RUNTIME_HEALTH_HISTORY_CONFIG_KEY,
+        "[]",
+    )
+    assert "connector-2" in persisted_json
+    assert "raw_tool_result" not in persisted_json
+    assert "API_KEY" not in persisted_json
+    assert "--secret" not in persisted_json
+    assert "hidden" not in persisted_json
+
+
+def test_mcp_connector_approval_endpoint_payload(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    store = api_server.SQLiteAppConfigStore(db_path=str(tmp_path / "config.db"))
+    monkeypatch.setattr(api_server, "_app_config_store", store)
+    monkeypatch.setenv("MCP_APPROVED_CONNECTORS", "knowledge-base")
+    api_server.set_runtime_mcp_approved_connectors(["custom-crm"])
+    client = TestClient(api_server.app)
+
+    try:
+        response = client.get("/api/connectors/mcp/approvals")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "approved_connectors": ["knowledge-base", "custom-crm"],
+            "env_connectors": ["knowledge-base"],
+            "runtime_connectors": ["custom-crm"],
+            "persisted_connectors": ["custom-crm"],
+            "sources": {
+                "knowledge-base": ["env"],
+                "custom-crm": ["runtime"],
+            },
+            "persistence": {
+                "enabled": True,
+                "config_key": "mcp_approved_connectors",
+            },
+            "total": 2,
+        }
+    finally:
+        api_server.clear_runtime_mcp_approved_connectors()
+
+
+def test_mcp_connector_approval_endpoint_hydrates_persisted_names(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    store = api_server.SQLiteAppConfigStore(db_path=str(tmp_path / "config.db"))
+    store.set("mcp_approved_connectors", "crm-sync")
+    monkeypatch.setattr(api_server, "_app_config_store", store)
+    monkeypatch.delenv("MCP_APPROVED_CONNECTORS", raising=False)
+    api_server._set_runtime_mcp_approved_connectors([])
+    client = TestClient(api_server.app)
+
+    try:
+        response = client.get("/api/connectors/mcp/approvals")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["approved_connectors"] == ["crm-sync"]
+        assert payload["runtime_connectors"] == ["crm-sync"]
+        assert payload["persisted_connectors"] == ["crm-sync"]
+    finally:
+        api_server.clear_runtime_mcp_approved_connectors()
+
+
+def test_mcp_connector_approval_endpoint_enforces_viewer_and_admin_roles(
+    monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    store = api_server.SQLiteAppConfigStore(db_path=str(tmp_path / "config.db"))
+    monkeypatch.setattr(api_server, "_app_config_store", store)
+    monkeypatch.delenv("MCP_APPROVED_CONNECTORS", raising=False)
+    monkeypatch.setattr(api_server, "ALLOW_REMOTE_CLIENTS", True)
+    monkeypatch.setattr(api_server, "_request_is_local", lambda request: False)
+    monkeypatch.setenv(
+        "APP_AUTH_TOKENS_JSON",
+        json.dumps(
+            [
+                {
+                    "token": "viewer-token",
+                    "user_id": "viewer.user",
+                    "role": "viewer",
+                    "auth_source": "viewer_catalog",
+                },
+                {
+                    "token": "admin-token",
+                    "user_id": "admin.user",
+                    "role": "admin",
+                    "auth_source": "admin_catalog",
+                },
+            ]
+        ),
+    )
+    api_server.clear_runtime_mcp_approved_connectors()
+    client = TestClient(api_server.app)
+
+    try:
+        viewer_headers = {"X-API-Token": "viewer-token"}
+        admin_headers = {"X-API-Token": "admin-token"}
+
+        listed = client.get("/api/connectors/mcp/approvals", headers=viewer_headers)
+        assert listed.status_code == 200
+        assert listed.json()["approved_connectors"] == []
+
+        denied = client.post(
+            "/api/connectors/mcp/approvals",
+            headers=viewer_headers,
+            json={"name": "crm-sync"},
+        )
+        assert denied.status_code == 403
+        assert denied.json()["detail"] == "Insufficient role: admin required."
+
+        approved = client.post(
+            "/api/connectors/mcp/approvals",
+            headers=admin_headers,
+            json={"name": "crm-sync"},
+        )
+        assert approved.status_code == 200
+        approval_payload = approved.json()
+        assert approval_payload["connector"] == {
+            "name": "crm-sync",
+            "changed": True,
+            "runtime_approved": True,
+            "effective_approved": True,
+        }
+        assert approval_payload["runtime_connectors"] == ["crm-sync"]
+        assert approval_payload["persisted_connectors"] == ["crm-sync"]
+        assert store.get_value("mcp_approved_connectors") == "crm-sync"
+
+        revoked = client.delete(
+            "/api/connectors/mcp/approvals/crm-sync",
+            headers=admin_headers,
+        )
+        assert revoked.status_code == 200
+        revoke_payload = revoked.json()
+        assert revoke_payload["connector"] == {
+            "name": "crm-sync",
+            "removed": True,
+            "runtime_approved": False,
+            "effective_approved": False,
+        }
+        assert revoke_payload["runtime_connectors"] == []
+        assert revoke_payload["persisted_connectors"] == []
+        assert store.get_value("mcp_approved_connectors") == ""
+    finally:
+        api_server.clear_runtime_mcp_approved_connectors()
 
 
 def test_sessions_support_workspace_filters_and_move(monkeypatch, tmp_path):

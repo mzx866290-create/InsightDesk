@@ -1,0 +1,15 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "insightdesk.fullname" . }}-api
+  labels:
+    {{- include "insightdesk.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "insightdesk.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+{{- end }}
