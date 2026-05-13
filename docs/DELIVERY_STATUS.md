@@ -1,6 +1,6 @@
 # Delivery Status
 
-Last updated: 2026-05-05
+Last updated: 2026-05-13
 
 This file is the current delivery-status entry point. Historical planning files
 and archived migration lists are not the source of truth for whether the
@@ -19,6 +19,18 @@ of truth over roadmap, plan, and archive documents.
 - GitHub branch: `codex/20260424`.
 - Current default task backend: `memory`.
 - Planned target task backend: `arq`, gated by `TASK_BACKEND_SWITCH_READY=1`.
+
+## Open Source Scope
+
+The current delivery target is a self-hosted personal/open-source workbench, not
+a managed commercial SaaS service. The following are intentionally not treated
+as release blockers:
+
+- desktop installers for Windows/macOS/Linux
+- full SaaS tenant isolation beyond the current RBAC-lite/resource-grant model
+- managed production alert delivery beyond Prometheus alert rules and
+  validation scripts
+- enterprise-specific SIEM retention, key-rotation workflows, and IdP hardening
 
 ## Verified Commands
 
@@ -53,6 +65,9 @@ Without that approval, the release-safe default remains `memory` by design.
 The following items are tracked as future enhancements rather than delivery
 blockers:
 
+- desktop packaging
+- full SaaS-grade tenant isolation
+- managed external alert delivery
 - deeper enterprise retention and SIEM export
 - additional enterprise IdP/browser callback validation
 - optional numeric contradiction matching in Research V2

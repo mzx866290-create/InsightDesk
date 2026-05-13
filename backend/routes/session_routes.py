@@ -120,12 +120,14 @@ def build_session_router(
     def require_session_access(
         request: Request, session_id: str, minimum_role: str = "viewer"
     ) -> dict[str, Any]:
+        from backend.chat_store import DEFAULT_WORKSPACE_ID, get_session
+
         role_guard = require_remote_viewer
         if minimum_role == "editor":
             role_guard = require_remote_editor
         elif minimum_role in {"admin", "owner"}:
             role_guard = require_remote_admin
-        return require_resource_access(
+        auth = require_resource_access(
             request,
             resource_type="session",
             resource_id=session_id,
@@ -135,6 +137,24 @@ def build_session_router(
             identity_store=identity_store,
             audit_security_event=audit_security_event,
         )
+        if auth.get("bypass_enabled"):
+            return auth
+        session = get_session(session_id)
+        if not session:
+            return auth
+        workspace_id = str(session.get("workspace_id") or DEFAULT_WORKSPACE_ID).strip()
+        if workspace_id:
+            require_resource_access(
+                request,
+                resource_type="workspace",
+                resource_id=workspace_id,
+                minimum_role="viewer",
+                require_remote_role=require_remote_viewer,
+                access_store=access_store,
+                identity_store=identity_store,
+                audit_security_event=audit_security_event,
+            )
+        return auth
 
     def require_workspace_access(
         request: Request, workspace_id: str, minimum_role: str = "viewer"
@@ -159,7 +179,7 @@ def build_session_router(
 
     @router.get("/api/workspaces")
     async def get_workspaces(request: Request):
-        from chat_store import list_workspaces
+        from backend.chat_store import list_workspaces
         workspaces = list_workspaces()
         visible_workspaces = filter_visible_resources(
             request,
@@ -174,7 +194,7 @@ def build_session_router(
 
     @router.post("/api/workspaces")
     async def create_workspace_endpoint(http_request: Request, request: create_workspace_request_model):
-        from chat_store import create_workspace
+        from backend.chat_store import create_workspace
         require_remote_editor(http_request)
         try:
             preset = request.preset
@@ -213,7 +233,7 @@ def build_session_router(
 
     @router.patch("/api/workspaces/{workspace_id}")
     async def update_workspace_endpoint(workspace_id: str, http_request: Request, request: update_workspace_request_model):
-        from chat_store import update_workspace
+        from backend.chat_store import update_workspace
         require_workspace_access(http_request, workspace_id, "editor")
         field_set = request_field_set(request)
         if not field_set:
@@ -249,7 +269,7 @@ def build_session_router(
 
     @router.post("/api/workspaces/{workspace_id}/activate")
     async def activate_workspace_endpoint(workspace_id: str, request: Request):
-        from chat_store import activate_workspace
+        from backend.chat_store import activate_workspace
         require_workspace_access(request, workspace_id, "editor")
         workspace = activate_workspace(workspace_id)
         if not workspace:
@@ -262,8 +282,12 @@ def build_session_router(
         request: Request,
         target_workspace_id: Optional[str] = None,
     ):
-        from chat_store import delete_workspace
+        from backend.chat_store import DEFAULT_WORKSPACE_ID, delete_workspace
         require_workspace_access(request, workspace_id, "admin")
+        normalized_target_workspace_id = (
+            str(target_workspace_id or "").strip() or DEFAULT_WORKSPACE_ID
+        )
+        require_workspace_access(request, normalized_target_workspace_id, "editor")
         try:
             result = delete_workspace(workspace_id, target_workspace_id=target_workspace_id)
         except ValueError as exc:
@@ -283,7 +307,7 @@ def build_session_router(
         tag: str = "",
         workspace_id: Optional[str] = None,
     ):
-        from chat_store import get_all_sessions
+        from backend.chat_store import DEFAULT_WORKSPACE_ID, get_all_sessions
         sessions = get_all_sessions(
             query=query, archived=archived, favorite=favorite,
             tag=tag, workspace_id=workspace_id,
@@ -297,15 +321,36 @@ def build_session_router(
             access_store=access_store,
             identity_store=identity_store,
         )
+        visible_sessions = filter_visible_resources(
+            request,
+            visible_sessions,
+            resource_type="workspace",
+            resource_id_getter=lambda item: str(
+                item.get("workspace_id") or DEFAULT_WORKSPACE_ID
+            ),
+            require_remote_role=require_remote_viewer,
+            access_store=access_store,
+            identity_store=identity_store,
+        )
         return {"sessions": visible_sessions}
 
     @router.post("/api/sessions")
     async def create_session(http_request: Request, request: create_session_request_model):
-        from chat_store import (
-            SQLiteChatMessageHistory, connect_sqlite, get_session,
-            get_workspace, update_session_meta,
+        from backend.chat_store import (
+            DEFAULT_WORKSPACE_ID, SQLiteChatMessageHistory, connect_sqlite, get_session,
+            get_workspace, list_workspaces, update_session_meta,
         )
         require_remote_viewer(http_request)
+        target_workspace_id = str(getattr(request, "workspace_id", "") or "").strip()
+        if not target_workspace_id:
+            active_workspace = next(
+                (item for item in list_workspaces() if item.get("is_active")),
+                None,
+            )
+            target_workspace_id = str(
+                (active_workspace or {}).get("workspace_id") or DEFAULT_WORKSPACE_ID
+            ).strip()
+        require_workspace_access(http_request, target_workspace_id, "viewer")
         try:
             result = create_session_record(
                 request,
@@ -332,10 +377,13 @@ def build_session_router(
 
     @router.patch("/api/sessions/{session_id}")
     async def update_session_endpoint(session_id: str, http_request: Request, request: update_session_request_model):
-        from chat_store import update_session_meta
+        from backend.chat_store import update_session_meta
         require_session_access(http_request, session_id, "editor")
         if not session_update_requested(request):
             raise HTTPException(status_code=400, detail="至少需要提供一个可更新字段")
+        target_workspace_id = str(getattr(request, "workspace_id", "") or "").strip()
+        if target_workspace_id:
+            require_workspace_access(http_request, target_workspace_id, "editor")
         try:
             session = update_session_meta(
                 session_id,
@@ -354,18 +402,45 @@ def build_session_router(
 
     @router.post("/api/sessions/reorder")
     async def reorder_sessions_endpoint(http_request: Request, request: reorder_sessions_request_model):
-        from chat_store import get_all_sessions, reorder_sessions
+        from backend.chat_store import DEFAULT_WORKSPACE_ID, get_all_sessions, reorder_sessions
         require_remote_editor(http_request)
+        target_workspace_id = str(getattr(request, "workspace_id", "") or "").strip()
+        if target_workspace_id:
+            require_workspace_access(http_request, target_workspace_id, "editor")
+        for raw_session_id in request.session_ids:
+            normalized_session_id = str(raw_session_id or "").strip()
+            if normalized_session_id:
+                require_session_access(http_request, normalized_session_id, "editor")
         try:
             result = reorder_sessions(request.session_ids, workspace_id=request.workspace_id)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         sessions = get_all_sessions(workspace_id=request.workspace_id)
-        return reorder_sessions_payload(result, sessions)
+        visible_sessions = filter_visible_resources(
+            http_request,
+            sessions,
+            resource_type="session",
+            resource_id_getter=lambda item: str(item.get("session_id") or ""),
+            require_remote_role=require_remote_viewer,
+            access_store=access_store,
+            identity_store=identity_store,
+        )
+        visible_sessions = filter_visible_resources(
+            http_request,
+            visible_sessions,
+            resource_type="workspace",
+            resource_id_getter=lambda item: str(
+                item.get("workspace_id") or DEFAULT_WORKSPACE_ID
+            ),
+            require_remote_role=require_remote_viewer,
+            access_store=access_store,
+            identity_store=identity_store,
+        )
+        return reorder_sessions_payload(result, visible_sessions)
 
     @router.delete("/api/sessions/{session_id}")
     async def delete_session_endpoint(session_id: str, request: Request):
-        from chat_store import delete_session
+        from backend.chat_store import delete_session
         require_session_access(request, session_id, "admin")
         deck_ids = resolve_deck_store().list_ids_by_session(session_id)
         task_state = resolve_tasks()
@@ -391,7 +466,7 @@ def build_session_router(
 
     @router.get("/api/bookmarks")
     async def list_bookmarks_endpoint(request: Request, session_id: Optional[str] = None):
-        from chat_store import list_bookmarks
+        from backend.chat_store import list_bookmarks
         bookmarks = list_bookmarks(session_id=session_id)
         if session_id:
             require_session_access(request, session_id, "viewer")
@@ -410,7 +485,7 @@ def build_session_router(
 
     @router.post("/api/bookmarks")
     async def create_bookmark_endpoint(http_request: Request, request: create_bookmark_request_model):
-        from chat_store import create_or_update_bookmark
+        from backend.chat_store import create_or_update_bookmark
         require_session_access(http_request, request.session_id, "editor")
         try:
             bookmark = create_or_update_bookmark(
@@ -431,7 +506,7 @@ def build_session_router(
 
     @router.delete("/api/bookmarks/{bookmark_id}")
     async def delete_bookmark_endpoint(bookmark_id: str, request: Request):
-        from chat_store import delete_bookmark, get_bookmark
+        from backend.chat_store import delete_bookmark, get_bookmark
         bookmark = get_bookmark(bookmark_id)
         if not bookmark:
             raise HTTPException(status_code=404, detail="Bookmark was not found.")
@@ -446,7 +521,7 @@ def build_session_router(
     @router.post("/api/sessions/{session_id}/share", response_model=share_link_response_model)
     async def create_session_share_link(session_id: str, request: Request):
         import time
-        from chat_store import get_session
+        from backend.chat_store import get_session
         require_remote_share_secret(request)
         require_session_access(request, session_id, "viewer")
         share_secret = current_share_link_secret()
@@ -490,7 +565,7 @@ def build_session_router(
         http_request: Request,
         request: import_session_messages_request_model,
     ):
-        from chat_store import SQLiteChatMessageHistory, replace_session_panels
+        from backend.chat_store import SQLiteChatMessageHistory, replace_session_panels
         require_session_access(http_request, session_id, "editor")
         # Keep SQLite here until panel import is routed through a store abstraction:
         # replace_session_panels still requires an explicit SQLite db_path.
@@ -534,6 +609,7 @@ def build_session_router(
                 files=files,
                 sources=[dict(item) for item in message.sources if isinstance(item, dict)],
                 workflow_nodes=[dict(item) for item in message.workflow_nodes if isinstance(item, dict)],
+                token_usage=dict(message.token_usage or {}),
                 task_id=str(message.task_id or "").strip(),
                 task_type=str(message.task_type or "").strip(),
             )
@@ -548,7 +624,7 @@ def build_session_router(
 
     @router.post("/api/sessions/{session_id}/messages/feedback")
     async def set_message_feedback_endpoint(session_id: str, http_request: Request, request: set_message_feedback_request_model):
-        from chat_store import set_message_feedback
+        from backend.chat_store import set_message_feedback
         require_session_access(http_request, session_id, "editor")
         try:
             result = set_message_feedback(
@@ -566,7 +642,7 @@ def build_session_router(
 
     @router.post("/api/sessions/{session_id}/messages/truncate")
     async def truncate_session_messages_endpoint(session_id: str, http_request: Request, request: truncate_session_messages_request_model):
-        from chat_store import truncate_session_from_answer_group
+        from backend.chat_store import truncate_session_from_answer_group
         require_session_access(http_request, session_id, "editor")
         validate_chat_payload(request.content, request.images, request.files)
         try:
@@ -594,7 +670,7 @@ def build_session_router(
 
     @router.post("/api/sessions/{session_id}/retrieval-feedback")
     async def set_retrieval_feedback_endpoint(session_id: str, http_request: Request, request: set_retrieval_feedback_request_model):
-        from chat_store import set_retrieval_feedback
+        from backend.chat_store import set_retrieval_feedback
         require_session_access(http_request, session_id, "editor")
         try:
             result = set_retrieval_feedback(
@@ -610,7 +686,7 @@ def build_session_router(
 
     @router.get("/api/sessions/{session_id}/retrieval-feedback")
     async def list_retrieval_feedback_endpoint(session_id: str, request: Request, panel_id: str, answer_group_id: str):
-        from chat_store import list_retrieval_feedback
+        from backend.chat_store import list_retrieval_feedback
         require_session_access(request, session_id, "viewer")
         try:
             feedback = list_retrieval_feedback(session_id, panel_id=panel_id, answer_group_id=answer_group_id)
@@ -622,7 +698,7 @@ def build_session_router(
 
     @router.get("/api/sessions/{session_id}/memory")
     async def get_session_memory(session_id: str, request: Request, kind: str = ""):
-        from chat_store import get_session, list_session_memory
+        from backend.chat_store import get_session, list_session_memory
         require_session_access(request, session_id, "viewer")
         session = get_session(session_id)
         if not session:
@@ -638,7 +714,7 @@ def build_session_router(
 
     @router.post("/api/sessions/{session_id}/memory/pin")
     async def pin_session_memory_endpoint(session_id: str, http_request: Request, request: pin_session_memory_request_model):
-        from chat_store import pin_session_memory
+        from backend.chat_store import pin_session_memory
         require_session_access(http_request, session_id, "editor")
         try:
             result = pin_session_memory(session_id, content=request.content, kind=request.kind)
@@ -650,7 +726,7 @@ def build_session_router(
 
     @router.patch("/api/sessions/{session_id}/memory/{memory_id}")
     async def update_session_memory_endpoint(session_id: str, memory_id: str, http_request: Request, request: update_session_memory_request_model):
-        from chat_store import update_session_memory
+        from backend.chat_store import update_session_memory
         require_session_access(http_request, session_id, "editor")
         try:
             updates = session_memory_updates(request, field_set=request_field_set(request))
@@ -667,7 +743,7 @@ def build_session_router(
 
     @router.post("/api/sessions/{session_id}/memory/summarize")
     async def summarize_session_memory_endpoint(session_id: str, request: Request, force: bool = False):
-        from chat_store import get_session
+        from backend.chat_store import get_session
         require_session_access(request, session_id, "editor")
         session = get_session(session_id)
         try:
@@ -681,7 +757,7 @@ def build_session_router(
 
     @router.delete("/api/sessions/{session_id}/memory/{memory_id}")
     async def delete_session_memory_endpoint(session_id: str, memory_id: str, request: Request):
-        from chat_store import delete_session_memory
+        from backend.chat_store import delete_session_memory
         require_session_access(request, session_id, "editor")
         deleted = delete_session_memory(session_id, memory_id)
         if not deleted:
@@ -758,7 +834,7 @@ def build_session_router(
 
     @router.post("/api/sessions/{session_id}/answer-groups/{answer_group_id}/promote")
     async def promote_answer_group(session_id: str, answer_group_id: str, request: Request, panel_id: str):
-        from chat_store import SQLiteChatMessageHistory, promote_panel_answer
+        from backend.chat_store import SQLiteChatMessageHistory, promote_panel_answer
         from backend.helpers.session_helpers import record_answer_preference_signal
         require_session_access(request, session_id, "editor")
         review: dict[str, Any] | None = None
@@ -793,7 +869,7 @@ def build_session_router(
 
     @router.post("/api/sessions/{session_id}/answer-groups/{answer_group_id}/promote/recommended")
     async def promote_recommended_answer_group(session_id: str, answer_group_id: str, request: Request):
-        from chat_store import SQLiteChatMessageHistory, promote_panel_answer
+        from backend.chat_store import SQLiteChatMessageHistory, promote_panel_answer
         from backend.helpers.session_helpers import record_answer_preference_signal
         require_session_access(request, session_id, "editor")
         try:
@@ -817,7 +893,7 @@ def build_session_router(
     @router.post("/api/sessions/{session_id}/reset")
     async def reset_session(session_id: str, request: Request):
         from backend.services.agent_core import clear_session_history
-        from chat_store import clear_session_memory
+        from backend.chat_store import clear_session_memory
         require_session_access(request, session_id, "admin")
         clear_session_history(session_id)
         clear_session_memory(session_id)
@@ -835,4 +911,3 @@ def build_session_router(
         return {"artifacts": [artifact_payload(artifact) for artifact in artifacts]}
 
     return router
-

@@ -1,6 +1,8 @@
 from fastapi.testclient import TestClient
+from types import SimpleNamespace
 
 import backend.api_server as api_server
+from backend.helpers.identity_helpers import sync_external_identity_payload
 from backend.stores.identity_store import SQLiteIdentityStore
 
 
@@ -105,6 +107,45 @@ def test_identity_admin_can_sync_verified_external_claims(monkeypatch, tmp_path)
         and "memberships=1" in event.get("details", "")
         for event in api_server._security_audit_events
     )
+
+
+def test_sync_external_identity_payload_uses_config_defaults(tmp_path):
+    store = SQLiteIdentityStore(db_path=str(tmp_path / "identity.db"))
+    store.upsert_org(
+        org_id="org-default",
+        name="Default Org",
+        description="",
+        now=1.0,
+    )
+
+    body = SimpleNamespace(
+        provider="",
+        claims={
+            "sub": "idp-user-defaults",
+            "email": "default@example.com",
+            "name": "Default User",
+        },
+        allowed_domains=None,
+        default_org_id="org-default",
+        default_role="editor",
+        group_org_map=None,
+        group_role_map={},
+    )
+    config = {
+        "allowed_domains": "example.com",
+        "provider": "oidc",
+    }
+
+    payload = sync_external_identity_payload(
+        body,
+        identity_store=store,
+        effective_config_value=lambda field: config.get(field, ""),
+        now=lambda: 2.0,
+    )
+
+    assert payload["user"]["user_id"] == "oidc:idp-user-defaults"
+    assert payload["memberships"][0]["org_id"] == "org-default"
+    assert payload["memberships"][0]["role"] == "editor"
 
 
 def test_identity_sso_sync_rejects_disallowed_email_domain(monkeypatch, tmp_path):

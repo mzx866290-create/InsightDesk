@@ -1,18 +1,27 @@
 """LLM 调用超时、结果压缩、流式辅助"""
 
 import asyncio
+from contextvars import ContextVar, Token
 import os
 import re
 import logging
 import time
+from math import ceil
 from typing import Any, Optional
 
 from backend.core.runtime_metrics import record_llm_call
+from backend.core.tracing import trace_span
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_LLM_TIMEOUT_SECONDS = float(os.getenv("AGENT_LLM_TIMEOUT_SECONDS", "90"))
 PLACEHOLDER_SYSTEM_PROMPTS = {"无", "none", "null", "n/a"}
+
+
+_LLM_USAGE_CAPTURE: ContextVar[list[dict[str, Any]] | None] = ContextVar(
+    "llm_usage_capture",
+    default=None,
+)
 
 
 def _safe_positive_int(value: Any) -> int:
@@ -114,14 +123,168 @@ def _extract_llm_token_usage(response: Any) -> dict[str, int]:
     return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
 
+def _has_llm_token_usage(usage: dict[str, int]) -> bool:
+    return bool(
+        usage.get("prompt_tokens")
+        or usage.get("completion_tokens")
+        or usage.get("total_tokens")
+    )
+
+
+def _estimate_tokens_from_text(text: str) -> int:
+    if not text:
+        return 0
+    cjk_chars = len(re.findall(r"[\u3400-\u9fff]", text))
+    non_cjk_chars = max(0, len(text) - cjk_chars)
+    return max(0, ceil(cjk_chars + non_cjk_chars / 4))
+
+
+def _stringify_token_payload(value: Any, *, limit: int = 12000) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value[:limit]
+    if isinstance(value, dict):
+        parts: list[str] = []
+        for key in ("content", "text", "input", "prompt"):
+            if key in value:
+                parts.append(_stringify_token_payload(value.get(key), limit=limit))
+        if not parts:
+            parts.extend(
+                _stringify_token_payload(item, limit=limit)
+                for item in value.values()
+            )
+        return "\n".join(part for part in parts if part)[:limit]
+    if isinstance(value, (list, tuple)):
+        parts = [_stringify_token_payload(item, limit=limit) for item in value]
+        return "\n".join(part for part in parts if part)[:limit]
+    content = getattr(value, "content", None)
+    if content is not None:
+        return _stringify_token_payload(content, limit=limit)
+    return str(value)[:limit]
+
+
+def _estimated_llm_token_usage(
+    payload: Any = None,
+    output_text: Any = None,
+) -> dict[str, int]:
+    prompt_tokens = _estimate_tokens_from_text(_stringify_token_payload(payload))
+    completion_tokens = _estimate_tokens_from_text(_stringify_token_payload(output_text))
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    }
+
+
+def estimate_llm_answer_token_usage(
+    payload: Any = None,
+    output_text: Any = None,
+    *,
+    panel_id: str = "",
+    model_id: str = "",
+) -> dict[str, Any]:
+    usage = _estimated_llm_token_usage(payload, output_text)
+    return {
+        "panel_id": panel_id,
+        "model_id": model_id,
+        "prompt_tokens": usage["prompt_tokens"],
+        "completion_tokens": usage["completion_tokens"],
+        "total_tokens": usage["total_tokens"],
+        "estimated": True,
+        "estimation_method": "char_estimate",
+        "call_count": 0,
+        "real_count": 0,
+        "estimated_count": 1 if usage["total_tokens"] > 0 else 0,
+    }
+
+
+def start_llm_usage_capture() -> Token[list[dict[str, Any]] | None]:
+    return _LLM_USAGE_CAPTURE.set([])
+
+
+def finish_llm_usage_capture(
+    token: Token[list[dict[str, Any]] | None],
+    *,
+    panel_id: str = "",
+    model_id: str = "",
+) -> dict[str, Any]:
+    calls = list(_LLM_USAGE_CAPTURE.get() or [])
+    _LLM_USAGE_CAPTURE.reset(token)
+
+    prompt_tokens = sum(_safe_positive_int(call.get("prompt_tokens")) for call in calls)
+    completion_tokens = sum(
+        _safe_positive_int(call.get("completion_tokens")) for call in calls
+    )
+    total_tokens = sum(_safe_positive_int(call.get("total_tokens")) for call in calls)
+    estimated_count = sum(1 for call in calls if bool(call.get("estimated")))
+    real_count = max(0, len(calls) - estimated_count)
+
+    if estimated_count and real_count:
+        estimation_method = "mixed_provider_usage_and_char_estimate"
+    elif estimated_count:
+        estimation_method = "char_estimate"
+    else:
+        estimation_method = "provider_usage"
+
+    return {
+        "panel_id": panel_id,
+        "model_id": model_id,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "estimated": estimated_count > 0,
+        "estimation_method": estimation_method,
+        "call_count": len(calls),
+        "real_count": real_count,
+        "estimated_count": estimated_count,
+    }
+
+
+def cancel_llm_usage_capture(token: Token[list[dict[str, Any]] | None]) -> None:
+    _LLM_USAGE_CAPTURE.reset(token)
+
+
+def _capture_llm_call_usage(
+    llm: Any,
+    *,
+    status: str,
+    started_at: float,
+    usage: dict[str, int],
+    estimated: bool,
+) -> None:
+    capture = _LLM_USAGE_CAPTURE.get()
+    if capture is None:
+        return
+    capture.append(
+        {
+            "provider": _llm_provider_name(llm),
+            "model": _llm_model_name(llm),
+            "status": status,
+            "latency_seconds": time.perf_counter() - started_at,
+            "prompt_tokens": usage["prompt_tokens"],
+            "completion_tokens": usage["completion_tokens"],
+            "total_tokens": usage["total_tokens"],
+            "estimated": estimated,
+        }
+    )
+
+
 def _record_llm_call_result(
     llm: Any,
     *,
     status: str,
     started_at: float,
     response: Any = None,
-) -> None:
+    payload: Any = None,
+    output_text: Any = None,
+) -> dict[str, Any]:
     usage = _extract_llm_token_usage(response)
+    captured_usage = usage
+    estimated = False
+    if status == "success" and not _has_llm_token_usage(usage):
+        captured_usage = _estimated_llm_token_usage(payload, output_text)
+        estimated = True
     record_llm_call(
         provider=_llm_provider_name(llm),
         model=_llm_model_name(llm),
@@ -131,6 +294,38 @@ def _record_llm_call_result(
         completion_tokens=usage["completion_tokens"],
         total_tokens=usage["total_tokens"],
     )
+    _capture_llm_call_usage(
+        llm,
+        status=status,
+        started_at=started_at,
+        usage=captured_usage,
+        estimated=estimated,
+    )
+    return {
+        "llm.status": status,
+        "llm.provider": _llm_provider_name(llm),
+        "llm.model": _llm_model_name(llm),
+        "llm.prompt_tokens": captured_usage["prompt_tokens"],
+        "llm.completion_tokens": captured_usage["completion_tokens"],
+        "llm.total_tokens": captured_usage["total_tokens"],
+        "llm.usage_estimated": estimated,
+        "llm.latency_seconds": time.perf_counter() - started_at,
+    }
+
+
+def _llm_trace_attributes(
+    llm: Any,
+    *,
+    timeout_seconds: float,
+    streaming: bool,
+) -> dict[str, Any]:
+    return {
+        "component": "agent.llm",
+        "llm.provider": _llm_provider_name(llm),
+        "llm.model": _llm_model_name(llm),
+        "llm.timeout_seconds": timeout_seconds,
+        "llm.streaming": streaming,
+    }
 
 
 def _has_image_input(user_input: Any) -> bool:
@@ -175,20 +370,36 @@ async def _ainvoke_llm_with_timeout(
     payload: Any,
     timeout_seconds: Optional[float] = None,
 ):
-    """统一为 LLM 调用增加超时，避免知识库场景长时间挂起。"""
+    """Invoke an LLM with timeout, metrics, and trace span capture."""
     timeout = timeout_seconds or DEFAULT_LLM_TIMEOUT_SECONDS
     started_at = time.perf_counter()
-    try:
-        response = await asyncio.wait_for(llm.ainvoke(payload), timeout=timeout)
-        _record_llm_call_result(llm, status="success", started_at=started_at, response=response)
-        return response
-    except asyncio.TimeoutError as exc:
-        _record_llm_call_result(llm, status="timeout", started_at=started_at)
-        raise TimeoutError(f"LLM request timed out after {int(timeout)}s") from exc
-    except Exception:
-        _record_llm_call_result(llm, status="error", started_at=started_at)
-        raise
-
+    async with trace_span(
+        "llm.invoke",
+        _llm_trace_attributes(llm, timeout_seconds=timeout, streaming=False),
+    ) as span:
+        try:
+            response = await asyncio.wait_for(llm.ainvoke(payload), timeout=timeout)
+            span.set_attributes(
+                _record_llm_call_result(
+                    llm,
+                    status="success",
+                    started_at=started_at,
+                    response=response,
+                    payload=payload,
+                    output_text=getattr(response, "content", response),
+                )
+            )
+            return response
+        except asyncio.TimeoutError as exc:
+            span.set_attributes(
+                _record_llm_call_result(llm, status="timeout", started_at=started_at)
+            )
+            raise TimeoutError(f"LLM request timed out after {int(timeout)}s") from exc
+        except Exception:
+            span.set_attributes(
+                _record_llm_call_result(llm, status="error", started_at=started_at)
+            )
+            raise
 
 def _is_timeout_error(exc: BaseException) -> bool:
     """归一化识别超时异常，避免对已兜底场景打印整段堆栈。"""
@@ -353,24 +564,48 @@ async def _astream_llm_with_timeout(
     timeout_seconds: Optional[float] = None,
 ):
     timeout = timeout_seconds or DEFAULT_LLM_TIMEOUT_SECONDS
-    if not hasattr(llm, "astream"):
-        response = await _ainvoke_llm_with_timeout(llm, payload, timeout_seconds=timeout)
-        text = _stringify_stream_chunk_content(getattr(response, "content", response))
-        if text:
-            yield text
-        return
-
     started_at = time.perf_counter()
-    try:
-        async with asyncio.timeout(timeout):
-            async for chunk in llm.astream(payload):
-                text = _stringify_stream_chunk_content(getattr(chunk, "content", chunk))
-                if text:
-                    yield text
-        _record_llm_call_result(llm, status="success", started_at=started_at)
-    except asyncio.TimeoutError as exc:
-        _record_llm_call_result(llm, status="timeout", started_at=started_at)
-        raise TimeoutError(f"LLM request timed out after {int(timeout)}s") from exc
-    except Exception:
-        _record_llm_call_result(llm, status="error", started_at=started_at)
-        raise
+    async with trace_span(
+        "llm.stream",
+        _llm_trace_attributes(llm, timeout_seconds=timeout, streaming=True),
+    ) as span:
+        if not hasattr(llm, "astream"):
+            response = await _ainvoke_llm_with_timeout(llm, payload, timeout_seconds=timeout)
+            text = _stringify_stream_chunk_content(getattr(response, "content", response))
+            if text:
+                yield text
+            span.set_attributes({"llm.status": "success", "llm.fallback_invoke": True})
+            return
+
+        output_parts: list[str] = []
+        usage_response: Any = None
+        try:
+            async with asyncio.timeout(timeout):
+                async for chunk in llm.astream(payload):
+                    text = _stringify_stream_chunk_content(getattr(chunk, "content", chunk))
+                    chunk_usage = _extract_llm_token_usage(chunk)
+                    if _has_llm_token_usage(chunk_usage):
+                        usage_response = chunk
+                    if text:
+                        output_parts.append(text)
+                        yield text
+            span.set_attributes(
+                _record_llm_call_result(
+                    llm,
+                    status="success",
+                    started_at=started_at,
+                    response=usage_response,
+                    payload=payload,
+                    output_text="".join(output_parts),
+                )
+            )
+        except asyncio.TimeoutError as exc:
+            span.set_attributes(
+                _record_llm_call_result(llm, status="timeout", started_at=started_at)
+            )
+            raise TimeoutError(f"LLM request timed out after {int(timeout)}s") from exc
+        except Exception:
+            span.set_attributes(
+                _record_llm_call_result(llm, status="error", started_at=started_at)
+            )
+            raise

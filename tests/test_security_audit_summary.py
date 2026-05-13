@@ -3,7 +3,7 @@ import json
 from fastapi.testclient import TestClient
 
 import backend.api_server as api_server
-from backend.api_security_audit_store import SQLiteSecurityAuditStore
+from backend.stores.security_audit_store import SQLiteSecurityAuditStore
 
 
 def _set_remote_admin_catalog(monkeypatch):
@@ -437,6 +437,8 @@ def test_security_audit_archive_policy_and_legal_hold_preserve_cleanup(
     assert preview_response.status_code == 200
     preview = preview_response.json()
     assert preview["mode"] == "preview"
+    assert preview["history_limit"] >= 1
+    assert preview["cutoff_timestamp"] is not None
     assert preview["archive_candidate_count"] == 1
     assert preview["legal_hold_count"] == 1
     assert preview["legal_hold_preserved_count"] == 1
@@ -452,6 +454,8 @@ def test_security_audit_archive_policy_and_legal_hold_preserve_cleanup(
     assert export_response.status_code == 200
     export_payload = export_response.json()
     assert export_payload["export_count"] == 1
+    assert export_payload["history_limit"] >= 1
+    assert export_payload["cutoff_timestamp"] is not None
     assert export_payload["events"][0]["request_id"] == "req-archive-delete"
     rendered_export = json.dumps(export_payload, ensure_ascii=False)
     assert "raw-token" not in rendered_export

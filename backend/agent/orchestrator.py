@@ -120,6 +120,69 @@ def _agent_task_type(agent_name: str, registry: AgentRegistry) -> str:
     return capabilities[0] if capabilities else normalized.lower() or "general"
 
 
+def _agent_metadata_for_step(
+    registry: AgentRegistry,
+    *,
+    agent_name: str = "",
+    task_type: str = "",
+) -> dict[str, Any]:
+    agent = None
+    if str(agent_name or "").strip():
+        try:
+            agent = registry.get(str(agent_name or "").strip())
+        except KeyError:
+            agent = None
+    if agent is None and str(task_type or "").strip():
+        agent = registry.find_for_task(str(task_type or "").strip())
+    if agent is None:
+        return {}
+    return AgentRegistry._agent_metadata(agent)
+
+
+def _apply_agent_metadata_to_step(
+    step: OrchestratorPlanStep,
+    registry: AgentRegistry,
+) -> OrchestratorPlanStep:
+    enriched = dict(step)
+    agent_metadata = _agent_metadata_for_step(
+        registry,
+        agent_name=str(enriched.get("agent") or "").strip(),
+        task_type=str(enriched.get("task_type") or "").strip(),
+    )
+    if not agent_metadata:
+        return enriched
+
+    metadata = dict(enriched.get("metadata") or {})
+    if bool(agent_metadata.get("plugin")):
+        metadata.setdefault("agent_plugin", True)
+    source = str(agent_metadata.get("source") or "").strip()
+    if source:
+        metadata.setdefault("agent_source", source)
+
+    for key in ("risk_level", "risk", "high_risk", "approval_reason"):
+        if key in agent_metadata and key not in metadata:
+            metadata[key] = agent_metadata[key]
+
+    if bool(agent_metadata.get("requires_approval")):
+        metadata.setdefault(
+            "approval_reason",
+            str(agent_metadata.get("approval_reason") or "Agent manifest requires approval."),
+        )
+        enriched["requires_approval"] = True
+        if str(enriched.get("approval_status") or "not_required") == "not_required":
+            enriched["approval_status"] = "pending"
+
+    enriched["metadata"] = metadata
+    return enriched
+
+
+def _apply_agent_metadata_to_plan(
+    plan: list[OrchestratorPlanStep],
+    registry: AgentRegistry,
+) -> list[OrchestratorPlanStep]:
+    return [_apply_agent_metadata_to_step(step, registry) for step in plan]
+
+
 def _build_requested_plan(
     user_request: str,
     registry: AgentRegistry,
@@ -257,7 +320,10 @@ def create_plan(
         requested_agents=requested_agents,
     )
     if requested_plan:
-        return _apply_task_approval_policy(requested_plan, context)
+        return _apply_task_approval_policy(
+            _apply_agent_metadata_to_plan(requested_plan, registry),
+            context,
+        )
     plan: list[OrchestratorPlanStep] = []
     for index, task_type in enumerate(infer_task_types(user_request), start=1):
         agent = registry.find_for_task(task_type)
@@ -275,7 +341,10 @@ def create_plan(
                 "metadata": {"planner": "heuristic"},
             }
         )
-    return _apply_task_approval_policy(plan, context)
+    return _apply_task_approval_policy(
+        _apply_agent_metadata_to_plan(plan, registry),
+        context,
+    )
 
 
 def _normalize_task_approval_policy(value: Any) -> dict[str, Any]:
@@ -688,6 +757,10 @@ def build_orchestrator_graph(
             )
         else:
             next_state["plan"] = _normalize_plan(next_state.get("plan", []))
+            next_state["plan"] = _apply_agent_metadata_to_plan(
+                next_state.get("plan", []),
+                agent_registry,
+            )
             next_state["plan"] = _apply_task_approval_policy(
                 next_state.get("plan", []),
                 next_state.get("context") or {},

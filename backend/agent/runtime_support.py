@@ -139,12 +139,7 @@ from backend.agent.tool_registry import (
 from backend.chat_store import SQLiteChatMessageHistory, list_session_memory
 from backend.doc_pipeline import DocPipeline
 
-try:
-    from langchain_classic.agents import AgentExecutor, create_tool_calling_agent
-except ModuleNotFoundError:
-    # Keep older environments working when langchain_classic is unavailable.
-    from langchain.agents import AgentExecutor, create_tool_calling_agent
-
+from langchain_classic.agents import AgentExecutor, create_tool_calling_agent
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate

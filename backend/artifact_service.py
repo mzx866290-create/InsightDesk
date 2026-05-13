@@ -266,28 +266,36 @@ def build_report_artifact(
     qa_pairs: list[tuple[str, str]],
     answer_group_id: str = "",
     panel_id: str = "",
+    template_id: str = "",
+    template_options: dict[str, Any] | None = None,
     artifact_id: str | None = None,
 ) -> ArtifactRecord:
     now = _now_timestamp()
+    content: dict[str, Any] = {
+        "markdown": str(markdown or ""),
+        "qa_pairs": [
+            {
+                "question": _normalize_text(question),
+                "answer": str(answer or "").strip(),
+            }
+            for question, answer in qa_pairs
+            if _normalize_text(question) or str(answer or "").strip()
+        ],
+        "answer_group_id": _normalize_optional_text(answer_group_id),
+        "panel_id": _normalize_optional_text(panel_id),
+    }
+    normalized_template_id = _normalize_optional_text(template_id)
+    if normalized_template_id:
+        content["template_id"] = normalized_template_id
+    if isinstance(template_options, dict) and template_options:
+        content["template_options"] = dict(template_options)
     return ArtifactRecord(
         artifact_id=artifact_id or f"artifact_{uuid.uuid4().hex}",
         session_id=_normalize_text(session_id),
         artifact_type="report",
         title=_normalize_text(title) or "AI 对话报告",
         status="ready",
-        content={
-            "markdown": str(markdown or ""),
-            "qa_pairs": [
-                {
-                    "question": _normalize_text(question),
-                    "answer": str(answer or "").strip(),
-                }
-                for question, answer in qa_pairs
-                if _normalize_text(question) or str(answer or "").strip()
-            ],
-            "answer_group_id": _normalize_optional_text(answer_group_id),
-            "panel_id": _normalize_optional_text(panel_id),
-        },
+        content=content,
         created_at=now,
         updated_at=now,
     )
@@ -410,19 +418,20 @@ def _model_dump_jsonable(value: Any) -> Any:
 
 
 def _deck_artifact_content(deck: Any) -> dict[str, Any]:
+    meta = getattr(deck, "meta", None)
     generation = getattr(deck, "generation", None)
-    return {
+    content = {
         "deck_id": _normalize_text(getattr(deck, "deck_id", "")),
-        "theme": _normalize_text(getattr(getattr(deck, "meta", None), "theme", ""))
+        "theme": _normalize_text(getattr(meta, "theme", ""))
         or "default",
         "slide_count": int(
             getattr(generation, "actual_slide_count", 0) or 0
         ),
         "answer_group_id": _normalize_optional_text(
-            getattr(getattr(deck, "meta", None), "source_answer_group_id", "")
+            getattr(meta, "source_answer_group_id", "")
         ),
         "panel_id": _normalize_optional_text(
-            getattr(getattr(deck, "meta", None), "source_panel_id", "")
+            getattr(meta, "source_panel_id", "")
         ),
         "evidence_coverage": _model_dump_jsonable(
             getattr(generation, "evidence_coverage", None)
@@ -435,6 +444,13 @@ def _deck_artifact_content(deck: Any) -> dict[str, Any]:
             or getattr(generation, "citation_validation", None)
         ),
     }
+    template_id = _normalize_optional_text(getattr(meta, "template_id", ""))
+    template_options = getattr(meta, "template_options", {})
+    if template_id:
+        content["template_id"] = template_id
+    if isinstance(template_options, dict) and template_options:
+        content["template_options"] = dict(template_options)
+    return content
 
 
 class SQLiteArtifactStore:

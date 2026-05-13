@@ -100,3 +100,30 @@ def create_session_record(
             workspace_id=requested_workspace_id,
         )
     return session
+
+
+def require_workspace_session(
+    session_id: str,
+    workspace_id: str | None = None,
+) -> dict[str, Any]:
+    from fastapi import HTTPException
+
+    from backend.chat_store import DEFAULT_WORKSPACE_ID, get_session, get_workspace
+
+    normalized_session_id = str(session_id or "").strip()
+    session = get_session(normalized_session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="会话不存在")
+
+    normalized_workspace_id = str(workspace_id or "").strip()
+    if not normalized_workspace_id:
+        return session
+
+    if get_workspace(normalized_workspace_id) is None:
+        raise HTTPException(status_code=400, detail="工作区不存在")
+
+    session_workspace_id = str(session.get("workspace_id") or DEFAULT_WORKSPACE_ID)
+    if session_workspace_id != normalized_workspace_id:
+        raise HTTPException(status_code=404, detail="当前工作区中不存在该会话")
+
+    return session

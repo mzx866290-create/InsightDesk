@@ -18,6 +18,7 @@ class BuilderInvocationConfig:
     raw_user_message: str
     raw_images: list[dict[str, Any]]
     raw_files: list[dict[str, Any]]
+    omit_history: bool
     task_id: str
     task_type: str
 
@@ -63,6 +64,7 @@ def _build_invocation_config(config: Optional[dict]) -> BuilderInvocationConfig:
         raw_user_message=str(_configurable_value(config, "raw_user_message", "") or ""),
         raw_images=_configurable_list(config, "raw_images"),
         raw_files=_configurable_list(config, "raw_files"),
+        omit_history=bool(_configurable_value(config, "omit_history", False)),
         task_id=str(_configurable_value(config, "task_id", "") or ""),
         task_type=str(_configurable_value(config, "task_type", "") or ""),
     )

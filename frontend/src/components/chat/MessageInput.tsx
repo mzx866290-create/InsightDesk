@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Send, Globe, Square, Database, ImagePlus, Paperclip, Sparkles, Loader2, X } from 'lucide-react'
+import { Send, Globe, Square, Database, ImagePlus, Paperclip, Sparkles, Loader2, X, Eraser } from 'lucide-react'
 import { useChatStore } from '../../stores/chatStore'
 import type { ResearchMode } from '../../stores/chatStore'
 import {
@@ -8,11 +8,11 @@ import {
   getSystemPrompts,
   truncateSessionMessagesFromAnswerGroup,
 } from '../../api/client'
-import type { ChatFile, ChatImage, SSEChunk, SourceItem, SystemPrompt } from '../../api/client'
+import type { ChatFile, ChatImage, SourceItem, SystemPrompt } from '../../api/client'
 import { createAndTrackTask, createAndTrackWorkflowTask, useTaskStore } from '../../stores/taskStore'
 import type { ActiveStreamControl } from './streamControl'
-import { parseWorkflowEvent } from '../../api/workflowClient'
 import { useWorkflowStore } from '../../stores/workflowStore'
+import { dispatchChatStreamChunk } from '../../hooks/useChatStreaming'
 
 interface MessageInputProps {
   onStreamingChange: (panelId: string, streaming: boolean) => void
@@ -360,6 +360,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const [suggestions, setSuggestions] = useState<ComposerSuggestion[]>([])
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0)
   const [triggerRange, setTriggerRange] = useState<TriggerRange | null>(null)
+  const [omitHistoryForNextSend, setOmitHistoryForNextSend] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const attachmentInputRef = useRef<HTMLInputElement>(null)
@@ -565,6 +566,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     setImages([])
     setFiles([])
     setPendingEditAnswerGroupId(null)
+    setOmitHistoryForNextSend(false)
     closeSuggestions()
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
@@ -828,6 +830,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 max_results: requestConfig.maxResults,
                 max_results_per_query: requestConfig.maxResultsPerQuery,
                 max_rounds: requestConfig.maxRounds,
+                panel_config: panels[0]?.modelConfig,
                 panel_id: primaryPanelId ?? '',
                 answer_group_id: answerGroupId,
                 model_id: researchModelId,
@@ -880,6 +883,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     const pendingFiles = [...files]
     const editingAnswerGroupId = pendingEditAnswerGroupId?.trim() || ''
     const isEditRegenerationRequested = Boolean(editingAnswerGroupId && currentSessionId)
+    const omitHistoryForRequest = omitHistoryForNextSend
     if (
       (msg.length === 0 && pendingImages.length === 0 && pendingFiles.length === 0) ||
       isLoading ||
@@ -911,6 +915,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       setImages(pendingImages)
       setFiles(pendingFiles)
       setPendingEditAnswerGroupId(isEditRegenerationRequested ? editingAnswerGroupId : null)
+      setOmitHistoryForNextSend(omitHistoryForRequest)
       window.requestAnimationFrame(() => {
         adjustHeight()
         textareaRef.current?.focus()
@@ -974,24 +979,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       pendingImages,
       pendingFiles,
       answerGroupId,
-      (chunk: SSEChunk) => {
-        const workflowEvent = parseWorkflowEvent(chunk)
-        if (workflowEvent) {
-          useWorkflowStore.getState().updateNodeStatus(
-            chunk.panel_id,
-            workflowEvent.node_name,
-            workflowEvent.status,
-            {
-              toolName: workflowEvent.tool_name,
-              toolParams: workflowEvent.tool_params,
-              toolResult: workflowEvent.tool_result_summary,
-              retrievalMeta: workflowEvent.retrieval_meta,
-              error: workflowEvent.error,
-            },
-          )
-          return
-        }
-
+      (chunk) => {
         const msgId = assistantMsgIds.get(chunk.panel_id)
         if (!msgId) return
         const panel = panels.find((item) => item.id === chunk.panel_id)
@@ -1000,55 +988,34 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           modelId: panel?.modelConfig.model,
         }
 
-        if (chunk.type === 'chunk' && chunk.content) {
-          appendChunk(chunk.panel_id, msgId, chunk.content, assistantMeta)
-        } else if (chunk.type === 'sources' && chunk.sources) {
-          setSources(chunk.panel_id, msgId, chunk.sources, assistantMeta)
-        } else if (chunk.type === 'task_created' && chunk.task_id) {
-          const taskStore = useTaskStore.getState()
-          taskStore.addTask({
-            task_id: chunk.task_id,
-            task_type: chunk.task_type ?? 'task',
-            status: 'pending',
-            progress: 0,
-            created_at: Date.now() / 1000,
-            updated_at: Date.now() / 1000,
-          })
-          taskStore.startPolling(chunk.task_id)
-          setTaskId(chunk.panel_id, msgId, chunk.task_id, chunk.task_type)
-        } else if (chunk.type === 'done') {
-          const workflowSnapshot = useWorkflowStore.getState().getWorkflow(chunk.panel_id)?.nodes
-          if (workflowSnapshot && workflowSnapshot.length > 0) {
-            replaceAssistantMessageByAnswerGroup(chunk.panel_id, answerGroupId, {
-              workflowNodes: workflowSnapshot,
-            })
-          }
-          setAssistantStreaming(chunk.panel_id, msgId, false)
-          onStreamingChange(chunk.panel_id, false)
-          donePanels.add(chunk.panel_id)
-          if (donePanels.size === panels.length) {
-            syncSessionMetaFromPanels(sessionId)
-            setIsLoading(false)
-          }
-        } else if (chunk.type === 'error') {
-          setAssistantMessage(chunk.panel_id, msgId, '', false)
-          addErrorMessage(
-            chunk.panel_id,
-            chunk.content ?? 'Request failed while processing.',
-            chunk.error_code,
-            chunk.suggestion,
-            {
-              answerGroupId,
-              retryMode: 'rerun',
-            },
-          )
-          onStreamingChange(chunk.panel_id, false)
-          donePanels.add(chunk.panel_id)
-          if (donePanels.size === panels.length) {
-            syncSessionMetaFromPanels(sessionId)
-            setIsLoading(false)
-          }
-        }
+        dispatchChatStreamChunk({
+          chunk,
+          messageId: msgId,
+          answerGroupId,
+          assistantMeta,
+          errorFallback: 'Request failed while processing.',
+          errorMeta: {
+            answerGroupId,
+            retryMode: 'rerun',
+          },
+          clearAssistantOnError: true,
+          onDone: () => {
+            onStreamingChange(chunk.panel_id, false)
+            donePanels.add(chunk.panel_id)
+            if (donePanels.size === panels.length) {
+              syncSessionMetaFromPanels(sessionId)
+              setIsLoading(false)
+            }
+          },
+          onError: () => {
+            onStreamingChange(chunk.panel_id, false)
+            donePanels.add(chunk.panel_id)
+            if (donePanels.size === panels.length) {
+              syncSessionMetaFromPanels(sessionId)
+              setIsLoading(false)
+            }
+          },
+        })
       },
       () => {
         syncSessionMetaFromPanels(sessionId)
@@ -1084,6 +1051,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         setActiveStreamControl(null)
         console.error('Stream error:', err)
       },
+      omitHistoryForRequest,
     )
 
     abortControllerRef.current = controller
@@ -1359,6 +1327,22 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                   )
                 })}
               </div>
+
+              <button
+                type="button"
+                onClick={() => setOmitHistoryForNextSend((current) => !current)}
+                disabled={composerLocked}
+                data-testid="composer-omit-history-toggle"
+                className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs transition-colors ${
+                  omitHistoryForNextSend
+                    ? 'bg-accent-purple/20 text-accent-purple'
+                    : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+                }`}
+                title="本次发送不带历史上下文，历史对话仍会保留"
+              >
+                <Eraser size={13} />
+                <span className="hidden sm:inline">清上下文</span>
+              </button>
 
               <button
                 type="button"

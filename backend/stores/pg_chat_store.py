@@ -20,6 +20,7 @@ from backend.chat_store import (
     _normalize_images,
     _normalize_message_feedback_value,
     _normalize_metadata_list,
+    _normalize_token_usage,
     _parse_json_list,
 )
 from backend.stores.pg_base import PostgresStoreMixin
@@ -116,11 +117,15 @@ class PostgresChatMessageHistory(PostgresStoreMixin, BaseChatMessageHistory):
                         files_json TEXT DEFAULT '',
                         sources_json TEXT DEFAULT '',
                         workflow_json TEXT DEFAULT '',
+                        token_usage_json TEXT DEFAULT '',
                         task_id TEXT DEFAULT '',
                         task_type TEXT DEFAULT '',
                         feedback_value INTEGER DEFAULT 0
                     )
                     """
+                )
+                cursor.execute(
+                    "ALTER TABLE messages ADD COLUMN IF NOT EXISTS token_usage_json TEXT DEFAULT ''"
                 )
                 cursor.execute(
                     """
@@ -229,7 +234,7 @@ class PostgresChatMessageHistory(PostgresStoreMixin, BaseChatMessageHistory):
                     f"""
                     SELECT id, type, content, model_id, panel_id, answer_group_id,
                            images_json, files_json, sources_json, workflow_json,
-                           task_id, task_type, COALESCE(feedback_value, 0), timestamp
+                           token_usage_json, task_id, task_type, COALESCE(feedback_value, 0), timestamp
                     FROM messages
                     WHERE {' AND '.join(where)}
                     ORDER BY id ASC
@@ -322,12 +327,15 @@ class PostgresChatMessageHistory(PostgresStoreMixin, BaseChatMessageHistory):
                     "workflow_nodes": _parse_json_list(
                         self._row_value(row, 9, "workflow_json")
                     ),
-                    "task_id": str(self._row_value(row, 10, "task_id") or ""),
-                    "task_type": str(self._row_value(row, 11, "task_type") or ""),
-                    "feedback_value": _normalize_message_feedback_value(
-                        self._row_value(row, 12, "feedback_value")
+                    "token_usage": _normalize_token_usage(
+                        self._row_value(row, 10, "token_usage_json")
                     ),
-                    "timestamp": float(self._row_value(row, 13, "timestamp") or 0),
+                    "task_id": str(self._row_value(row, 11, "task_id") or ""),
+                    "task_type": str(self._row_value(row, 12, "task_type") or ""),
+                    "feedback_value": _normalize_message_feedback_value(
+                        self._row_value(row, 13, "feedback_value")
+                    ),
+                    "timestamp": float(self._row_value(row, 14, "timestamp") or 0),
                 }
             )
         return records
@@ -344,6 +352,7 @@ class PostgresChatMessageHistory(PostgresStoreMixin, BaseChatMessageHistory):
         workflow_nodes: Optional[list[dict[str, Any]]] = None,
         task_id: str = "",
         task_type: str = "",
+        token_usage: Optional[dict[str, Any]] = None,
     ) -> None:
         if isinstance(message, HumanMessage):
             msg_type = "human"
@@ -359,6 +368,7 @@ class PostgresChatMessageHistory(PostgresStoreMixin, BaseChatMessageHistory):
         normalized_files = _normalize_files(files)
         normalized_sources = _normalize_metadata_list(sources)
         normalized_workflow = _normalize_metadata_list(workflow_nodes)
+        normalized_token_usage = _normalize_token_usage(token_usage)
         now = time.time()
 
         with self._connect() as conn:
@@ -367,9 +377,10 @@ class PostgresChatMessageHistory(PostgresStoreMixin, BaseChatMessageHistory):
                     """
                     INSERT INTO messages (
                         session_id, type, content, timestamp, model_id, panel_id, answer_group_id,
-                        images_json, files_json, sources_json, workflow_json, task_id, task_type
+                        images_json, files_json, sources_json, workflow_json, token_usage_json,
+                        task_id, task_type
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     (
@@ -384,6 +395,7 @@ class PostgresChatMessageHistory(PostgresStoreMixin, BaseChatMessageHistory):
                         json.dumps(normalized_files, ensure_ascii=False),
                         json.dumps(normalized_sources, ensure_ascii=False),
                         json.dumps(normalized_workflow, ensure_ascii=False),
+                        json.dumps(normalized_token_usage, ensure_ascii=False),
                         str(task_id or ""),
                         str(task_type or ""),
                     ),
@@ -457,6 +469,7 @@ class PostgresChatMessageHistory(PostgresStoreMixin, BaseChatMessageHistory):
         workflow_nodes: Optional[list[dict[str, Any]]] = None,
         task_id: str = "",
         task_type: str = "",
+        token_usage: Optional[dict[str, Any]] = None,
     ) -> None:
         self.add_message(
             AIMessage(content=message),
@@ -469,6 +482,7 @@ class PostgresChatMessageHistory(PostgresStoreMixin, BaseChatMessageHistory):
             workflow_nodes=workflow_nodes,
             task_id=task_id,
             task_type=task_type,
+            token_usage=token_usage,
         )
 
     def add_user_message_once(

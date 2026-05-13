@@ -10,8 +10,10 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
 import backend.api_server as api_server
+from backend.core import env_runtime
 import backend.agent.agents.integrator.audit as outbound_audit_helpers
 import backend.helpers.integration_connector_helpers as connector_helpers
+from backend.agent_mcp_helpers import MCP_SERVER_METADATA
 from backend.routes.operations_routes import build_operations_router
 from backend.agent.agents.integrator.audit import (
     persist_integrator_outbound_audit_record,
@@ -1406,7 +1408,7 @@ def test_integrator_scheduler_env_defaults_to_disabled(monkeypatch):
     monkeypatch.delenv("INTEGRATOR_SCHEDULER_ENABLED", raising=False)
     monkeypatch.delenv("INTEGRATOR_SCHEDULER_INTERVAL_SECONDS", raising=False)
 
-    config = api_server._integrator_scheduler_config_from_env()
+    config = env_runtime.integrator_scheduler_config(runtime_logger=api_server.logger)
 
     assert config["enabled"] is False
     assert config["enabled_source"] == "default"
@@ -1418,7 +1420,7 @@ def test_integrator_scheduler_env_parses_enabled_and_interval(monkeypatch):
     monkeypatch.setenv("INTEGRATOR_SCHEDULER_ENABLED", "true")
     monkeypatch.setenv("INTEGRATOR_SCHEDULER_INTERVAL_SECONDS", "2")
 
-    config = api_server._integrator_scheduler_config_from_env()
+    config = env_runtime.integrator_scheduler_config(runtime_logger=api_server.logger)
 
     assert config["enabled"] is True
     assert config["enabled_source"] == "env"
@@ -1568,8 +1570,10 @@ def test_mcp_connector_config_api_returns_ui_marketplace_hot_update_contract(
     assert payload["hot_update"]["restart_required"] is False
     assert payload["connectors"][0]["name"] == "crm-sync"
     assert payload["connectors"][0]["label"] == "CRM Sync"
-    assert payload["marketplace"]["summary"]["total"] == 1
-    assert payload["marketplace"]["summary"]["requires_approval"] == 1
+    by_name = {item["name"]: item for item in payload["connectors"]}
+    assert payload["marketplace"]["summary"]["total"] == len(MCP_SERVER_METADATA) + 1
+    assert by_name["fetch"]["source"] == "template"
+    assert by_name["fetch"]["configured"] is False
     assert payload["servers"]["crm-sync"]["env"]["CRM_TOKEN"] == "***redacted***"
 
     rendered_payload = json.dumps(payload, ensure_ascii=False)

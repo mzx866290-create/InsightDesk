@@ -6,8 +6,28 @@ import pytest
 from fastapi.testclient import TestClient
 
 import backend.api_server as api_server
+from backend.core import model_config_runtime
 import backend.chat_store as chat_store
 import backend.deck_service as deck_service
+from backend.stores.identity_store import SQLiteIdentityStore
+from backend.stores.resource_access_store import SQLiteResourceAccessStore
+
+
+def _set_remote_tokens(monkeypatch):
+    monkeypatch.setattr(api_server, "ALLOW_REMOTE_CLIENTS", True)
+    monkeypatch.setattr(api_server, "_request_is_local", lambda request: False)
+    monkeypatch.setenv(
+        "APP_AUTH_TOKENS_JSON",
+        '{"tokens":[{"token":"admin-token","role":"admin","user_id":"admin","auth_source":"test"},{"token":"viewer-token","role":"viewer","user_id":"viewer","auth_source":"test"},{"token":"editor-token","role":"editor","user_id":"editor","auth_source":"test"}]}',
+    )
+
+
+def _patch_access_stores(monkeypatch, tmp_path):
+    identity_store = SQLiteIdentityStore(db_path=str(tmp_path / "identity.db"))
+    access_store = SQLiteResourceAccessStore(db_path=str(tmp_path / "access.db"))
+    monkeypatch.setattr(api_server, "_identity_store", identity_store)
+    monkeypatch.setattr(api_server, "_resource_access_store", access_store)
+    return identity_store, access_store
 
 
 def _history_cls_for_db(db_path: Path):
@@ -109,7 +129,7 @@ def test_workspace_preset_roundtrip(monkeypatch, tmp_path):
                 "tool_config": {
                     "web_search_enabled": True,
                     "knowledge_base_enabled": False,
-                    "mcp_servers_enabled": ["web-search"],
+                    "mcp_servers_enabled": ["fetch"],
                 },
                 "output_preset": {
                     "deck_theme": "midnight",
@@ -125,7 +145,7 @@ def test_workspace_preset_roundtrip(monkeypatch, tmp_path):
     assert workspace["preset"]["tool_config"] == {
         "web_search_enabled": True,
         "knowledge_base_enabled": False,
-        "mcp_servers_enabled": ["web-search"],
+        "mcp_servers_enabled": ["fetch"],
     }
     assert workspace["preset"]["output_preset"] == {
         "deck_theme": "midnight",
@@ -156,7 +176,7 @@ def test_workspace_preset_roundtrip(monkeypatch, tmp_path):
                 "tool_config": {
                     "web_search_enabled": False,
                     "knowledge_base_enabled": True,
-                    "mcp_servers_enabled": ["knowledge-base", "custom-crm"],
+                    "mcp_servers_enabled": ["filesystem", "custom-crm"],
                 },
                 "output_preset": {
                     "deck_theme": "sunrise",
@@ -171,7 +191,7 @@ def test_workspace_preset_roundtrip(monkeypatch, tmp_path):
     assert updated_workspace["preset"]["tool_config"] == {
         "web_search_enabled": False,
         "knowledge_base_enabled": True,
-        "mcp_servers_enabled": ["knowledge-base", "custom-crm"],
+        "mcp_servers_enabled": ["filesystem", "custom-crm"],
     }
     assert updated_workspace["preset"]["output_preset"] == {
         "deck_theme": "sunrise",
@@ -190,13 +210,13 @@ def test_workspace_preset_roundtrip(monkeypatch, tmp_path):
     )
     assert listed_workspace["preset"]["output_preset"]["deck_theme"] == "sunrise"
     assert listed_workspace["preset"]["tool_config"]["mcp_servers_enabled"] == [
-        "knowledge-base",
+        "filesystem",
         "custom-crm",
     ]
 
 
 def test_normalize_model_config_accepts_plain_dict():
-    normalized = api_server._normalize_model_config(
+    normalized = model_config_runtime.normalize_model_config(
         {
             "panel_id": "panel-main",
             "provider": "ollama",
@@ -222,10 +242,10 @@ def test_mcp_connector_catalog_endpoint(monkeypatch, tmp_path):
         "list_mcp_server_catalog",
         lambda: [
             {
-                "name": "knowledge-base",
-                "label": "Knowledge Base",
-                "description": "Internal KB",
-                "category": "knowledge",
+                "name": "filesystem",
+                "label": "Filesystem",
+                "description": "External filesystem connector",
+                "category": "files",
                 "builtin": True,
                 "transport": "stdio",
                 "source": "default",
@@ -244,7 +264,7 @@ def test_mcp_connector_catalog_endpoint(monkeypatch, tmp_path):
     monkeypatch.setattr(
         api_server,
         "default_mcp_server_names",
-        lambda: ["knowledge-base"],
+        lambda: ["filesystem"],
     )
 
     client = TestClient(api_server.app)
@@ -254,10 +274,10 @@ def test_mcp_connector_catalog_endpoint(monkeypatch, tmp_path):
     assert response.json() == {
         "connectors": [
             {
-                "name": "knowledge-base",
-                "label": "Knowledge Base",
-                "description": "Internal KB",
-                "category": "knowledge",
+                "name": "filesystem",
+                "label": "Filesystem",
+                "description": "External filesystem connector",
+                "category": "files",
                 "builtin": True,
                 "transport": "stdio",
                 "source": "default",
@@ -272,7 +292,7 @@ def test_mcp_connector_catalog_endpoint(monkeypatch, tmp_path):
                 "source": "config",
             },
         ],
-        "default_enabled": ["knowledge-base"],
+        "default_enabled": ["filesystem"],
     }
 
 
@@ -284,7 +304,7 @@ def test_mcp_connector_runtime_health_endpoint(monkeypatch, tmp_path):
             "status": "ok",
             "servers": [
                 {
-                    "name": "knowledge-base",
+                    "name": "filesystem",
                     "status": "healthy",
                     "healthy": True,
                     "tool_count": 1,
@@ -391,7 +411,7 @@ def test_mcp_connector_approval_endpoint_payload(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     store = api_server.SQLiteAppConfigStore(db_path=str(tmp_path / "config.db"))
     monkeypatch.setattr(api_server, "_app_config_store", store)
-    monkeypatch.setenv("MCP_APPROVED_CONNECTORS", "knowledge-base")
+    monkeypatch.setenv("MCP_APPROVED_CONNECTORS", "filesystem")
     api_server.set_runtime_mcp_approved_connectors(["custom-crm"])
     client = TestClient(api_server.app)
 
@@ -400,12 +420,12 @@ def test_mcp_connector_approval_endpoint_payload(monkeypatch, tmp_path):
 
         assert response.status_code == 200
         assert response.json() == {
-            "approved_connectors": ["knowledge-base", "custom-crm"],
-            "env_connectors": ["knowledge-base"],
+            "approved_connectors": ["filesystem", "custom-crm"],
+            "env_connectors": ["filesystem"],
             "runtime_connectors": ["custom-crm"],
             "persisted_connectors": ["custom-crm"],
             "sources": {
-                "knowledge-base": ["env"],
+                "filesystem": ["env"],
                 "custom-crm": ["runtime"],
             },
             "persistence": {
@@ -592,6 +612,96 @@ def test_sessions_support_workspace_filters_and_move(monkeypatch, tmp_path):
         "session-default-workspace",
         created_session_payload["session_id"],
     }
+
+
+def test_remote_workspace_acl_filters_sessions_and_blocks_cross_workspace_writes(
+    monkeypatch, tmp_path
+):
+    monkeypatch.chdir(tmp_path)
+    db_path = tmp_path / "chat_history.db"
+    history_cls = _history_cls_for_db(db_path)
+    _identity_store, access_store = _patch_access_stores(monkeypatch, tmp_path)
+    _set_remote_tokens(monkeypatch)
+    client = TestClient(api_server.app)
+
+    private_workspace = chat_store.create_workspace(
+        "Private Ops",
+        activate=True,
+        db_path=str(db_path),
+    )
+    public_workspace = chat_store.create_workspace(
+        "Public Ops",
+        activate=False,
+        db_path=str(db_path),
+    )
+    access_store.upsert_grant(
+        resource_type="workspace",
+        resource_id=private_workspace["workspace_id"],
+        user_id="viewer",
+        role="owner",
+        now=1.0,
+    )
+    access_store.upsert_grant(
+        resource_type="workspace",
+        resource_id=public_workspace["workspace_id"],
+        user_id="editor",
+        role="owner",
+        now=1.0,
+    )
+
+    private_session = history_cls("private-workspace-session")
+    private_session.add_user_message("private")
+    assert chat_store.get_session(
+        private_session.session_id,
+        db_path=str(db_path),
+    )["workspace_id"] == private_workspace["workspace_id"]
+
+    viewer_list = client.get(
+        "/api/sessions",
+        headers={"X-API-Token": "viewer-token"},
+        params={"workspace_id": private_workspace["workspace_id"]},
+    )
+    assert viewer_list.status_code == 200
+    assert [item["session_id"] for item in viewer_list.json()["sessions"]] == [
+        private_session.session_id
+    ]
+
+    editor_list = client.get(
+        "/api/sessions",
+        headers={"X-API-Token": "editor-token"},
+        params={"workspace_id": private_workspace["workspace_id"]},
+    )
+    assert editor_list.status_code == 200
+    assert editor_list.json()["sessions"] == []
+
+    create_denied = client.post(
+        "/api/sessions",
+        headers={"X-API-Token": "editor-token"},
+        json={
+            "title": "Wrong tenant",
+            "workspace_id": private_workspace["workspace_id"],
+        },
+    )
+    assert create_denied.status_code == 403
+    assert create_denied.json()["detail"] == "Insufficient resource role: viewer required."
+
+    editor_session = client.post(
+        "/api/sessions",
+        headers={"X-API-Token": "editor-token"},
+        json={
+            "title": "Editor tenant",
+            "workspace_id": public_workspace["workspace_id"],
+        },
+    )
+    assert editor_session.status_code == 200
+
+    move_denied = client.patch(
+        f"/api/sessions/{editor_session.json()['session_id']}",
+        headers={"X-API-Token": "editor-token"},
+        json={"workspace_id": private_workspace["workspace_id"]},
+    )
+    assert move_denied.status_code == 403
+    assert move_denied.json()["detail"] == "Insufficient resource role: editor required."
 
 
 def test_create_session_rejects_missing_workspace_without_side_effects(

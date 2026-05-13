@@ -169,13 +169,13 @@ for _builtin_tool_spec in (
     BuiltinToolSpec(
         code="2",
         name="web_search",
-        description="联网搜索（用于查询实时信息、新闻、外部知识）",
+        description="联网搜索（用于查询公开互联网信息，如实时信息、新闻、本地地点、商家口碑、榜单攻略、外部知识）",
         category="web_search",
     ),
     BuiltinToolSpec(
         code="3",
         name="quick_answer",
-        description="快速问答（用于快速获取网络答案）",
+        description="快速问答（用于快速获取网络答案，如本地生活、旅行攻略、商品服务、近期公开信息）",
         category="web_search",
     ),
     BuiltinToolSpec(

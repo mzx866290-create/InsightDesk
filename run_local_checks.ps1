@@ -1,3 +1,7 @@
+param(
+    [switch]$WithConnectivity
+)
+
 $ErrorActionPreference = "Stop"
 
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -24,6 +28,10 @@ try {
         npm run build
     } finally {
         Pop-Location
+    }
+
+    if ($WithConnectivity) {
+        & (Join-Path $ProjectRoot "scripts\check_frontend_backend_connectivity.ps1")
     }
 } finally {
     Pop-Location

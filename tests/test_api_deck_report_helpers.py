@@ -6,7 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from pptx import Presentation
 from pptx.util import Pt
 
-import backend.api_deck_report_helpers as api_deck_report_helpers
+import backend.helpers.deck_report_helpers as api_deck_report_helpers
 import backend.deck_service as deck_service
 
 
@@ -70,6 +70,50 @@ def test_create_share_link_payload_builds_token_and_url():
         "share_token": "deck:deck-1:secret",
         "share_url": "http://test/deck:deck-1:secret",
     }
+
+
+def test_apply_report_template_metadata_updates_existing_frontmatter_idempotently():
+    markdown = (
+        "---\n"
+        "template: legacy_template\n"
+        "template_options_json: '{\"legacy\": true}'\n"
+        "theme: default\n"
+        "---\n"
+        "\n"
+        "# Report\n"
+    )
+
+    updated = api_deck_report_helpers.apply_report_template_metadata(
+        markdown,
+        template_id="executive_report",
+        template_options={
+            "scope": "answer_group",
+            "include_citations": True,
+            "nested": {"ignored": True},
+        },
+    )
+    reapplied = api_deck_report_helpers.apply_report_template_metadata(
+        updated,
+        template_id="executive_report",
+        template_options={
+            "scope": "answer_group",
+            "include_citations": True,
+            "nested": {"ignored": True},
+        },
+    )
+
+    assert updated == reapplied
+    assert updated.count("template: executive_report") == 1
+    assert updated.count("template_options_json:") == 1
+    assert "legacy_template" not in updated
+    assert '"legacy": true' not in updated
+    assert updated.splitlines()[:5] == [
+        "---",
+        "template: executive_report",
+        'template_options_json: \'{"include_citations": true, "scope": "answer_group"}\'',
+        "theme: default",
+        "---",
+    ]
 
 
 def test_build_create_deck_kwargs_resolves_prompt_runtime_and_theme():

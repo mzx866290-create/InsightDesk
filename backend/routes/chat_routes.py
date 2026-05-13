@@ -3,11 +3,11 @@
 import logging
 from typing import Any, AsyncGenerator, Awaitable, Callable
 
-import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from backend.agent.providers.ollama import list_ollama_models
 from backend.routes.resource_access_helpers import require_resource_access
 
 
@@ -197,15 +197,7 @@ def build_chat_router(
 
     @router.get("/api/models/ollama")
     async def get_ollama_models(base_url: str = "http://localhost:11434"):
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get(f"{base_url}/api/tags")
-            resp.raise_for_status()
-            models = resp.json().get("models", [])
-            return {"models": [m["name"] for m in models]}
-        except httpx.HTTPError as exc:
-            logger.warning("Cannot reach Ollama: %s", exc)
-            return {"models": [], "error": str(exc)}
+        return await list_ollama_models(base_url, route_logger=logger)
 
     @router.post("/api/agents/reset")
     async def reset_agents(request: Request):
@@ -217,7 +209,7 @@ def build_chat_router(
     @router.post("/api/chat/parallel")
     async def chat_parallel(request: chat_request_model, http_request: Request):
         from fastapi import HTTPException
-        from chat_store import replace_session_panels
+        from backend.chat_store import replace_session_panels
 
         require_chat_session_access(http_request, request.session_id)
         runtime = prepare_chat_route_runtime(
@@ -256,7 +248,7 @@ def build_chat_router(
 
     @router.post("/api/chat/single")
     async def chat_single(request: single_chat_request_model, http_request: Request):
-        from chat_store import upsert_session_panel
+        from backend.chat_store import upsert_session_panel
 
         require_chat_session_access(http_request, request.session_id)
         runtime = prepare_chat_route_runtime(

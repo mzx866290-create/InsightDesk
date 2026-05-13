@@ -118,11 +118,15 @@ function taskContextLabel(task: TaskRecord): string {
     const reportTitle =
       typeof params.report_title === 'string' ? params.report_title.trim() : ''
     if (reportTitle) return reportTitle
+    const templateId = typeof params.template_id === 'string' ? params.template_id.trim() : ''
+    if (templateId) return `Template: ${templateId}`
   }
 
   if (task.task_type === 'generate_deck') {
     const deckTitle = typeof params.deck_title === 'string' ? params.deck_title.trim() : ''
     if (deckTitle) return deckTitle
+    const templateId = typeof params.template_id === 'string' ? params.template_id.trim() : ''
+    if (templateId) return `Template: ${templateId}`
     const slideCount =
       typeof params.target_slide_count === 'number'
         ? params.target_slide_count

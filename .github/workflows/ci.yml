@@ -6,6 +6,11 @@ on:
       - main
       - master
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   backend-checks:
@@ -21,6 +26,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+
+      - name: Scan for committed secrets
+        run: python scripts/scan_secrets.py
 
       - name: Install backend dependencies
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
@@ -53,6 +61,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Run frontend unit tests
+        run: npm run test:unit
+
       - name: Build frontend
         run: npm run build
 
@@ -80,3 +91,14 @@ jobs:
 
       - name: Run frontend e2e smoke tests
         run: npm run test:e2e
+
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-diagnostics
+          path: |
+            frontend/test-results
+            frontend/playwright-report
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1,7 +1,160 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from backend.helpers.kb_management_helpers import kb_health_payload, knowledge_bases_payload
+import pytest
+from fastapi import HTTPException
+
+from backend.helpers.kb_management_helpers import (
+    effective_vector_store_path,
+    faiss_safe_store_path,
+    kb_health_payload,
+    knowledge_bases_payload,
+    resolve_deletable_knowledge_base,
+    resolve_project_subdir,
+)
+
+
+def test_resolve_project_subdir_allows_relative_path_under_project_root(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    target = project_root / "vector_store"
+    target.mkdir()
+
+    resolved = resolve_project_subdir("vector_store", project_root=project_root)
+
+    assert resolved == target.resolve()
+
+
+def test_resolve_project_subdir_rejects_outside_path(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_project_subdir(str(outside), project_root=project_root)
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "不允许访问项目目录之外的路径"
+
+
+def test_resolve_project_subdir_rejects_project_root_itself(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_project_subdir(str(project_root), project_root=project_root)
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "不允许直接操作项目根目录"
+
+
+def test_faiss_safe_store_path_returns_relative_path_inside_project_root(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    target = project_root / "vector_store"
+    target.mkdir()
+
+    assert faiss_safe_store_path(target, project_root=project_root) == "vector_store"
+
+
+def test_faiss_safe_store_path_keeps_absolute_path_outside_project_root(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    assert faiss_safe_store_path(outside, project_root=project_root) == str(
+        outside.resolve()
+    )
+
+
+def test_resolve_deletable_knowledge_base_requires_existing_indexed_directory(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    valid_kb = project_root / "kb_valid"
+    valid_kb.mkdir()
+    (valid_kb / "index.faiss").write_text("faiss", encoding="utf-8")
+
+    assert (
+        resolve_deletable_knowledge_base("kb_valid", project_root=project_root)
+        == valid_kb.resolve()
+    )
+
+
+@pytest.mark.parametrize(
+    ("path_builder", "expected_status", "expected_detail"),
+    [
+        (lambda root: root / "missing", 404, "知识库路径不存在"),
+        (lambda root: root / "not_a_dir.txt", 400, "知识库路径必须是目录"),
+        (lambda root: root / "missing_index", 400, "只能删除包含 index.faiss 的目录"),
+    ],
+)
+def test_resolve_deletable_knowledge_base_rejects_invalid_targets(
+    tmp_path,
+    path_builder,
+    expected_status,
+    expected_detail,
+):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    target = path_builder(project_root)
+    if target.name == "not_a_dir.txt":
+        target.write_text("file", encoding="utf-8")
+    elif target.name == "missing_index":
+        target.mkdir()
+
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_deletable_knowledge_base(str(target), project_root=project_root)
+
+    assert exc_info.value.status_code == expected_status
+    assert exc_info.value.detail == expected_detail
+
+
+def test_effective_vector_store_path_prefers_candidate_over_active_and_env(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "candidate_kb").mkdir()
+    (project_root / "active_kb").mkdir()
+    (project_root / "env_kb").mkdir()
+
+    resolved = effective_vector_store_path(
+        "candidate_kb",
+        project_root=project_root,
+        active_vector_store_id="active_kb",
+        env_vector_store_path="env_kb",
+    )
+
+    assert resolved == "candidate_kb"
+
+
+def test_effective_vector_store_path_uses_active_before_env(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "active_kb").mkdir()
+    (project_root / "env_kb").mkdir()
+
+    resolved = effective_vector_store_path(
+        project_root=project_root,
+        active_vector_store_id="active_kb",
+        env_vector_store_path="env_kb",
+    )
+
+    assert resolved == "active_kb"
+
+
+def test_effective_vector_store_path_falls_back_to_env_path(tmp_path):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "env_kb").mkdir()
+
+    resolved = effective_vector_store_path(
+        project_root=project_root,
+        active_vector_store_id="",
+        env_vector_store_path="env_kb",
+    )
+
+    assert resolved == "env_kb"
 
 
 def test_knowledge_bases_payload_collects_unique_paths_and_doc_counts(tmp_path):

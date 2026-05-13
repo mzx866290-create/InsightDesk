@@ -23,6 +23,7 @@ import {
 } from 'lucide-react'
 import { useChatStore } from '../../stores/chatStore'
 import { useResolvedTheme } from '../../hooks/useResolvedTheme'
+import { useI18n } from '../../i18n'
 import { Button } from '../ui/Button'
 import { InlineNotice } from '../ui/InlineNotice'
 import { createSession, createSessionShareLink, getDeck, getSystemPrompts, resetSession } from '../../api/client'
@@ -34,6 +35,7 @@ import { KnowledgeBaseModal } from '../settings/KnowledgeBaseModal'
 import { Modal } from '../ui/Modal'
 import type { DeckSpec, SystemPrompt } from '../../api/client'
 import { createAndTrackTask, useTaskStore } from '../../stores/taskStore'
+import { AssistantPresetSelector } from '../chat/AssistantPresetSelector'
 
 export const Header: React.FC = () => {
   const {
@@ -68,6 +70,7 @@ export const Header: React.FC = () => {
   const currentWorkspace =
     workspaces.find((workspace) => workspace.workspace_id === currentWorkspaceId) ?? null
   const toggleTheme = useChatStore((s) => s.toggleTheme)
+  const { language, toggleLanguage, t } = useI18n()
   const [deckTaskId, setDeckTaskId] = useState<string | null>(null)
   const [handledDeckTaskId, setHandledDeckTaskId] = useState<string | null>(null)
   const deckTask = useTaskStore((s) => (deckTaskId ? s.tasks[deckTaskId] : undefined))
@@ -229,6 +232,8 @@ export const Header: React.FC = () => {
     panel_config: (typeof panels)[number]['modelConfig']
     target_slide_count: number
     theme: 'default' | 'midnight' | 'sunrise'
+    template_id?: string
+    template_options?: Record<string, unknown>
   }) => {
     if (!currentSessionId) return
     setGeneratingDeck(true)
@@ -240,6 +245,8 @@ export const Header: React.FC = () => {
           knowledge_base_enabled: knowledgeBaseEnabled,
           target_slide_count: payload.target_slide_count,
           theme: payload.theme,
+          template_id: payload.template_id,
+          template_options: payload.template_options,
         },
         currentSessionId,
       )
@@ -385,7 +392,7 @@ export const Header: React.FC = () => {
                   onClick={handleNewChat}
                   data-testid="header-new-chat"
                   className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-                  title="新建对话"
+                  title={t('header.newChat')}
                 >
                   <SquarePen size={15} />
                 </button>
@@ -395,6 +402,14 @@ export const Header: React.FC = () => {
                   title={`当前主题: ${themeLabel}`}
                 >
                   {themeIcon}
+                </button>
+                <button
+                  onClick={toggleLanguage}
+                  data-testid="header-toggle-language-mobile"
+                  className="min-w-8 rounded-lg px-2 py-1.5 text-xs font-semibold text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+                  title={`${t('header.language')}: ${language === 'zh-CN' ? t('settings.language.zh') : t('settings.language.en')}`}
+                >
+                  {t('app.language.short')}
                 </button>
                 <button
                   onClick={() => setMobileActionsOpen(true)}
@@ -481,6 +496,8 @@ export const Header: React.FC = () => {
               </div>
 
             <div className="order-2 ml-auto flex flex-wrap items-center justify-end gap-1.5 sm:order-3 sm:ml-0">
+              <AssistantPresetSelector />
+
               <button
                 onClick={() => setWebSearchEnabled(!webSearchEnabled)}
                 className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs transition-colors ${
@@ -605,9 +622,17 @@ export const Header: React.FC = () => {
                 onClick={handleNewChat}
                 data-testid="header-new-chat"
                 className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-                title="新建对话"
+                title={t('header.newChat')}
               >
                 <SquarePen size={15} />
+              </button>
+              <button
+                onClick={toggleLanguage}
+                data-testid="header-toggle-language"
+                className="min-w-8 rounded-lg px-2 py-1.5 text-xs font-semibold text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+                title={`${t('header.language')}: ${language === 'zh-CN' ? t('settings.language.zh') : t('settings.language.en')}`}
+              >
+                {t('app.language.short')}
               </button>
               <button
                 onClick={toggleTheme}
@@ -620,7 +645,7 @@ export const Header: React.FC = () => {
                 onClick={() => setSettingsOpen(true)}
                 data-testid="header-open-settings"
                 className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-                title="设置"
+                title={t('header.settings')}
               >
                 <Settings size={15} />
               </button>

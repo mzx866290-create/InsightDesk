@@ -366,7 +366,7 @@ def test_replace_deck_slide_refreshes_review_and_export_audit(monkeypatch):
         )
     )
 
-    from backend.api_deck_report_helpers import replace_deck_slide
+    from backend.helpers.deck_report_helpers import replace_deck_slide
     from backend.helpers.deck_report_helpers import build_deck_delivery_response
 
     replace_deck_slide(current_deck, slide)

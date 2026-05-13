@@ -9,6 +9,7 @@ import {
   Layers3,
   X,
 } from 'lucide-react'
+import { fetchWithApiToken } from '../../api/auth'
 import { exportArtifact, getArtifact, getDeck } from '../../api/client'
 import type {
   ClaimEvidenceChain,
@@ -212,7 +213,7 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
       if (activeAnswerGroupId?.trim()) params.set('answer_group_id', activeAnswerGroupId.trim())
       if (activePanelId?.trim()) params.set('panel_id', activePanelId.trim())
       const query = params.toString()
-      const res = await fetch(`/api/reports/download/${sessionId}${query ? `?${query}` : ''}`)
+      const res = await fetchWithApiToken(`/api/reports/download/${sessionId}${query ? `?${query}` : ''}`)
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: res.statusText }))
         setError(`下载 PPTX 失败：${err.detail ?? res.statusText}`)
@@ -261,6 +262,8 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
     panel_config: (typeof panels)[number]['modelConfig']
     target_slide_count: number
     theme: 'default' | 'midnight' | 'sunrise'
+    template_id?: string
+    template_options?: Record<string, unknown>
   }) => {
     if (!sessionId.trim()) {
       setError('缺少 session_id，暂时无法生成 Deck。')
@@ -277,6 +280,8 @@ export const ReportPreviewModal: React.FC<ReportPreviewModalProps> = ({
           knowledge_base_enabled: knowledgeBaseEnabled,
           target_slide_count: payload.target_slide_count,
           theme: payload.theme,
+          template_id: payload.template_id,
+          template_options: payload.template_options,
           answer_group_id: activeAnswerGroupId?.trim() || undefined,
           panel_id: activePanelId?.trim() || undefined,
         },

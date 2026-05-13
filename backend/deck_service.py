@@ -135,6 +135,8 @@ class DeckMeta(BaseModel):
     generator_panel_id: str
     source_answer_group_id: str = ""
     source_panel_id: str = ""
+    template_id: str = ""
+    template_options: dict[str, Any] = Field(default_factory=dict)
 
 
 class DeckGeneration(BaseModel):
@@ -2304,7 +2306,7 @@ def _is_slide_manually_confirmed(slide: DeckSlide) -> bool:
 
 def _slide_quality_label(slide: DeckSlide) -> str:
     if _is_slide_manually_confirmed(slide):
-        return "Manually confirmed"
+        return "已人工确认"
     return _quality_state_label(slide.quality_state)
 
 

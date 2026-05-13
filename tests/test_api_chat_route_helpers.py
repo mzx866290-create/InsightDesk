@@ -79,6 +79,7 @@ def test_build_parallel_agent_streams_assigns_primary_persistence():
         web_search_enabled=True,
         knowledge_base_enabled=False,
         message="hello",
+        omit_history=True,
     )
     runtime = ChatRouteRuntime(
         answer_group_id="grp-1",
@@ -133,6 +134,8 @@ def test_build_parallel_agent_streams_assigns_primary_persistence():
     assert captured[1]["auto_summary_trigger"] is False
     assert captured[0]["raw_images"] == [{"name": "chart.png"}]
     assert captured[0]["raw_files"] == [{"name": "brief.txt"}]
+    assert captured[0]["omit_history"] is True
+    assert captured[1]["omit_history"] is True
 
 
 def test_build_single_agent_stream_passes_rerun_flags():
@@ -146,6 +149,7 @@ def test_build_single_agent_stream_passes_rerun_flags():
         persist_ai_history=True,
         replace_ai_history=True,
         exclude_ai_answer_group_id="grp-old",
+        omit_history=True,
     )
     runtime = ChatRouteRuntime(
         answer_group_id="grp-1",
@@ -189,6 +193,7 @@ def test_build_single_agent_stream_passes_rerun_flags():
     assert captured[0]["replace_ai_history"] is True
     assert captured[0]["exclude_ai_answer_group_id"] == "grp-old"
     assert captured[0]["answer_group_id"] == "grp-1"
+    assert captured[0]["omit_history"] is True
 
 
 def test_sse_streaming_response_uses_standard_headers():

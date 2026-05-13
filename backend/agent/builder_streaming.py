@@ -13,6 +13,12 @@ from backend.agent.builder_history import (
     _persist_agent_result_history,
     _persist_output_history,
 )
+from backend.agent.llm import (
+    cancel_llm_usage_capture,
+    estimate_llm_answer_token_usage,
+    finish_llm_usage_capture,
+    start_llm_usage_capture,
+)
 from backend.agent.prompts import _finalize_agent_result
 
 
@@ -28,6 +34,7 @@ async def _ainvoke_agent_wrapper(
     run_kwargs: dict[str, Any] = {
         "panel_id": invocation.panel_id,
         "exclude_ai_answer_group_id": invocation.exclude_ai_answer_group_id,
+        "omit_history": invocation.omit_history,
     }
     if supports_workflow_event_sink:
         run_kwargs["workflow_event_sink"] = _configurable_value(
@@ -36,7 +43,17 @@ async def _ainvoke_agent_wrapper(
             None,
         )
 
-    result = await wrapper._run_once(invocation.session_id, user_input, **run_kwargs)
+    usage_token = start_llm_usage_capture()
+    try:
+        result = await wrapper._run_once(invocation.session_id, user_input, **run_kwargs)
+        token_usage = finish_llm_usage_capture(
+            usage_token,
+            panel_id=invocation.panel_id,
+            model_id=invocation.model_id,
+        )
+    except Exception:
+        cancel_llm_usage_capture(usage_token)
+        raise
     result = _attach_configured_task_meta(result, config)
     result = _finalize_agent_result(
         result,
@@ -45,6 +62,14 @@ async def _ainvoke_agent_wrapper(
         raw_images=invocation.raw_images,
         answer_group_id=invocation.answer_group_id,
     )
+    if not token_usage.get("call_count") and str(result.get("output", "") or "").strip():
+        token_usage = estimate_llm_answer_token_usage(
+            user_input,
+            result.get("output", ""),
+            panel_id=invocation.panel_id,
+            model_id=invocation.model_id,
+        )
+    result["token_usage"] = token_usage
     _persist_agent_result_history(invocation, user_input, result)
     return result
 
@@ -61,18 +86,37 @@ async def _astream_langgraph_wrapper(
     event_loop = asyncio.get_running_loop()
     streamed_sources = False
 
-    def workflow_event_sink(payload: dict[str, Any]) -> None:
+    def enqueue_stream_event(payload: Any) -> None:
+        # LangGraph node callbacks usually run on the same event loop. Enqueue
+        # synchronously there so fast native streams are not lost before the
+        # wrapper drains the queue; keep call_soon_threadsafe for future
+        # cross-thread callbacks.
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            event_loop.call_soon_threadsafe(event_queue.put_nowait, payload)
+            return
+
+        if running_loop is event_loop:
+            event_queue.put_nowait(payload)
+            return
+
         event_loop.call_soon_threadsafe(event_queue.put_nowait, payload)
+
+    def workflow_event_sink(payload: dict[str, Any]) -> None:
+        enqueue_stream_event(payload)
 
     def stream_item_sink(payload: Any) -> None:
-        event_loop.call_soon_threadsafe(event_queue.put_nowait, payload)
+        enqueue_stream_event(payload)
 
+    usage_token = start_llm_usage_capture()
     run_task = asyncio.create_task(
         wrapper._run_once(
             invocation.session_id,
             user_input,
             panel_id=invocation.panel_id,
             exclude_ai_answer_group_id=invocation.exclude_ai_answer_group_id,
+            omit_history=invocation.omit_history,
             workflow_event_sink=workflow_event_sink,
             stream_item_sink=stream_item_sink,
         )
@@ -107,7 +151,13 @@ async def _astream_langgraph_wrapper(
             yield queued_item
 
         result = await run_task
+        token_usage = finish_llm_usage_capture(
+            usage_token,
+            panel_id=invocation.panel_id,
+            model_id=invocation.model_id,
+        )
     except Exception:
+        cancel_llm_usage_capture(usage_token)
         if not run_task.done():
             run_task.cancel()
             await asyncio.gather(run_task, return_exceptions=True)
@@ -124,7 +174,15 @@ async def _astream_langgraph_wrapper(
     output = result.get("output", "")
     sources = result.get("sources", [])
     workflow_nodes = _build_workflow_snapshot(workflow_events)
+    if not token_usage.get("call_count") and str(output or "").strip():
+        token_usage = estimate_llm_answer_token_usage(
+            user_input,
+            output,
+            panel_id=invocation.panel_id,
+            model_id=invocation.model_id,
+        )
     result["workflow_nodes"] = workflow_nodes
+    result["token_usage"] = token_usage
 
     if sources and not streamed_sources:
         yield {"type": "sources", "sources": sources}
@@ -159,4 +217,6 @@ async def _astream_langgraph_wrapper(
         workflow_nodes=workflow_nodes,
         task_id=str(result.get("task_id", "") or ""),
         task_type=str(result.get("task_type", "") or ""),
+        token_usage=token_usage,
     )
+    yield {"type": "token_usage", "token_usage": token_usage}

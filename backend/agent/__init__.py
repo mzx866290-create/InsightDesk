@@ -43,6 +43,27 @@ _EXPORTS: dict[str, tuple[str, str]] = {
         "backend.agent.registry",
         "create_runtime_agent_registry",
     ),
+    "list_agent_catalog": ("backend.agent.registry", "list_agent_catalog"),
+    "list_agent_plugin_marketplace": (
+        "backend.agent.registry",
+        "list_agent_plugin_marketplace",
+    ),
+    "install_agent_plugin_manifest_payload": (
+        "backend.agent.registry",
+        "install_agent_plugin_manifest_payload",
+    ),
+    "uninstall_agent_plugin_manifest_payload": (
+        "backend.agent.registry",
+        "uninstall_agent_plugin_manifest_payload",
+    ),
+    "load_agent_plugin_manifests": (
+        "backend.agent.registry",
+        "load_agent_plugin_manifests",
+    ),
+    "load_agent_plugin_manifest_report": (
+        "backend.agent.registry",
+        "load_agent_plugin_manifest_report",
+    ),
     "OrchestratorAgentMetric": ("backend.agent.state", "OrchestratorAgentMetric"),
     "OrchestratorPlanStep": ("backend.agent.state", "OrchestratorPlanStep"),
     "OrchestratorState": ("backend.agent.state", "OrchestratorState"),

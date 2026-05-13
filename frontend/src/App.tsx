@@ -11,6 +11,7 @@ const App: React.FC = () => {
   const settingsOpen = useChatStore((s) => s.settingsOpen)
   const setSettingsOpen = useChatStore((s) => s.setSettingsOpen)
   const setBookmarks = useChatStore((s) => s.setBookmarks)
+  const language = useChatStore((s) => s.language)
   const { resolvedTheme } = useResolvedTheme()
 
   // 将主题 class 应用到 document.documentElement
@@ -20,6 +21,10 @@ const App: React.FC = () => {
     root.classList.add(`theme-${resolvedTheme}`)
     root.style.colorScheme = resolvedTheme
   }, [resolvedTheme])
+
+  useEffect(() => {
+    document.documentElement.lang = language
+  }, [language])
 
   useEffect(() => {
     let cancelled = false

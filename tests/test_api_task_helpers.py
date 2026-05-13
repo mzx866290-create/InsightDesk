@@ -8,7 +8,7 @@ from backend.helpers.task_helpers import (
     summarize_dashboard_task_error,
     summarize_dashboard_task_result,
 )
-from backend.api_task_store import TaskRecord, TaskStatus
+from backend.stores.task_store import TaskRecord, TaskStatus
 
 
 def test_dashboard_summary_helpers_extract_title_and_strip_markup():

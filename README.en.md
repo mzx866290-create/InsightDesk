@@ -7,6 +7,22 @@ web research, and delivery generation. It combines chat, knowledge-base
 retrieval, attachment analysis, session memory, async tasks, reports, and PPT
 delivery in one project.
 
+## Project Scope
+
+InsightDesk is a personally maintained, open-source friendly, self-hosted AI
+workbench. The default goal is a clear local/self-hosted experience with visible
+security boundaries, not a managed commercial SaaS platform.
+
+- Desktop installers are not a current delivery blocker; use the Web frontend
+  and Windows startup scripts first.
+- Identity, organization, and resource access are RBAC-lite and do not promise
+  full SaaS-grade tenant isolation.
+- Production alerts include Prometheus rule templates and validation scripts;
+  external Alertmanager, Slack, Feishu, DingTalk, or PagerDuty routing is owned
+  by the deployment operator.
+- Enterprise key rotation, deeper SIEM retention, complete IdP validation, and
+  desktop packaging remain future enhancements.
+
 ## Core Capabilities
 
 - Workspaces, sessions, multi-panel chat, and multi-model comparison.
@@ -47,6 +63,16 @@ npm run dev -- --host 0.0.0.0 --port 5173
 If Windows reserves port `8000`, choose another backend port and set
 `BACKEND_PORT` accordingly.
 
+### One-Command Connectivity Check
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\check_frontend_backend_connectivity.ps1
+```
+
+The script temporarily starts the backend and Vite frontend, verifies the API,
+frontend homepage, and Vite `/api` proxy all return `200`, then cleans up the
+test processes.
+
 ## Common Configuration
 
 - Local models: `LLM_PROVIDER=ollama`, `OLLAMA_BASE_URL`, `OLLAMA_MODEL`
@@ -63,6 +89,8 @@ If Windows reserves port `8000`, choose another backend port and set
 - [English documentation map](./docs/README.en.md)
 - [Current delivery status](./docs/DELIVERY_STATUS.md)
 - [Quick start](./QUICKSTART.md)
+- [Contributing guide](./CONTRIBUTING.md)
+- [Claude Code guide](./CLAUDE.md)
 - [Deployment operations](./docs/DEPLOYMENT_OPERATIONS.md)
 - [Validation](./docs/VALIDATION.md)
 
@@ -74,4 +102,3 @@ evidence and approve switching the default task backend from `memory` to `arq`.
 
 For the delivery source of truth, see
 [docs/DELIVERY_STATUS.md](./docs/DELIVERY_STATUS.md).
-

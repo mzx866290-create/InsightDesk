@@ -56,6 +56,15 @@ def test_regular_greeting_keeps_no_forced_tool():
     assert choice == ""
 
 
+def test_weather_question_prefers_web_search_tool():
+    choice = _heuristic_langgraph_tool_choice(
+        "中山天气怎么样",
+        knowledge_base_enabled=True,
+        web_search_enabled=True,
+    )
+    assert choice == "2"
+
+
 def test_strip_think_tags_handles_unclosed_tag():
     assert _strip_think_tags("<think>\ninternal reasoning") == ""
 
@@ -181,7 +190,7 @@ def test_build_runtime_tools_overlays_matching_mcp_tools():
 
     async def fake_mcp_loader(**kwargs):
         assert kwargs["expected_tool_names"] is None
-        assert kwargs["enabled_server_names"] == ["web-search"]
+        assert kwargs["enabled_server_names"] == ["fetch"]
         return {
             "web_search": MCPTool("web_search"),
             "summarize_results": MCPTool("summarize_results"),
@@ -192,7 +201,7 @@ def test_build_runtime_tools_overlays_matching_mcp_tools():
             FakePipeline(),
             knowledge_base_enabled=False,
             web_search_enabled=True,
-            enabled_mcp_servers=["web-search"],
+            enabled_mcp_servers=["fetch"],
             mcp_tool_loader=fake_mcp_loader,
         )
     )

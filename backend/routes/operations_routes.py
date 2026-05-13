@@ -40,7 +40,9 @@ from backend.helpers.integration_connector_helpers import (
     trigger_integrator_schedule_payload,
 )
 from backend.agent_mcp_helpers import (
+    McpConnectorManifestError,
     current_mcp_server_config_payload,
+    install_mcp_connector_manifest_payload,
     save_mcp_server_config_payload,
 )
 
@@ -61,6 +63,10 @@ class UpsertIntegratorConnectorsRequest(BaseModel):
 
 class UpsertMcpServerConfigRequest(BaseModel):
     servers: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+
+class InstallMcpConnectorManifestRequest(BaseModel):
+    manifest: dict[str, Any] = Field(default_factory=dict)
 
 
 class TestIntegratorConnectorRequest(BaseModel):
@@ -532,6 +538,27 @@ def build_operations_router(
             "save_mcp_server_config",
             request,
             details=f"total={result.get('total', 0)}",
+        )
+        return result
+
+    @router.post("/api/connectors/mcp/marketplace/install")
+    async def install_mcp_connector_manifest(
+        request: Request,
+        payload: InstallMcpConnectorManifestRequest,
+    ):
+        require_remote_admin(request)
+        try:
+            result = install_mcp_connector_manifest_payload(payload.manifest)
+        except McpConnectorManifestError as exc:
+            raise HTTPException(status_code=400, detail=exc.to_api_detail()) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        await clear_agent_cache()
+        installed = result.get("installed", {})
+        audit_security_event(
+            "install_mcp_connector_manifest",
+            request,
+            details=f"name={installed.get('name', '')} total={result.get('total', 0)}",
         )
         return result
 

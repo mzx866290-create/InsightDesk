@@ -5,6 +5,78 @@ from typing import Any, Callable
 from fastapi import HTTPException
 
 
+def resolve_project_subdir(
+    candidate: str,
+    *,
+    project_root: str | Path,
+) -> Path:
+    root = Path(project_root).resolve()
+    raw_path = Path(candidate).expanduser()
+    if not raw_path.is_absolute():
+        raw_path = root / raw_path
+    resolved = raw_path.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail="不允许访问项目目录之外的路径",
+        ) from exc
+    if resolved == root:
+        raise HTTPException(status_code=403, detail="不允许直接操作项目根目录")
+    return resolved
+
+
+def faiss_safe_store_path(path: str | Path, *, project_root: str | Path) -> str:
+    root = Path(project_root).resolve()
+    target = Path(path)
+    if not target.is_absolute():
+        target = (root / target).resolve()
+    else:
+        target = target.resolve()
+
+    try:
+        return str(target.relative_to(root))
+    except ValueError:
+        return str(target)
+
+
+def resolve_deletable_knowledge_base(
+    candidate: str,
+    *,
+    project_root: str | Path,
+) -> Path:
+    target_path = resolve_project_subdir(candidate, project_root=project_root)
+
+    if not target_path.exists():
+        raise HTTPException(status_code=404, detail="知识库路径不存在")
+    if not target_path.is_dir():
+        raise HTTPException(status_code=400, detail="知识库路径必须是目录")
+    if not (target_path / "index.faiss").is_file():
+        raise HTTPException(
+            status_code=400,
+            detail="只能删除包含 index.faiss 的目录",
+        )
+
+    return target_path
+
+
+def effective_vector_store_path(
+    candidate: str | None = None,
+    *,
+    project_root: str | Path,
+    active_vector_store_id: str | None = None,
+    env_vector_store_path: str = "./vector_store",
+) -> str:
+    raw = str(candidate or "").strip()
+    if not raw:
+        raw = str(active_vector_store_id or "").strip() or env_vector_store_path
+    return faiss_safe_store_path(
+        resolve_project_subdir(raw, project_root=project_root),
+        project_root=project_root,
+    )
+
+
 def knowledge_bases_payload(
     *,
     base_dir: str,

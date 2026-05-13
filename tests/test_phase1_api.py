@@ -13,8 +13,11 @@ from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage
 
 import backend.agent_core as agent_core
+import backend.agent.providers.ollama as ollama_provider
 import backend.api_server as api_server
 import backend.chat_store as chat_store
+import backend.core.app_config_runtime as app_config_runtime
+import backend.core.model_config_runtime as model_config_runtime
 import backend.deck_service as deck_service
 import backend.stores.config_store as api_config_store
 
@@ -61,7 +64,7 @@ def test_save_config_persists_valid_tavily_key(monkeypatch, tmp_path):
     async def fake_validate(api_key: str) -> None:
         assert api_key == "tvly-valid-key"
 
-    monkeypatch.setattr(api_server, "_validate_tavily_api_key", fake_validate)
+    monkeypatch.setattr(app_config_runtime, "validate_tavily_api_key", fake_validate)
 
     client = TestClient(api_server.app)
     response = client.post("/api/config", json={"tavily_api_key": "tvly-valid-key"})
@@ -81,7 +84,7 @@ def test_save_config_rejects_invalid_tavily_key(monkeypatch, tmp_path):
     async def fake_validate(api_key: str) -> None:
         raise api_server.HTTPException(status_code=400, detail="Tavily API Key 无效，保存失败。")
 
-    monkeypatch.setattr(api_server, "_validate_tavily_api_key", fake_validate)
+    monkeypatch.setattr(app_config_runtime, "validate_tavily_api_key", fake_validate)
 
     client = TestClient(api_server.app)
     response = client.post("/api/config", json={"tavily_api_key": "tvly-invalid-key"})
@@ -164,7 +167,9 @@ def test_resolve_runtime_model_config_uses_stored_cloud_model_key(monkeypatch, t
     monkeypatch.setattr(api_server, "_app_config_store", store)
     store.set("cloud_model_api_key:cmk-runtime-test", "sk-runtime-secret")
 
-    resolved = api_server._resolve_runtime_model_config(
+    resolved = model_config_runtime.resolve_runtime_model_config(
+        store,
+        api_server.logger,
         {
             "panel_id": "panel-cloud",
             "provider": "openai_compatible",
@@ -1243,9 +1248,14 @@ def test_get_ollama_models_uses_async_http_client(monkeypatch):
             captured["url"] = url
             return FakeResponse()
 
-    monkeypatch.setattr(api_server.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(ollama_provider.httpx, "AsyncClient", FakeAsyncClient)
 
-    payload = asyncio.run(api_server.get_ollama_models("http://example.test:11434"))
+    payload = asyncio.run(
+        ollama_provider.list_ollama_models(
+            "http://example.test:11434",
+            route_logger=api_server.logger,
+        )
+    )
 
     assert payload == {"models": ["qwen2.5:7b", "llama3.2:3b"]}
     assert captured == {
@@ -1572,6 +1582,38 @@ def test_build_agent_auto_routes_local_to_langgraph(monkeypatch):
     assert len(langgraph_calls) == 1
 
 
+def test_build_agent_upgrades_plain_chat_to_tool_router_when_web_search_is_on(monkeypatch):
+    class FakeExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    async def fake_build_runtime_tools(*args, **kwargs):
+        return [types.SimpleNamespace(name="web_search", args={"search_query": {"type": "string"}})]
+
+    monkeypatch.setattr(agent_core, "get_llm", lambda *args, **kwargs: object())
+    monkeypatch.setattr(agent_core, "DocPipeline", lambda *args, **kwargs: object(), raising=False)
+    monkeypatch.setattr(agent_core, "build_runtime_tools", fake_build_runtime_tools)
+    fake_agents_module = types.SimpleNamespace(
+        AgentExecutor=FakeExecutor,
+        create_tool_calling_agent=lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setitem(sys.modules, "langchain_classic.agents", fake_agents_module)
+
+    agent = asyncio.run(
+        agent_core.build_agent(
+            provider="cloud",
+            agent_mode="plain_chat",
+            knowledge_base_enabled=False,
+            web_search_enabled=True,
+        )
+    )
+
+    assert agent.__class__.__name__ == "FunctionCallingAgentWrapper"
+    assert agent.requested_agent_mode == "plain_chat"
+    assert agent.actual_agent_mode == "function_calling"
+    assert agent.agent_mode_reason == "plain_chat_requires_tool_router_for_web_search"
+
+
 def test_plain_chat_wrapper_astream_uses_native_model_stream(monkeypatch, tmp_path):
     db_path = tmp_path / "chat_history.db"
     test_history_cls = _history_cls_for_db(db_path)
@@ -1616,7 +1658,8 @@ def test_plain_chat_wrapper_astream_uses_native_model_stream(monkeypatch, tmp_pa
 
     items = asyncio.run(collect())
 
-    assert items == ["从前", "有座山"]
+    assert [item for item in items if isinstance(item, str)] == ["从前", "有座山"]
+    assert any(isinstance(item, dict) and item.get("type") == "token_usage" for item in items)
     persisted_messages = test_history_cls("native-stream-plain").get_all_messages()
     assert [message.content for message in persisted_messages] == ["写一个短故事", "从前有座山"]
 
@@ -1651,7 +1694,7 @@ def test_function_calling_wrapper_astream_bypasses_tools_for_plain_text(monkeypa
             provider="cloud",
             agent_mode="function_calling",
             knowledge_base_enabled=True,
-            web_search_enabled=True,
+            web_search_enabled=False,
         )
     )
 
@@ -1666,7 +1709,8 @@ def test_function_calling_wrapper_astream_bypasses_tools_for_plain_text(monkeypa
 
     items = asyncio.run(collect())
 
-    assert items == ["第一段", "第二段"]
+    assert [item for item in items if isinstance(item, str)] == ["第一段", "第二段"]
+    assert any(isinstance(item, dict) and item.get("type") == "token_usage" for item in items)
 
 
 def test_plain_chat_wrapper_astream_filters_think_tags(monkeypatch, tmp_path):
@@ -1712,7 +1756,8 @@ def test_plain_chat_wrapper_astream_filters_think_tags(monkeypatch, tmp_path):
 
     items = asyncio.run(collect())
 
-    assert items == ["答案前缀", "答案后缀"]
+    assert [item for item in items if isinstance(item, str)] == ["答案前缀", "答案后缀"]
+    assert any(isinstance(item, dict) and item.get("type") == "token_usage" for item in items)
     persisted_messages = test_history_cls("native-stream-think").get_all_messages()
     assert [message.content for message in persisted_messages] == ["测试过滤 think 标签", "答案前缀答案后缀"]
 
@@ -1743,7 +1788,7 @@ def test_function_calling_wrapper_ainvoke_filters_think_tags(monkeypatch):
             provider="cloud",
             agent_mode="function_calling",
             knowledge_base_enabled=True,
-            web_search_enabled=True,
+            web_search_enabled=False,
         )
     )
 
@@ -1801,6 +1846,97 @@ def test_function_calling_wrapper_refuses_grounded_answer_without_sources(monkey
     assert result["output"].count("## ") == 5
     assert "FC_MISSING_SOURCE_CONCLUSION" not in result["output"]
     assert result["sources"] == []
+
+
+def test_function_calling_wrapper_preserves_plain_answer_without_tool_steps():
+    from backend.agent.builder_wrappers import FunctionCallingAgentWrapper
+
+    class FakeLLM:
+        async def ainvoke(self, payload):
+            return types.SimpleNamespace(content="plain")
+
+    class FakeExecutor:
+        async def ainvoke(self, payload):
+            return {
+                "output": "PLAN means a sequence of intended steps.",
+                "sources": [],
+                "intermediate_steps": [],
+            }
+
+    agent = FunctionCallingAgentWrapper(
+        FakeExecutor(),
+        llm=FakeLLM(),
+        pipeline=object(),
+        system_prompt="",
+        dashboard_template=None,
+        knowledge_base_enabled=False,
+        web_search_enabled=True,
+    )
+
+    result = asyncio.run(
+        agent.ainvoke(
+            {"input": "what does plan mean?"},
+            config={"configurable": {"session_id": "fc-plain-no-steps", "persist_history": False}},
+        )
+    )
+
+    assert result["output"] == "PLAN means a sequence of intended steps."
+    assert result["sources"] == []
+
+
+def test_function_calling_wrapper_accepts_quick_answer_structured_sources():
+    from backend.agent.builder_wrappers import FunctionCallingAgentWrapper
+
+    class FakeLLM:
+        async def ainvoke(self, payload):
+            return types.SimpleNamespace(content="plain")
+
+    source_marker = "__SOURCES__:" + json.dumps(
+        [
+            {
+                "type": "web",
+                "title": "中山天气预报",
+                "url": "https://weather.example.com/zhongshan",
+                "snippet": "中山今天小雨，气温约 22-25°C。",
+                "index": 1,
+                "provider": "fake",
+            }
+        ],
+        ensure_ascii=False,
+    )
+
+    class FakeExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def ainvoke(self, payload):
+            return {
+                "output": "中山今天小雨，气温约 22-25°C。",
+                "sources": [],
+                "intermediate_steps": [(None, f"【网络搜索答案】\n中山今天小雨。\n\n{source_marker}")],
+            }
+
+    agent = FunctionCallingAgentWrapper(
+        FakeExecutor(),
+        llm=FakeLLM(),
+        pipeline=object(),
+        system_prompt="",
+        dashboard_template=None,
+        knowledge_base_enabled=False,
+        web_search_enabled=True,
+    )
+
+    result = asyncio.run(
+        agent.ainvoke(
+            {"input": "今天广东中山天气怎么样"},
+            config={"configurable": {"session_id": "fc-quick-answer-sources", "persist_history": False}},
+        )
+    )
+
+    assert result["sources"][0]["title"] == "中山天气预报"
+    assert "暂不提供业务结论" not in result["output"]
+    assert "中山今天小雨" in result["output"]
+    assert "中山天气预报" in result["output"]
 
 
 def test_plain_chat_wrapper_formats_attachment_grounding_sources(monkeypatch):
@@ -2292,6 +2428,26 @@ def test_effective_vector_store_path_prefers_active_prompt_binding(monkeypatch, 
     resolved = api_server._effective_vector_store_path()
 
     assert resolved == "kb_bound"
+
+
+def test_effective_vector_store_path_candidate_skips_active_prompt_lookup(
+    monkeypatch, tmp_path
+):
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    candidate_kb = project_root / "kb_candidate"
+    candidate_kb.mkdir()
+
+    def fail_active_lookup():
+        raise AssertionError("active prompt lookup should not run for explicit candidate")
+
+    monkeypatch.setattr(api_server, "PROJECT_ROOT", project_root.resolve())
+    monkeypatch.setattr(api_server, "_active_vector_store_id", fail_active_lookup)
+    monkeypatch.setenv("VECTOR_STORE_PATH", "vector_store_default")
+
+    resolved = api_server._effective_vector_store_path(str(candidate_kb.resolve()))
+
+    assert resolved == "kb_candidate"
 
 
 def test_analyze_knowledge_base_task_loads_store_before_stats(monkeypatch, tmp_path):

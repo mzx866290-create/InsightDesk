@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from backend.core import model_config_runtime
 from backend.stores.task_store import TaskStatus
 from backend.helpers.chat_stream_helpers import done_event, panel_event
 
@@ -28,6 +29,15 @@ def task_created_event(panel_id: str, task_record: Any) -> str:
 def stream_agent_item(panel_id: str, item: Any) -> tuple[str, str | None]:
     if isinstance(item, dict) and item.get("type") == "sources":
         return panel_event(panel_id, "sources", sources=item.get("sources", [])), None
+    if isinstance(item, dict) and item.get("type") == "token_usage":
+        return (
+            panel_event(
+                panel_id,
+                "token_usage",
+                token_usage=dict(item.get("token_usage") or {}),
+            ),
+            None,
+        )
     if isinstance(item, dict) and item.get("type") == "workflow_state":
         return (
             panel_event(
@@ -40,6 +50,46 @@ def stream_agent_item(panel_id: str, item: Any) -> tuple[str, str | None]:
 
     chunk = item if isinstance(item, str) else str(item)
     return panel_event(panel_id, "chunk", content=chunk), chunk
+
+
+async def fallback_generate_with_llm(
+    mc: Any,
+    user_message: str,
+    tool_outputs: str,
+    *,
+    app_config_store: Any,
+    logger: Any,
+    create_llm: Callable[..., Any],
+) -> str:
+    """Generate a final answer when the agent hits max iterations."""
+    try:
+        normalized = model_config_runtime.normalize_model_config(mc)
+        resolved_api_key = model_config_runtime.resolve_model_api_key(
+            app_config_store,
+            logger,
+            normalized,
+        )
+        llm = create_llm(
+            provider=normalized.provider,
+            model_name=normalized.model,
+            base_url=normalized.base_url,
+            api_key=resolved_api_key or None,
+            temperature=normalized.temperature,
+        )
+        fallback_prompt = (
+            "The previous agent run hit its iteration limit.\n"
+            f"User question:\n{user_message}\n\n"
+            f"Tool outputs:\n{tool_outputs[:4000]}\n\n"
+            "Please provide a concise final answer based on the available tool outputs."
+        )
+        response = await llm.ainvoke(fallback_prompt)
+        return str(getattr(response, "content", response) or "").strip()
+    except Exception as exc:
+        logger.warning("Fallback generate failed: %s", exc)
+        return (
+            "?????????????????????"
+            "????????????????"
+        )
 
 
 @dataclass(frozen=True)

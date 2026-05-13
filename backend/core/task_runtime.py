@@ -9,9 +9,119 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any, Optional
 
+from backend.core import model_config_runtime, prompt_runtime
+from backend.helpers.chat_input_helpers import chat_file_suffix, decode_data_url
+from backend.helpers.deck_report_helpers import resolve_langchain_report_messages
+
 if TYPE_CHECKING:
     from backend.schemas.api_models import CreateTaskRequest
     from backend.stores import SQLiteTaskStore, TaskRecord, TaskStatus
+
+
+TASK_RUNTIME_CONTEXT_ATTRIBUTES = (
+    "DEEP_RESEARCH_MAX_CONCURRENCY",
+    "HTTPException",
+    "TASK_BACKEND",
+    "TASK_HISTORY_LIMIT",
+    "TASK_HISTORY_TTL_SECONDS",
+    "TaskStatus",
+    "_artifact_store",
+    "_clear_agent_cache",
+    "_deck_store",
+    "_deep_research_semaphore_lock",
+    "_deep_research_semaphores",
+    "_drop_suppressed_task",
+    "_effective_vector_store_path",
+    "_app_config_store",
+    "_get_deep_research_semaphore",
+    "_get_task_store",
+    "_is_deep_research_task",
+    "_persist_task_record",
+    "_prune_persisted_tasks",
+    "_prune_task_records_locked",
+    "_run_task",
+    "_suppressed_task_ids",
+    "_task_store",
+    "_task_store_init_lock",
+    "_tasks",
+    "_tasks_lock",
+    "_update_task_progress",
+    "arq_queue_health_payload",
+    "asyncio",
+    "build_chat_report_title",
+    "build_deck",
+    "build_deck_artifact",
+    "build_report_artifact",
+    "build_report_markdown",
+    "build_research_archive_artifact",
+    "create_inline_task_record",
+    "create_task_store",
+    "enqueue_external_task",
+    "enqueue_task",
+    "ensure_deckable_chat",
+    "list_tasks_payload",
+    "load_integrator_connectors",
+    "logger",
+    "os",
+    "persist_web_research_task_placeholder",
+    "persist_web_research_task_result",
+    "prune_task_records",
+    "run_analyze_knowledge_base_task",
+    "run_generate_deck_task",
+    "run_generate_report_task",
+    "run_multi_agent_workflow_task",
+    "run_placeholder_task",
+    "run_promote_attachment_to_kb_task",
+    "run_upload_documents_task",
+    "run_web_research_task",
+    "set_inline_task_state",
+    "task_record_payload",
+    "time",
+)
+
+
+class TaskRuntimeContext:
+    """Whitelist-backed dynamic proxy for task runtime dependencies.
+
+    任务运行时会初始化 `_task_store`，所以这里同时转发受控属性写入；
+    这样既保留 monkeypatch 兼容性，又避免把整个 api_server 模块透传下去。
+    """
+
+    __slots__ = ("_allowed_attributes", "_source")
+
+    def __init__(
+        self,
+        source: Any,
+        allowed_attributes: tuple[str, ...] = TASK_RUNTIME_CONTEXT_ATTRIBUTES,
+    ) -> None:
+        object.__setattr__(self, "_source", source)
+        object.__setattr__(self, "_allowed_attributes", frozenset(allowed_attributes))
+
+    def __getattr__(self, name: str) -> Any:
+        if name not in self._allowed_attributes:
+            raise AttributeError(f"Task runtime context has no dependency {name!r}")
+        return getattr(self._source, name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in {"_source", "_allowed_attributes"}:
+            object.__setattr__(self, name, value)
+            return
+        if name not in self._allowed_attributes:
+            raise AttributeError(f"Task runtime context has no dependency {name!r}")
+        setattr(self._source, name, value)
+
+
+def build_task_runtime_context(source: Any) -> TaskRuntimeContext:
+    missing = [
+        attribute
+        for attribute in TASK_RUNTIME_CONTEXT_ATTRIBUTES
+        if not hasattr(source, attribute)
+    ]
+    if missing:
+        raise AttributeError(
+            "Task runtime context missing required attributes: " + ", ".join(missing)
+        )
+    return TaskRuntimeContext(source)
 
 
 def _update_task_progress(ctx, record: TaskRecord, progress: int) -> None:
@@ -118,6 +228,14 @@ def _get_task_store(ctx) -> SQLiteTaskStore:
     return ctx._task_store
 
 
+def _runtime_model_config_resolver(ctx):
+    return lambda config: model_config_runtime.resolve_runtime_model_config(
+        ctx._app_config_store,
+        ctx.logger,
+        config,
+    )
+
+
 def _persist_task_record(ctx, record: TaskRecord) -> None:
     if record.task_id in ctx._suppressed_task_ids:
         ctx.logger.info("Skip persisting suppressed task record: %s", record.task_id)
@@ -155,6 +273,7 @@ async def _run_task(ctx, record: TaskRecord) -> None:
             deep_research_slot = ctx._get_deep_research_semaphore()
             await deep_research_slot.acquire()
             deep_research_acquired = True
+        normalize_model_config = _runtime_model_config_resolver(ctx)
         async with ctx._tasks_lock:
             ctx._prune_task_records_locked()
             record.status = ctx.TaskStatus.RUNNING
@@ -183,7 +302,7 @@ async def _run_task(ctx, record: TaskRecord) -> None:
             await ctx.run_generate_report_task(
                 record,
                 set_progress=_set_progress,
-                resolve_report_messages=ctx._resolve_report_messages,
+                resolve_report_messages=resolve_langchain_report_messages,
                 ensure_deckable_chat=ctx.ensure_deckable_chat,
                 build_chat_report_title=ctx.build_chat_report_title,
                 build_report_markdown=ctx.build_report_markdown,
@@ -194,9 +313,9 @@ async def _run_task(ctx, record: TaskRecord) -> None:
             await ctx.run_generate_deck_task(
                 record,
                 set_progress=_set_progress,
-                resolve_report_messages=ctx._resolve_report_messages,
-                normalize_model_config=ctx._resolve_runtime_model_config,
-                resolve_active_prompt_runtime=ctx._resolve_active_prompt_runtime,
+                resolve_report_messages=resolve_langchain_report_messages,
+                normalize_model_config=normalize_model_config,
+                resolve_active_prompt_runtime=prompt_runtime.resolve_active_prompt_runtime,
                 build_deck=ctx.build_deck,
                 save_deck=ctx._deck_store.save,
                 build_deck_artifact=ctx.build_deck_artifact,
@@ -217,8 +336,8 @@ async def _run_task(ctx, record: TaskRecord) -> None:
                 set_progress=_set_progress,
                 update_progress=ctx._update_task_progress,
                 effective_vector_store_path=ctx._effective_vector_store_path,
-                chat_file_suffix=ctx._chat_file_suffix,
-                decode_data_url=ctx._decode_data_url,
+                chat_file_suffix=chat_file_suffix,
+                decode_data_url=decode_data_url,
                 clear_agent_cache=ctx._clear_agent_cache,
                 logger=ctx.logger,
             )
@@ -228,7 +347,7 @@ async def _run_task(ctx, record: TaskRecord) -> None:
             await ctx.run_web_research_task(
                 record,
                 set_progress=_set_progress,
-                normalize_model_config=ctx._resolve_runtime_model_config,
+                normalize_model_config=normalize_model_config,
                 create_llm=get_llm,
             )
         elif task_type == "multi_agent_workflow":
@@ -237,12 +356,12 @@ async def _run_task(ctx, record: TaskRecord) -> None:
             await ctx.run_multi_agent_workflow_task(
                 record,
                 set_progress=_set_progress,
-                normalize_model_config=ctx._resolve_runtime_model_config,
+                normalize_model_config=normalize_model_config,
                 create_llm=get_llm,
                 build_research_archive_artifact=ctx.build_research_archive_artifact,
                 save_artifact=ctx._artifact_store.save,
                 load_integrator_connectors=lambda: ctx.load_integrator_connectors(
-                    ctx._get_app_config_store()
+                    ctx._app_config_store
                 ),
             )
         else:

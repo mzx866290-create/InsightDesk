@@ -5,6 +5,7 @@ from backend.helpers.workspace_session_helpers import (
     fallback_session_payload,
     normalize_workspace_id,
     reorder_sessions_payload,
+    require_workspace_session,
     session_update_requested,
     workspaces_payload,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "fallback_session_payload",
     "normalize_workspace_id",
     "reorder_sessions_payload",
+    "require_workspace_session",
     "session_update_requested",
     "workspaces_payload",
 ]

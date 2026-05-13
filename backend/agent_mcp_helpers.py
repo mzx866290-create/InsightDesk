@@ -2,7 +2,8 @@ import asyncio
 import json
 import logging
 import os
-import sys
+import re
+import shlex
 import threading
 import time
 from pathlib import Path
@@ -11,13 +12,7 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MCP_SERVER_NAMES = [
-    "knowledge-base",
-    "web-search",
-    "database",
-    "calendar",
-    "notification",
-]
+DEFAULT_MCP_SERVER_NAMES: list[str] = []
 MCP_SERVER_CONFIG_FILENAME = "mcp_server_config.json"
 MCP_CONFIG_REDACTED_VALUE = "***redacted***"
 MCP_CONNECTOR_METADATA_KEYS = {
@@ -32,55 +27,60 @@ MCP_CONNECTOR_METADATA_KEYS = {
 }
 MCP_RISK_LEVELS = {"low", "medium", "high", "critical"}
 MCP_APPROVAL_RISK_LEVELS = {"high", "critical"}
+MCP_CONNECTOR_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 MCP_MARKET_CATEGORY_LABELS = {
-    "knowledge": "Knowledge",
-    "search": "Search",
     "data": "Data",
+    "development": "Development",
+    "documents": "Documents",
+    "files": "Files",
+    "platform": "Platform",
     "productivity": "Productivity",
     "communication": "Communication",
     "custom": "Custom",
 }
+
+
+class McpConnectorManifestError(ValueError):
+    """Validation error with stable fields for marketplace manifest UX."""
+
+    def __init__(self, code: str, message: str, *, field: str = "manifest"):
+        super().__init__(message)
+        self.code = code
+        self.field = field
+        self.message = message
+
+    def to_api_detail(self) -> dict[str, str]:
+        return {
+            "code": self.code,
+            "field": self.field,
+            "message": self.message,
+        }
 _runtime_mcp_approval_lock = threading.RLock()
 _runtime_mcp_approved_connectors: list[str] = []
 _runtime_mcp_health_history_lock = threading.RLock()
 _runtime_mcp_health_history: list[dict[str, Any]] = []
 MCP_SERVER_METADATA: dict[str, dict[str, Any]] = {
-    "knowledge-base": {
-        "label": "Knowledge Base",
-        "description": "Query internal knowledge chunks and knowledge-base diagnostics.",
-        "category": "knowledge",
-        "builtin": True,
-        "capability_scopes": ["knowledge:read", "knowledge:diagnostics"],
-        "risk_level": "low",
-        "requires_approval": False,
+    "filesystem": {
+        "label": "Filesystem",
+        "description": "Connect to a user-approved local filesystem MCP server.",
+        "category": "files",
+        "builtin": False,
+        "capability_scopes": ["filesystem:read", "filesystem:write"],
+        "risk_level": "high",
+        "requires_approval": True,
         "config_schema": {
             "transport": "stdio",
-            "required": ["command"],
-            "optional": ["transport", "args", "cwd", "encoding", "env"],
+            "required": ["command", "args"],
+            "optional": ["transport", "cwd", "encoding", "env"],
             "sensitive": ["env"],
         },
     },
-    "web-search": {
-        "label": "Web Search",
-        "description": "Search the web and fetch external webpages in real time.",
-        "category": "search",
-        "builtin": True,
-        "capability_scopes": ["web:search", "web:fetch"],
-        "risk_level": "medium",
-        "requires_approval": False,
-        "config_schema": {
-            "transport": "stdio",
-            "required": ["command"],
-            "optional": ["transport", "args", "cwd", "encoding", "env"],
-            "sensitive": ["env"],
-        },
-    },
-    "database": {
-        "label": "Database",
-        "description": "Inspect database connector availability without opening real database connections.",
+    "fetch": {
+        "label": "Fetch",
+        "description": "Connect to an external fetch/web retrieval MCP server.",
         "category": "data",
-        "builtin": True,
-        "capability_scopes": ["database:read"],
+        "builtin": False,
+        "capability_scopes": ["web:fetch"],
         "risk_level": "medium",
         "requires_approval": False,
         "config_schema": {
@@ -90,14 +90,44 @@ MCP_SERVER_METADATA: dict[str, dict[str, Any]] = {
             "sensitive": ["env"],
         },
     },
-    "calendar": {
-        "label": "Calendar",
-        "description": "Expose calendar connector catalog and static health without a live calendar dependency.",
+    "github": {
+        "label": "GitHub",
+        "description": "Connect to GitHub repositories, issues, pull requests, and project metadata.",
+        "category": "development",
+        "builtin": False,
+        "capability_scopes": ["github:read", "github:write"],
+        "risk_level": "high",
+        "requires_approval": True,
+        "config_schema": {
+            "transport": "stdio",
+            "required": ["command"],
+            "optional": ["transport", "args", "cwd", "encoding", "env"],
+            "sensitive": ["env"],
+        },
+    },
+    "notion": {
+        "label": "Notion",
+        "description": "Connect to Notion workspaces and pages through a configured MCP server.",
+        "category": "documents",
+        "builtin": False,
+        "capability_scopes": ["notion:read", "notion:write"],
+        "risk_level": "high",
+        "requires_approval": True,
+        "config_schema": {
+            "transport": "stdio",
+            "required": ["command"],
+            "optional": ["transport", "args", "cwd", "encoding", "env"],
+            "sensitive": ["env"],
+        },
+    },
+    "jira": {
+        "label": "Jira",
+        "description": "Connect to Jira issues, projects, and workflow metadata.",
         "category": "productivity",
-        "builtin": True,
-        "capability_scopes": ["calendar:read"],
-        "risk_level": "low",
-        "requires_approval": False,
+        "builtin": False,
+        "capability_scopes": ["jira:read", "jira:write"],
+        "risk_level": "high",
+        "requires_approval": True,
         "config_schema": {
             "transport": "stdio",
             "required": ["command"],
@@ -105,19 +135,34 @@ MCP_SERVER_METADATA: dict[str, dict[str, Any]] = {
             "sensitive": ["env"],
         },
     },
-    "notification": {
-        "label": "Notification",
-        "description": "Expose notification connector catalog and dry-run static health without sending messages.",
+    "slack": {
+        "label": "Slack",
+        "description": "Connect to Slack channels, messages, and workspace context.",
         "category": "communication",
-        "builtin": True,
-        "capability_scopes": ["notification:send"],
+        "builtin": False,
+        "capability_scopes": ["slack:read", "slack:write"],
+        "risk_level": "high",
+        "requires_approval": True,
+        "config_schema": {
+            "transport": "stdio",
+            "required": ["command"],
+            "optional": ["transport", "args", "cwd", "encoding", "env"],
+            "sensitive": ["env"],
+        },
+    },
+    "sqlite-readonly": {
+        "label": "SQLite Readonly",
+        "description": "Connect to a read-only SQLite MCP server for local data inspection.",
+        "category": "data",
+        "builtin": False,
+        "capability_scopes": ["sqlite:read"],
         "risk_level": "medium",
         "requires_approval": False,
         "config_schema": {
             "transport": "stdio",
-            "required": ["command"],
-            "optional": ["transport", "args", "cwd", "encoding", "env", "headers"],
-            "sensitive": ["env", "headers"],
+            "required": ["command", "args"],
+            "optional": ["transport", "cwd", "encoding", "env"],
+            "sensitive": ["env"],
         },
     },
 }
@@ -521,6 +566,32 @@ def describe_mcp_server(
     }
 
 
+def list_mcp_connector_template_catalog(
+    *,
+    configured_names: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Return installable connector templates without creating runtime connections."""
+
+    configured = configured_names or set()
+    templates: list[dict[str, Any]] = []
+    for server_name in sorted(MCP_SERVER_METADATA):
+        if server_name in configured:
+            continue
+        templates.append(
+            {
+                **describe_mcp_server(server_name, None),
+                **mcp_server_health_payload(
+                    server_name,
+                    None,
+                    source="template",
+                    available_names=set(),
+                ),
+                "template": True,
+            }
+        )
+    return templates
+
+
 def _normalize_policy_set(raw_value: Any) -> set[str]:
     return set(parse_name_list(raw_value))
 
@@ -697,10 +768,7 @@ def mcp_server_health_payload(
         available_names=available_names,
         enabled_server_names=enabled_server_names,
     )
-    feature_enabled = not (
-        (server_name == "knowledge-base" and not knowledge_base_enabled)
-        or (server_name == "web-search" and not web_search_enabled)
-    )
+    feature_enabled = True
     enabled = bool(mcp_enabled and requested and feature_enabled)
     healthy = bool(enabled and configured)
 
@@ -735,27 +803,7 @@ def default_mcp_connections(
     project_root: Path = PROJECT_ROOT,
     python_command: str | None = None,
 ) -> dict[str, dict[str, Any]]:
-    command = python_command or sys.executable
-    scripts = {
-        "knowledge-base": project_root / "mcp_servers" / "knowledge_server.py",
-        "web-search": project_root / "mcp_servers" / "search_server.py",
-        "database": project_root / "mcp_servers" / "database_server.py",
-        "calendar": project_root / "mcp_servers" / "calendar_server.py",
-        "notification": project_root / "mcp_servers" / "notification_server.py",
-    }
-
-    connections: dict[str, dict[str, Any]] = {}
-    for server_name, script_path in scripts.items():
-        if not script_path.is_file():
-            continue
-        connections[server_name] = {
-            "transport": "stdio",
-            "command": command,
-            "args": [str(script_path)],
-            "cwd": str(project_root),
-            "encoding": "utf-8",
-        }
-    return connections
+    return {}
 
 
 def default_mcp_server_config_path(*, project_root: Path = PROJECT_ROOT) -> Path:
@@ -911,6 +959,11 @@ def current_mcp_server_config_payload(
         python_command=python_command,
         config_path=catalog_config_path,
     )
+    configured_names = {str(item.get("name") or "") for item in catalog}
+    catalog = [
+        *catalog,
+        *list_mcp_connector_template_catalog(configured_names=configured_names),
+    ]
     return {
         "connectors": catalog,
         "marketplace": build_mcp_connector_marketplace(catalog),
@@ -972,6 +1025,196 @@ def save_mcp_server_config_payload(
         "changed": changed,
         "requires_agent_cache_clear": changed,
         "restart_required": False,
+    }
+    return payload
+
+
+def _manifest_install_command_parts(raw_value: Any) -> list[str]:
+    if isinstance(raw_value, str):
+        return shlex.split(raw_value, posix=os.name != "nt")
+    if isinstance(raw_value, (list, tuple)):
+        return [str(item) for item in raw_value if str(item or "").strip()]
+    return []
+
+
+def _require_mcp_manifest_mapping(
+    manifest: dict[str, Any],
+    field: str,
+) -> dict[str, Any] | None:
+    value = manifest.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise McpConnectorManifestError(
+            "invalid_manifest_field",
+            f"MCP connector manifest field '{field}' must be a JSON object",
+            field=field,
+        )
+    return value
+
+
+def _normalize_mcp_manifest_risk_level(
+    manifest: dict[str, Any],
+    metadata: dict[str, Any],
+) -> str:
+    value = manifest.get("risk_level") or metadata.get("risk_level")
+    if value is None or str(value).strip() == "":
+        return "medium"
+
+    risk_level = str(value).strip().lower()
+    if risk_level not in MCP_RISK_LEVELS:
+        raise McpConnectorManifestError(
+            "invalid_risk_level",
+            "MCP connector manifest risk_level must be one of: "
+            + ", ".join(sorted(MCP_RISK_LEVELS)),
+            field="risk_level",
+        )
+    return risk_level
+
+
+def _connection_from_mcp_manifest(manifest: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    name = normalize_mcp_connector_name(
+        manifest.get("name") or manifest.get("id") or manifest.get("server_name")
+    )
+    if not name:
+        raise McpConnectorManifestError(
+            "missing_name",
+            "MCP connector manifest requires a name",
+            field="name",
+        )
+    if not MCP_CONNECTOR_NAME_PATTERN.match(name):
+        raise McpConnectorManifestError(
+            "invalid_name",
+            "MCP connector manifest name must be 1-64 characters and use only letters, numbers, dots, underscores, or hyphens",
+            field="name",
+        )
+
+    transport = str(manifest.get("transport") or "stdio").strip() or "stdio"
+    if transport not in {"stdio", "sse", "streamable_http", "http"}:
+        raise McpConnectorManifestError(
+            "unsupported_transport",
+            f"Unsupported MCP connector transport: {transport}",
+            field="transport",
+        )
+
+    for mapping_field in ("env", "headers", "metadata", "config_schema"):
+        _require_mcp_manifest_mapping(manifest, mapping_field)
+
+    connection: dict[str, Any] = {"transport": transport}
+    if transport == "stdio":
+        command = str(manifest.get("command") or "").strip()
+        args = manifest.get("args")
+        if not command:
+            install_parts = _manifest_install_command_parts(
+                manifest.get("install_command")
+            )
+            if install_parts:
+                command = install_parts[0]
+                args = install_parts[1:]
+        if not command:
+            raise McpConnectorManifestError(
+                "missing_stdio_command",
+                "MCP stdio connector manifest requires command or install_command",
+                field="command",
+            )
+        connection["command"] = command
+        if isinstance(args, list):
+            connection["args"] = [str(item) for item in args]
+        elif args:
+            connection["args"] = [str(args)]
+        else:
+            connection["args"] = []
+    elif transport in {"sse", "streamable_http", "http"}:
+        url = str(manifest.get("url") or "").strip()
+        if not url:
+            raise McpConnectorManifestError(
+                "missing_url",
+                "MCP HTTP/SSE connector manifest requires url",
+                field="url",
+            )
+        connection["url"] = url
+        headers = manifest.get("headers")
+        if isinstance(headers, dict):
+            connection["headers"] = {str(key): str(value) for key, value in headers.items()}
+
+    if str(manifest.get("cwd") or "").strip():
+        connection["cwd"] = str(manifest.get("cwd")).strip()
+    if str(manifest.get("encoding") or "").strip():
+        connection["encoding"] = str(manifest.get("encoding")).strip()
+    env = manifest.get("env")
+    if isinstance(env, dict):
+        connection["env"] = {str(key): str(value) for key, value in env.items()}
+
+    metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+    connection["metadata"] = {
+        "label": str(manifest.get("label") or metadata.get("label") or name),
+        "description": str(
+            manifest.get("description") or metadata.get("description") or ""
+        ).strip(),
+        "category": str(
+            manifest.get("category") or metadata.get("category") or "custom"
+        ).strip() or "custom",
+        "capability_scopes": parse_name_list(
+            manifest.get("scopes")
+            or manifest.get("capability_scopes")
+            or metadata.get("capability_scopes")
+            or ["custom:tools"]
+        ),
+        "risk_level": _normalize_mcp_manifest_risk_level(manifest, metadata),
+        "requires_approval": _normalize_bool(
+            manifest.get("requires_approval", metadata.get("requires_approval")),
+            default=True,
+        ),
+        "version": str(manifest.get("version") or metadata.get("version") or "").strip(),
+    }
+    if isinstance(manifest.get("config_schema"), dict):
+        connection["metadata"]["config_schema"] = manifest["config_schema"]
+    return name, connection
+
+
+def install_mcp_connector_manifest_payload(
+    manifest: dict[str, Any],
+    *,
+    project_root: Path = PROJECT_ROOT,
+    config_path: str | None = None,
+) -> dict[str, Any]:
+    """Persist an MCP connector manifest without executing install commands."""
+
+    if not isinstance(manifest, dict):
+        raise ValueError("MCP connector manifest must be a JSON object")
+
+    connector_name, connection = _connection_from_mcp_manifest(manifest)
+    path = _active_mcp_server_config_path(
+        project_root=project_root,
+        config_path=config_path,
+        for_write=True,
+    )
+    if path is None:
+        raise ValueError("MCP server config path is required")
+
+    previous = (
+        load_mcp_connection_config(str(path), project_root=project_root)
+        if path.is_file()
+        else {}
+    )
+    raw_config = {"servers": {**previous, connector_name: connection}}
+    payload = save_mcp_server_config_payload(
+        raw_config,
+        project_root=project_root,
+        config_path=str(path),
+    )
+    installed = next(
+        (
+            item
+            for item in payload.get("connectors", [])
+            if item.get("name") == connector_name
+        ),
+        describe_mcp_server(connector_name, connection),
+    )
+    payload["installed"] = {
+        "name": connector_name,
+        "connector": installed,
+        "executed_install_command": False,
     }
     return payload
 
@@ -1466,11 +1709,6 @@ def select_mcp_connections(
         }
     elif enabled_server_names is not None:
         return {}
-
-    if not knowledge_base_enabled:
-        connections.pop("knowledge-base", None)
-    if not web_search_enabled:
-        connections.pop("web-search", None)
 
     policy_allowed_scopes = (
         allowed_scopes if allowed_scopes is not None else _env_name_list("MCP_ALLOWED_SCOPES")

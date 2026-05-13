@@ -153,6 +153,75 @@ def test_generate_report_persists_artifact_and_supports_exports(monkeypatch, tmp
     assert updated_payload["content"]["markdown"] == "# Updated Report"
 
 
+def test_generate_report_persists_delivery_template_metadata(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    history_cls = _history_cls_for_db(db_path)
+    monkeypatch.setattr(chat_store, "SQLiteChatMessageHistory", history_cls)
+    monkeypatch.setattr(
+        api_server,
+        "_artifact_store",
+        artifact_service.SQLiteArtifactStore(db_path=str(db_path)),
+    )
+
+    history = history_cls("session-report-template-artifact")
+    history.add_user_message("Risk memo")
+    history.add_ai_message("Risk is elevated and needs review.")
+
+    client = TestClient(api_server.app)
+    response = client.post(
+        "/api/reports/generate",
+        json={
+            "session_id": "session-report-template-artifact",
+            "template_id": "research_brief",
+            "template_options": {
+                "scope": "answer_group",
+                "include_citations": True,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert "template: research_brief" in payload["markdown"]
+    assert '"include_citations": true' in payload["markdown"]
+
+    artifact_response = client.get(f"/api/artifacts/{payload['artifact_id']}")
+    assert artifact_response.status_code == 200
+    content = artifact_response.json()["content"]
+    assert content["template_id"] == "research_brief"
+    assert content["template_options"] == {
+        "scope": "answer_group",
+        "include_citations": True,
+    }
+
+
+def test_generate_report_rejects_wrong_delivery_template_type(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    history_cls = _history_cls_for_db(db_path)
+    monkeypatch.setattr(chat_store, "SQLiteChatMessageHistory", history_cls)
+    monkeypatch.setattr(
+        api_server,
+        "_artifact_store",
+        artifact_service.SQLiteArtifactStore(db_path=str(db_path)),
+    )
+
+    history = history_cls("session-report-template-mismatch")
+    history.add_user_message("Risk memo")
+    history.add_ai_message("Risk is elevated and needs review.")
+
+    client = TestClient(api_server.app)
+    response = client.post(
+        "/api/reports/generate",
+        json={
+            "session_id": "session-report-template-mismatch",
+            "template_id": "board_deck",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "not report" in response.json()["detail"]
+
+
 def test_report_artifact_xlsx_available_only_when_markdown_table_exists(monkeypatch, tmp_path):
     db_path = tmp_path / "chat_history.db"
     history_cls = _history_cls_for_db(db_path)
@@ -230,6 +299,37 @@ def test_build_research_archive_artifact_preserves_v2_evidence_chain():
     assert archive.content["claim_verification_summary"]["total_claims"] == 1
 
 
+def test_create_deck_rejects_wrong_delivery_template_type(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    history_cls = _history_cls_for_db(db_path)
+    monkeypatch.setattr(chat_store, "SQLiteChatMessageHistory", history_cls)
+
+    history = history_cls("session-deck-template-mismatch")
+    history.add_user_message("Trend scan")
+    history.add_ai_message("Panel B research answer.", panel_id="panel-main")
+
+    async def fail_build_deck(**kwargs):
+        raise AssertionError("build_deck should not run for invalid templates")
+
+    monkeypatch.setattr(api_server, "build_deck", fail_build_deck)
+
+    client = TestClient(api_server.app)
+    response = client.post(
+        "/api/decks",
+        json={
+            "session_id": "session-deck-template-mismatch",
+            "panel_config": _panel_config_payload(),
+            "knowledge_base_enabled": False,
+            "target_slide_count": 6,
+            "theme": "default",
+            "template_id": "executive_report",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "not deck" in response.json()["detail"]
+
+
 def test_create_deck_persists_artifact_and_syncs_on_update(monkeypatch, tmp_path):
     db_path = tmp_path / "chat_history.db"
     history_cls = _history_cls_for_db(db_path)
@@ -265,12 +365,23 @@ def test_create_deck_persists_artifact_and_syncs_on_update(monkeypatch, tmp_path
             "knowledge_base_enabled": False,
             "target_slide_count": 6,
             "theme": "default",
+            "template_id": "board_deck",
+            "template_options": {
+                "theme": "midnight",
+                "target_slide_count": 8,
+                "nested": {"ignored": True},
+            },
         },
     )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["artifact_id"].startswith("artifact_")
+    assert payload["meta"]["template_id"] == "board_deck"
+    assert payload["meta"]["template_options"] == {
+        "theme": "midnight",
+        "target_slide_count": 8,
+    }
 
     deck_list_response = client.get("/api/decks")
     assert deck_list_response.status_code == 200
@@ -287,6 +398,11 @@ def test_create_deck_persists_artifact_and_syncs_on_update(monkeypatch, tmp_path
     artifact_payload = artifact_response.json()
     assert artifact_payload["artifact_type"] == "deck"
     assert artifact_payload["content"]["deck_id"] == "deck-artifact-create"
+    assert artifact_payload["content"]["template_id"] == "board_deck"
+    assert artifact_payload["content"]["template_options"] == {
+        "theme": "midnight",
+        "target_slide_count": 8,
+    }
     assert artifact_payload["title"] == "Board Update"
 
     update_response = client.patch(
@@ -299,6 +415,11 @@ def test_create_deck_persists_artifact_and_syncs_on_update(monkeypatch, tmp_path
     assert synced_artifact_response.status_code == 200
     synced_payload = synced_artifact_response.json()
     assert synced_payload["title"] == "Updated Board"
+    assert synced_payload["content"]["template_id"] == "board_deck"
+    assert synced_payload["content"]["template_options"] == {
+        "theme": "midnight",
+        "target_slide_count": 8,
+    }
 
     export_response = client.get(f"/api/artifacts/{payload['artifact_id']}/export?format=pptx")
     assert export_response.status_code == 200

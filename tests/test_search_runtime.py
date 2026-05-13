@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 import backend.helpers.task_execution_helpers as task_execution_helpers_module
 from backend.helpers.task_execution_helpers import (
@@ -6,7 +7,7 @@ from backend.helpers.task_execution_helpers import (
     persist_web_research_task_result,
     run_web_research_task,
 )
-from backend.api_task_store import TaskRecord, TaskStatus
+from backend.stores.task_store import TaskRecord, TaskStatus
 from backend.chat_store import connect_sqlite
 from search_runtime.providers.bing_provider import BingSearchProvider
 from search_runtime.providers.duckduckgo_provider import DuckDuckGoSearchProvider
@@ -65,6 +66,158 @@ def test_search_web_text_formats_results_and_sources(monkeypatch):
     assert "__SOURCES__:" in result
     assert '"provider": "fake"' in result
     assert '"confidence"' in result
+
+
+def test_quick_answer_text_preserves_structured_sources(monkeypatch):
+    class FakeProvider:
+        async def search(
+            self,
+            query,
+            *,
+            max_results=5,
+            search_depth="basic",
+            include_answer=True,
+            topic=None,
+            time_range=None,
+            include_raw_content=False,
+        ):
+            assert query.startswith("今天广东中山天气怎么样")
+            assert max_results == 3
+            assert include_answer is True
+            return SearchResponse(
+                query=query,
+                provider="fake",
+                answer="中山今天小雨，气温约 22-25°C。",
+                results=[
+                    SearchDocument(
+                        doc_id="weather-1",
+                        provider="fake",
+                        title="中山天气预报",
+                        url="https://weather.example.com/zhongshan",
+                        snippet="中山小雨，22-25°C。",
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(search_service, "get_search_provider", lambda provider=None: FakeProvider())
+
+    result = asyncio.run(search_service.quick_answer_text("今天广东中山天气怎么样"))
+
+    assert "中山今天小雨" in result
+    assert "中山天气预报" in result
+    assert "__SOURCES__:" in result
+    assert '"type": "web"' in result
+    assert '"url": "https://weather.example.com/zhongshan"' in result
+
+
+def test_search_web_weather_continues_after_irrelevant_provider_results(monkeypatch):
+    monkeypatch.setenv("SEARCH_PROVIDER_SEQUENCE", "bing,duckduckgo")
+
+    class BadWeatherProvider:
+        async def search(
+            self,
+            query,
+            *,
+            max_results=5,
+            search_depth="basic",
+            include_answer=True,
+            topic=None,
+            time_range=None,
+            include_raw_content=False,
+        ):
+            return SearchResponse(
+                query=query,
+                provider="bing",
+                results=[
+                    SearchDocument(
+                        doc_id="calendar-1",
+                        provider="bing",
+                        title="今日黄历查询",
+                        url="https://calendar.example.com/today",
+                        snippet="今天是什么日子。",
+                    )
+                ],
+            )
+
+    class WeatherProvider:
+        async def search(
+            self,
+            query,
+            *,
+            max_results=5,
+            search_depth="basic",
+            include_answer=True,
+            topic=None,
+            time_range=None,
+            include_raw_content=False,
+        ):
+            return SearchResponse(
+                query=query,
+                provider="duckduckgo",
+                results=[
+                    SearchDocument(
+                        doc_id="weather-1",
+                        provider="duckduckgo",
+                        title="中山天气预报",
+                        url="https://weather.com.cn/weathern/101281701.shtml",
+                        snippet="中山天气预报，及时准确发布中央气象台天气信息。",
+                    )
+                ],
+            )
+
+    def fake_provider(provider=None):
+        if provider == "bing":
+            return BadWeatherProvider()
+        if provider == "duckduckgo":
+            return WeatherProvider()
+        raise AssertionError(f"unexpected provider: {provider}")
+
+    monkeypatch.setattr(search_service, "get_search_provider", fake_provider)
+
+    response = asyncio.run(search_service.search_web("今天广东中山天气怎么样", max_results=3))
+
+    assert response.provider == "duckduckgo"
+    assert [item.title for item in response.results] == ["中山天气预报"]
+    assert response.results[0].domain == "weather.com.cn"
+
+
+def test_quick_answer_text_uses_default_provider_sequence(monkeypatch):
+    monkeypatch.setenv("SEARCH_PROVIDER_SEQUENCE", "bing,duckduckgo")
+
+    class EmptyProvider:
+        async def search(self, query, **kwargs):
+            return SearchResponse(query=query, provider="bing", results=[])
+
+    class WeatherProvider:
+        async def search(self, query, **kwargs):
+            return SearchResponse(
+                query=query,
+                provider="duckduckgo",
+                results=[
+                    SearchDocument(
+                        doc_id="weather-1",
+                        provider="duckduckgo",
+                        title="中山天气预报",
+                        url="https://weather.com.cn/weathern/101281701.shtml",
+                        snippet="中山天气预报，及时准确发布中央气象台天气信息。",
+                    )
+                ],
+            )
+
+    def fake_provider(provider=None):
+        if provider == "bing":
+            return EmptyProvider()
+        if provider == "duckduckgo":
+            return WeatherProvider()
+        raise AssertionError(f"unexpected provider: {provider}")
+
+    monkeypatch.setattr(search_service, "get_search_provider", fake_provider)
+
+    result = asyncio.run(search_service.quick_answer_text("今天广东中山天气怎么样"))
+
+    assert "中山天气预报" in result
+    assert "__SOURCES__:" in result
+    assert '"provider": "duckduckgo"' in result
 
 
 def test_search_web_falls_back_to_searxng(monkeypatch):
@@ -154,6 +307,16 @@ def test_query_plan_strips_conversational_prefix_and_generates_candidates():
     assert any("OpenAI agents updates enterprise users" in item for item in plan.query_candidates)
 
 
+def test_query_plan_keeps_chinese_weather_out_of_news_topic():
+    plan = search_service._build_query_plan("今天广东中山天气怎么样")  # noqa: SLF001
+
+    assert "新闻" not in plan.effective_query
+    assert "中国天气网" in plan.effective_query
+    assert "weather.com.cn" in plan.effective_query
+    assert plan.topic is None
+    assert plan.time_range is None
+
+
 def test_search_web_retries_with_simplified_query_variant(monkeypatch):
     class VariantProvider:
         def __init__(self):
@@ -203,6 +366,94 @@ def test_search_web_retries_with_simplified_query_variant(monkeypatch):
     assert response.rewritten_query == provider.calls[-1]
     assert response.rewritten_query != provider.calls[0]
     assert any("simplified query variant" in item for item in response.provider_caveats)
+
+
+def test_llm_search_query_planner_rewrites_without_hardcoded_domain_rules():
+    class FakeLLM:
+        async def ainvoke(self, prompt):
+            assert "do not rely on backend hard-coded local rules" in prompt
+            assert "Do not invent specific websites" in prompt
+            return SimpleNamespace(
+                content='{"query":"Guangdong public institution employee recruitment announcements May 2026"}'
+            )
+
+    planned = asyncio.run(
+        search_service.rewrite_search_query_with_llm(
+            FakeLLM(),
+            "Where in Guangdong is hiring employees today?",
+        )
+    )
+
+    assert planned == "Guangdong public institution employee recruitment announcements May 2026 latest news"
+
+
+def test_quick_web_research_uses_llm_planned_query_when_model_config_is_available(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeLLM:
+        async def ainvoke(self, prompt):
+            assert "Where in Guangdong is hiring employees today?" in prompt
+            return SimpleNamespace(
+                content='{"query":"Guangdong public institution employee recruitment announcements May 2026"}'
+            )
+
+    async def fake_run_web_research(query, **kwargs):
+        captured["query"] = query
+        captured.update(kwargs)
+        return WebResearchResult(
+            query=query,
+            provider="fake",
+            provider_summary="fake",
+            answer="ok",
+            summary="ok",
+            rewritten_query=str(kwargs.get("planned_query") or query),
+            sources=[],
+            caveats=[],
+        )
+
+    async def set_progress(_progress):
+        return None
+
+    monkeypatch.setattr(task_execution_helpers_module, "run_web_research", fake_run_web_research)
+
+    record = TaskRecord(
+        task_id="quick-plan-1",
+        task_type="web_research",
+        status=TaskStatus.PENDING,
+        params={
+            "query": "Where in Guangdong is hiring employees today?",
+            "research_mode": "quick",
+            "panel_config": {
+                "provider": "ollama",
+                "model": "qwen3.5-2B:latest",
+                "base_url": "http://localhost:11434",
+                "api_key": "",
+                "temperature": 0.2,
+            },
+        },
+        session_id=None,
+        created_at=0,
+        updated_at=0,
+    )
+
+    asyncio.run(
+        run_web_research_task(
+            record,
+            set_progress=set_progress,
+            normalize_model_config=lambda config: config,
+            create_llm=lambda *_args: FakeLLM(),
+        )
+    )
+
+    assert captured["query"] == "Where in Guangdong is hiring employees today?"
+    assert (
+        captured["planned_query"]
+        == "Guangdong public institution employee recruitment announcements May 2026 latest news"
+    )
+    assert (
+        record.params["search_planned_query"]
+        == "Guangdong public institution employee recruitment announcements May 2026 latest news"
+    )
 
 
 def test_registry_exposes_provider_capabilities():
@@ -302,6 +553,12 @@ def test_bing_provider_parses_rss_results(monkeypatch):
       <description>Platform update for enterprise agent workflows.</description>
       <pubDate>Mon, 21 Apr 2026 08:30:00 GMT</pubDate>
     </item>
+    <item>
+      <title>Zhongshan weather forecast</title>
+      <link>https://weather.example.com/zhongshan</link>
+      <description>Localized Bing RSS date format.</description>
+      <pubDate>周五, 08 5月 2026 17:56:00 GMT</pubDate>
+    </item>
   </channel>
 </rss>
 """
@@ -331,9 +588,11 @@ def test_bing_provider_parses_rss_results(monkeypatch):
     response = asyncio.run(BingSearchProvider().search("OpenAI agents latest", max_results=3))
 
     assert response.provider == "bing"
-    assert len(response.results) == 1
+    assert len(response.results) == 2
     assert response.results[0].title == "OpenAI ships new agents platform"
     assert response.results[0].published_at == "2026-04-21"
+    assert response.results[1].title == "Zhongshan weather forecast"
+    assert response.results[1].published_at == "2026-05-08"
 
 
 def test_search_web_does_not_fallback_when_provider_list_is_explicit(monkeypatch):
@@ -1029,6 +1288,7 @@ def test_run_web_research_task_builds_summary(monkeypatch):
         query,
         *,
         max_results=8,
+        planned_query=None,
         provider=None,
         providers=None,
         search_depth="advanced",
@@ -1036,6 +1296,7 @@ def test_run_web_research_task_builds_summary(monkeypatch):
         time_range=None,
     ):
         assert query == "OpenAI agents"
+        assert planned_query is None
         assert provider == "tavily"
         assert max_results == 6
         return WebResearchResult(
@@ -1179,6 +1440,7 @@ def test_run_web_research_task_falls_back_to_quick_mode_when_deep_config_is_miss
         query,
         *,
         max_results=8,
+        planned_query=None,
         provider=None,
         providers=None,
         search_depth="advanced",
@@ -1186,6 +1448,7 @@ def test_run_web_research_task_falls_back_to_quick_mode_when_deep_config_is_miss
         time_range=None,
     ):
         assert query == "OpenAI agents"
+        assert planned_query is None
         assert provider == "tavily"
         return WebResearchResult(
             query=query,

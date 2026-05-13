@@ -2,11 +2,16 @@ from __future__ import annotations
 
 """Security helper utilities."""
 
+import base64
+import hashlib
+import json
 import logging
+import re
 from typing import Any, Callable, Mapping
 from urllib.parse import urlencode
 
 
+AUTH_ROLE_RANKS = {"viewer": 1, "editor": 2, "admin": 3}
 RESOURCE_ROLE_RANKS = {"viewer": 1, "editor": 2, "admin": 3, "owner": 4}
 
 RESOURCE_PERMISSION_OPERATIONS = (
@@ -261,6 +266,112 @@ def _scope_values(value: list[str] | str) -> list[str]:
     return [item for raw_item in raw_items if (item := str(raw_item or "").strip())]
 
 
+def hash_secret(secret: str) -> str:
+    if not secret:
+        return "no-key"
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()[:12]
+
+
+def token_fingerprint(token: Any) -> str:
+    normalized = str(token or "").strip()
+    if not normalized:
+        return "empty"
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+
+
+def token_preview(token: Any) -> str:
+    normalized = str(token or "").strip()
+    if len(normalized) <= 10:
+        return normalized
+    return f"{normalized[:6]}...{normalized[-4:]}"
+
+
+def auth_token_preview(token: Any) -> str:
+    normalized = str(token or "").strip()
+    if not normalized:
+        return "empty"
+    if len(normalized) <= 4:
+        return "*" * len(normalized)
+    if len(normalized) <= 8:
+        return f"{normalized[:2]}...{normalized[-2:]}"
+    return f"{normalized[:4]}...{normalized[-2:]}"
+
+
+def normalize_auth_role(
+    role: Any,
+    *,
+    role_ranks: Mapping[str, int] = AUTH_ROLE_RANKS,
+    default: str = "viewer",
+) -> str:
+    normalized = str(role or "").strip().lower()
+    if normalized in role_ranks:
+        return normalized
+    return default
+
+
+def role_rank(
+    role: Any,
+    *,
+    role_ranks: Mapping[str, int] = AUTH_ROLE_RANKS,
+    normalize_role: Callable[[Any], str] | None = None,
+    default_auth_role: str = "viewer",
+) -> int:
+    if normalize_role is not None:
+        normalized_role = normalize_role(role)
+    else:
+        normalized_role = normalize_auth_role(
+            role, role_ranks=role_ranks, default=default_auth_role
+        )
+    return int(role_ranks.get(normalized_role, 0))
+
+
+def sanitize_log_value(value: Any, *, max_length: int = 256) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub("[\\r\\n\\t]+", " ", text)
+    text = re.sub("\\s{2,}", " ", text)
+    if len(text) > max_length:
+        return f"{text[: max_length - 3]}..."
+    return text
+
+
+def sanitize_request_path(path: Any) -> str:
+    normalized = str(path or "").strip() or "/"
+    if normalized.startswith("/api/share-links/"):
+        return "/api/share-links/<token>"
+    if normalized.startswith("/shared/"):
+        return "/shared/<token>"
+    return normalized
+
+
+def auth_token_is_weak(token: Any, *, min_length: int = 16) -> bool:
+    normalized = str(token or "").strip()
+    return len(normalized) < min_length
+
+
+def ceil_seconds(seconds: float) -> int:
+    normalized = float(seconds or 0.0)
+    if normalized <= 0:
+        return 0
+    truncated = int(normalized)
+    if float(truncated) < normalized:
+        truncated += 1
+    return max(1, truncated)
+
+
+def content_hash(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, str):
+        payload = value
+    else:
+        payload = json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def auth_capabilities_for_role(
     role: str,
     *,
@@ -331,6 +442,7 @@ def build_security_status_payload(
     remote_management_rate_limit_window_seconds_source: str,
     remote_management_rate_limit_max_requests: int,
     remote_management_rate_limit_max_requests_source: str,
+    remote_management_rate_limit_status: Mapping[str, Any],
     security_audit_history_limit: int,
     security_audit_history_limit_source: str,
     security_audit_memory_window_limit: int,
@@ -342,6 +454,8 @@ def build_security_status_payload(
     auth_token_hygiene_summary: Callable[[list[dict[str, str]] | None], dict[str, int | bool]],
     role_rank: Callable[[str], int],
     share_link_secret_is_weak: Callable[[], bool],
+    share_link_secret_uses_default: Callable[[], bool],
+    min_share_link_secret_length: int,
     read_security_audit_event_count: Callable[[], int],
     logger: logging.Logger,
 ) -> dict[str, Any]:
@@ -368,6 +482,8 @@ def build_security_status_payload(
         "weak_auth_token_count": int(auth_token_hygiene["weak_count"]),
         "legacy_auth_token_count": int(auth_token_hygiene["legacy_count"]),
         "share_link_secret_healthy": share_link_secret_healthy,
+        "share_link_secret_uses_default": bool(share_link_secret_uses_default()),
+        "share_link_secret_min_length": int(min_share_link_secret_length),
         "remote_share_ready": (not allow_remote_clients) or share_link_secret_healthy,
         "remote_management_rate_limit_enabled": bool(
             remote_management_rate_limit_enabled
@@ -383,6 +499,34 @@ def build_security_status_payload(
         ),
         "remote_management_rate_limit_max_requests_source": str(
             remote_management_rate_limit_max_requests_source
+        ),
+        "remote_management_rate_limit_scope": "remote-management",
+        "remote_management_rate_limit_storage": "memory",
+        "remote_management_rate_limit_path_prefixes": [
+            str(item)
+            for item in remote_management_rate_limit_status.get("path_prefixes", [])
+        ],
+        "remote_management_rate_limit_response_headers": [
+            str(item)
+            for item in remote_management_rate_limit_status.get(
+                "response_headers", []
+            )
+        ],
+        "remote_management_rate_limit_tracked_principal_count": int(
+            remote_management_rate_limit_status.get("tracked_principal_count", 0) or 0
+        ),
+        "remote_management_rate_limit_active_request_count": int(
+            remote_management_rate_limit_status.get("active_request_count", 0) or 0
+        ),
+        "remote_management_rate_limit_blocked_count": int(
+            remote_management_rate_limit_status.get("blocked_count", 0) or 0
+        ),
+        "remote_management_rate_limit_last_blocked_at": remote_management_rate_limit_status.get(
+            "last_blocked_at"
+        ),
+        "remote_management_rate_limit_next_reset_after_seconds": int(
+            remote_management_rate_limit_status.get("next_reset_after_seconds", 0)
+            or 0
         ),
         "share_link_ttl_seconds": int(share_link_ttl_seconds),
         "share_link_ttl_hours": round(float(share_link_ttl_seconds) / 3600.0, 2),
@@ -476,6 +620,402 @@ def build_sso_config_payload(
             "groups": "groups",
         },
     }
+
+
+def normalize_sso_config_update(
+    field: str,
+    value: Any,
+    *,
+    default_auth_role: str = "viewer",
+    normalize_auth_role: Callable[..., str],
+) -> str:
+    normalized = str(value or "").strip()
+    if field == "provider":
+        normalized = normalized.lower() or "none"
+        if normalized not in {"none", "oidc"}:
+            raise ValueError("SSO provider must be none or oidc")
+    elif field == "default_role":
+        normalized = normalize_auth_role(normalized, default=default_auth_role)
+    elif field == "session_ttl_seconds":
+        try:
+            ttl_seconds = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "SSO session TTL must be an integer number of seconds"
+            ) from exc
+        if ttl_seconds < 300 or ttl_seconds > 7 * 24 * 60 * 60:
+            raise ValueError("SSO session TTL must be between 300 and 604800 seconds")
+        normalized = str(ttl_seconds)
+    return normalized
+
+
+def sso_callback_url_for_mode(callback_url: str, response_mode: str = "") -> str:
+    normalized_callback_url = str(callback_url or "").strip()
+    if str(response_mode or "").strip().lower() == "fragment":
+        return f"{normalized_callback_url}?response_mode=fragment"
+    return normalized_callback_url
+
+
+def pkce_code_challenge(verifier: str) -> str:
+    digest = hashlib.sha256(str(verifier).encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def sso_session_token_hash(token: Any) -> str:
+    normalized_token = str(token or "").strip()
+    return hashlib.sha256(normalized_token.encode("utf-8")).hexdigest()
+
+
+def share_link_audit_payload(
+    record: Any,
+    *,
+    current_time: float,
+    token_preview_func: Callable[[Any], str] = token_preview,
+    token_fingerprint_func: Callable[[Any], str] = token_fingerprint,
+) -> dict[str, Any]:
+    revoked_at = getattr(record, "revoked_at", None)
+    expires_at = float(getattr(record, "expires_at", 0) or 0)
+    share_token = str(getattr(record, "share_token", "") or "").strip()
+    return {
+        "resource_type": str(getattr(record, "resource_type", "") or "").strip(),
+        "resource_id": str(getattr(record, "resource_id", "") or "").strip(),
+        "created_at": float(getattr(record, "created_at", 0) or 0),
+        "expires_at": expires_at,
+        "revoked_at": float(revoked_at) if revoked_at is not None else None,
+        "is_active": revoked_at is None and expires_at > float(current_time),
+        "created_by_ip": str(getattr(record, "created_by_ip", "") or "").strip(),
+        "created_user_agent": str(
+            getattr(record, "created_user_agent", "") or ""
+        ).strip(),
+        "access_count": int(getattr(record, "access_count", 0) or 0),
+        "last_accessed_at": float(getattr(record, "last_accessed_at", 0))
+        if getattr(record, "last_accessed_at", None) is not None
+        else None,
+        "last_accessed_ip": str(getattr(record, "last_accessed_ip", "") or "").strip(),
+        "last_accessed_user_agent": str(
+            getattr(record, "last_accessed_user_agent", "") or ""
+        ).strip(),
+        "share_token_preview": token_preview_func(share_token),
+        "share_token_fingerprint": token_fingerprint_func(share_token),
+    }
+
+
+def security_audit_detail_value(details: Any, *names: str) -> str:
+    normalized_names = {str(name or "").strip().lower() for name in names}
+    for match in re.finditer(
+        r"(?P<key>[A-Za-z_][A-Za-z0-9_-]*)=(?P<value>[^ ]*)",
+        str(details or ""),
+    ):
+        key = str(match.group("key") or "").strip().lower()
+        if key in normalized_names:
+            return str(match.group("value") or "").strip()
+    return ""
+
+
+def security_audit_redacted_details(details: Any) -> str:
+    """Keep detail context useful for SIEM while removing obvious secrets."""
+
+    text = sanitize_log_value(details, max_length=512)
+    if not text:
+        return ""
+    sensitive_key_pattern = (
+        r"(?i)\b(token|secret|password|passwd|authorization|api[_-]?key|"
+        r"client[_-]?secret|state|nonce|code|session[_-]?token)=([^ ]+)"
+    )
+    text = re.sub(
+        sensitive_key_pattern,
+        lambda match: f"{match.group(1)}=<redacted>",
+        text,
+    )
+    return re.sub(
+        r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+",
+        "Bearer <redacted>",
+        text,
+    )
+
+
+def safe_epoch_seconds(value: Any) -> float | None:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def security_audit_event_to_payload(record: Any) -> dict[str, Any]:
+    return {
+        "timestamp": record.timestamp,
+        "request_id": record.request_id,
+        "action": record.action,
+        "result": record.result,
+        "ip": record.ip,
+        "is_local": record.is_local,
+        "auth_mode": record.auth_mode,
+        "auth_source": record.auth_source,
+        "user_id": record.user_id,
+        "user_role": record.user_role,
+        "details": record.details,
+        "tenant_id": getattr(record, "tenant_id", "") or "",
+        "org_id": getattr(record, "org_id", "") or "",
+        "legal_hold": bool(getattr(record, "legal_hold", False)),
+    }
+
+
+def security_audit_event_org(event: Mapping[str, Any]) -> str:
+    return str(event.get("org_id") or "").strip()
+
+
+def security_audit_event_tenant(event: Mapping[str, Any]) -> str:
+    tenant = str(event.get("tenant_id") or "").strip()
+    return tenant or security_audit_event_org(event)
+
+
+def security_audit_siem_event_payload(event: Mapping[str, Any]) -> dict[str, Any]:
+    action = sanitize_log_value(event.get("action"), max_length=128)
+    result = sanitize_log_value(event.get("result"), max_length=32)
+    org_id = security_audit_event_org(event) or security_audit_detail_value(
+        event.get("details"), "org_id", "org", "organization_id"
+    )
+    tenant_id = security_audit_event_tenant(event) or security_audit_detail_value(
+        event.get("details"), "tenant_id", "tenant"
+    )
+    if not tenant_id and org_id:
+        tenant_id = org_id
+    return {
+        "time": float(safe_epoch_seconds(event.get("timestamp")) or 0.0),
+        "request_id": sanitize_log_value(event.get("request_id"), max_length=128),
+        "action": action,
+        "result": result,
+        "category": security_audit_category_for_action(action),
+        "user_id": sanitize_log_value(event.get("user_id"), max_length=128),
+        "user_role": sanitize_log_value(event.get("user_role"), max_length=64),
+        "tenant": sanitize_log_value(tenant_id, max_length=128),
+        "tenant_id": sanitize_log_value(tenant_id, max_length=128),
+        "org": sanitize_log_value(org_id, max_length=128),
+        "org_id": sanitize_log_value(org_id, max_length=128),
+        "ip": sanitize_log_value(event.get("ip"), max_length=64),
+        "auth_mode": sanitize_log_value(event.get("auth_mode"), max_length=32),
+        "auth_source": sanitize_log_value(event.get("auth_source"), max_length=64),
+        "legal_hold": bool(event.get("legal_hold")),
+        "details": security_audit_redacted_details(event.get("details")),
+    }
+
+
+def build_security_audit_siem_export_payload(
+    events: list[Mapping[str, Any]],
+    *,
+    format: str = "json",
+    limit: int = 100,
+    filters: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_format = str(format or "json").strip().lower()
+    if normalized_format not in {"json", "ndjson"}:
+        normalized_format = "json"
+    exported_events = [security_audit_siem_event_payload(event) for event in events]
+    content = ""
+    if normalized_format == "ndjson":
+        content = "\n".join(
+            json.dumps(event, ensure_ascii=False, sort_keys=True)
+            for event in exported_events
+        )
+    return {
+        "format": normalized_format,
+        "content_type": (
+            "application/x-ndjson"
+            if normalized_format == "ndjson"
+            else "application/json"
+        ),
+        "events": exported_events if normalized_format == "json" else [],
+        "content": content,
+        "total": len(exported_events),
+        "limit": limit,
+        "filters": dict(filters or {}),
+    }
+
+
+def build_security_audit_archive_policy_payload(
+    events: list[Mapping[str, Any]],
+    *,
+    mode: str = "preview",
+    retention_days: int = 365,
+    current_time: float,
+    limit: int = 100,
+    history_limit: int = 0,
+    legal_hold: bool = False,
+) -> dict[str, Any]:
+    """Build the archive preview/export envelope from preloaded audit events."""
+
+    normalized_mode = str(mode or "preview").strip().lower()
+    if normalized_mode not in {"preview", "export"}:
+        normalized_mode = "preview"
+    normalized_retention_days = max(0, int(retention_days or 0))
+    normalized_history_limit = max(1, int(history_limit or 0))
+    normalized_limit = max(1, min(int(limit or 100), normalized_history_limit))
+    cutoff_timestamp = (
+        float(current_time) - float(normalized_retention_days * 86400)
+        if normalized_retention_days > 0
+        else None
+    )
+    normalized_events = [dict(event) for event in events]
+    legal_hold_count = sum(
+        1 for event in normalized_events if bool(event.get("legal_hold"))
+    )
+    candidates = [
+        event
+        for event in normalized_events
+        if not bool(event.get("legal_hold"))
+        and (
+            cutoff_timestamp is None
+            or float(safe_epoch_seconds(event.get("timestamp")) or 0.0)
+            <= cutoff_timestamp
+        )
+    ]
+    legal_hold_preserved_count = sum(
+        1
+        for event in normalized_events
+        if bool(event.get("legal_hold"))
+        and (
+            cutoff_timestamp is None
+            or float(safe_epoch_seconds(event.get("timestamp")) or 0.0)
+            <= cutoff_timestamp
+        )
+    )
+    export_events = (
+        [
+            security_audit_siem_event_payload(event)
+            for event in candidates[:normalized_limit]
+        ]
+        if normalized_mode == "export"
+        else []
+    )
+    return {
+        "mode": normalized_mode,
+        "retention_days": normalized_retention_days,
+        "cutoff_timestamp": cutoff_timestamp,
+        "history_limit": normalized_history_limit,
+        "total": len(normalized_events),
+        "archive_candidate_count": len(candidates),
+        "export_count": len(export_events),
+        "legal_hold_count": int(legal_hold_count),
+        "legal_hold_preserved_count": int(legal_hold_preserved_count),
+        "cleanup_behavior": {
+            "manual_cleanup_endpoint": "/api/security/audit-events/cleanup",
+            "cleanup_preserves_legal_hold": True,
+            "existing_cleanup_contract": "keep_latest and dry_run parameters are unchanged",
+            "legal_hold_requested": bool(legal_hold),
+        },
+        "events": export_events,
+    }
+
+
+SECURITY_AUDIT_AGGREGATE_GROUP_BY = (
+    "tenant",
+    "org",
+    "user_id",
+    "category",
+    "action",
+    "result",
+)
+
+
+def _increment_nested_count(
+    totals: dict[str, dict[str, int]], dimension: str, value: Any, count: int = 1
+) -> None:
+    bucket = totals.setdefault(dimension, {})
+    key = str(value or "unknown").strip() or "unknown"
+    bucket[key] = bucket.get(key, 0) + int(count)
+
+
+def build_security_audit_aggregate_report_payload(
+    events: list[Mapping[str, Any]],
+    *,
+    limit: int = 0,
+    filters: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    groups: dict[tuple[str, str, str, str, str, str], int] = {}
+    totals: dict[str, dict[str, int]] = {}
+    for event in events:
+        siem_event = security_audit_siem_event_payload(event)
+        key = (
+            str(siem_event["tenant"] or "unknown"),
+            str(siem_event["org"] or "unknown"),
+            str(siem_event["user_id"] or "unknown"),
+            str(siem_event["category"] or "uncategorized"),
+            str(siem_event["action"] or "unknown"),
+            str(siem_event["result"] or "unknown"),
+        )
+        groups[key] = groups.get(key, 0) + 1
+    rows = [
+        {
+            "tenant": tenant,
+            "org": org,
+            "user_id": grouped_user_id,
+            "category": grouped_category,
+            "action": grouped_action,
+            "result": grouped_result,
+            "count": count,
+        }
+        for (
+            tenant,
+            org,
+            grouped_user_id,
+            grouped_category,
+            grouped_action,
+            grouped_result,
+        ), count in sorted(groups.items())
+    ]
+    for row in rows:
+        for dimension in SECURITY_AUDIT_AGGREGATE_GROUP_BY:
+            _increment_nested_count(totals, dimension, row[dimension], row["count"])
+    return {
+        "total": len(events),
+        "window_limit": int(limit or 0),
+        "group_by": list(SECURITY_AUDIT_AGGREGATE_GROUP_BY),
+        "rows": rows,
+        "totals": {key: dict(sorted(value.items())) for key, value in totals.items()},
+        "filters": dict(filters or {}),
+    }
+
+
+def filter_security_audit_events(
+    events: list[Mapping[str, Any]],
+    *,
+    action: str = "",
+    result: str = "",
+    category: str = "",
+    user_id: str = "",
+    since: float | None = None,
+    until: float | None = None,
+) -> list[dict[str, Any]]:
+    normalized_action = str(action or "").strip().lower()
+    normalized_result = str(result or "").strip().lower()
+    normalized_category = str(category or "").strip().lower()
+    normalized_user_id = str(user_id or "").strip()
+
+    filtered: list[dict[str, Any]] = []
+    for item in events:
+        item_action = str(item.get("action") or "").strip()
+        if normalized_action and item_action.lower() != normalized_action:
+            continue
+        item_result = str(item.get("result") or "").strip().lower()
+        if normalized_result and item_result != normalized_result:
+            continue
+        if normalized_category:
+            event_category = security_audit_category_for_action(item_action)
+            if event_category != normalized_category:
+                continue
+        item_user_id = str(item.get("user_id") or "").strip()
+        if normalized_user_id and item_user_id != normalized_user_id:
+            continue
+        timestamp = safe_epoch_seconds(item.get("timestamp")) or 0.0
+        if since is not None and timestamp < since:
+            continue
+        if until is not None and timestamp > until:
+            continue
+        filtered.append(dict(item))
+    return filtered
 
 
 def build_sso_login_payload(
@@ -678,10 +1218,38 @@ def build_auth_token_catalog_payload(
 
 
 __all__ = [
+    "AUTH_ROLE_RANKS",
+    "hash_secret",
+    "token_fingerprint",
+    "token_preview",
+    "auth_token_preview",
+    "normalize_auth_role",
+    "role_rank",
+    "sanitize_log_value",
+    "sanitize_request_path",
+    "auth_token_is_weak",
+    "ceil_seconds",
+    "content_hash",
+    "safe_epoch_seconds",
     "auth_capabilities_for_role",
     "build_auth_whoami_payload",
     "build_security_status_payload",
     "build_sso_config_payload",
+    "normalize_sso_config_update",
+    "sso_callback_url_for_mode",
+    "pkce_code_challenge",
+    "sso_session_token_hash",
+    "share_link_audit_payload",
+    "security_audit_detail_value",
+    "security_audit_event_org",
+    "security_audit_event_tenant",
+    "security_audit_event_to_payload",
+    "security_audit_redacted_details",
+    "security_audit_siem_event_payload",
+    "build_security_audit_siem_export_payload",
+    "build_security_audit_archive_policy_payload",
+    "build_security_audit_aggregate_report_payload",
+    "filter_security_audit_events",
     "build_sso_login_payload",
     "build_role_permission_matrix_payload",
     "build_security_audit_action_catalog_payload",

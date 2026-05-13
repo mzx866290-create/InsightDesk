@@ -90,6 +90,7 @@ def build_parallel_agent_streams(
             raw_user_message=request.message,
             raw_images=runtime.raw_images,
             raw_files=runtime.prepared_files,
+            omit_history=bool(getattr(request, "omit_history", False)),
             auto_summary_trigger=mc.panel_id == primary_panel_id,
         )
         for mc in normalized_models
@@ -123,6 +124,7 @@ def build_single_agent_stream(
         raw_user_message=request.message,
         raw_images=runtime.raw_images,
         raw_files=runtime.prepared_files,
+        omit_history=bool(getattr(request, "omit_history", False)),
         auto_summary_trigger=request.persist_ai_history,
     )
 

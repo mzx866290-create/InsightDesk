@@ -1,0 +1,15 @@
+{
+  "enabled": false,
+  "name": "market_research",
+  "version": "0.1.0",
+  "description": "Example static Agent plugin for market and competitor research workflows.",
+  "capabilities": ["market_research", "competitive_scan"],
+  "output_prefix": "Market research plugin completed",
+  "risk_level": "medium",
+  "requires_approval": false,
+  "metadata": {
+    "category": "research",
+    "owner": "example",
+    "homepage": "https://example.com/agent-plugins/market-research"
+  }
+}

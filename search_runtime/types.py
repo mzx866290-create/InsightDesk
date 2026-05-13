@@ -178,6 +178,10 @@ class ResearchSource:
     freshness_band: str = "unknown"
     selection_reason: str = ""
     provider_caveat: str = ""
+    heat_score: float = 0.0
+    heat_level: Literal["hot", "warm", "cold"] = "cold"
+    adoption_role: Literal["evidence", "context", "rejected"] = "context"
+    quality_flags: list[str] = field(default_factory=list)
 
     def to_payload(self, index: int) -> dict[str, object]:
         payload = self.doc.to_source_item(index)
@@ -190,6 +194,10 @@ class ResearchSource:
                 "freshness_band": self.freshness_band,
                 "selection_reason": self.selection_reason,
                 "provider_caveat": self.provider_caveat,
+                "heat_score": round(self.heat_score, 4),
+                "heat_level": self.heat_level,
+                "adoption_role": self.adoption_role,
+                "quality_flags": list(self.quality_flags),
             }
         )
         return payload

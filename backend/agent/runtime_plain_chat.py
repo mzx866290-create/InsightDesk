@@ -17,6 +17,25 @@ from backend.agent.llm import (
 from backend.agent.runtime_intent import _normalized_intent_text
 
 
+_WEB_SEARCH_INTENT_KEYWORDS = (
+    "最新",
+    "今天",
+    "新闻",
+    "联网",
+    "网上",
+    "实时",
+    "天气",
+    "预报",
+    "气温",
+    "温度",
+    "降雨",
+    "下雨",
+    "空气质量",
+    "aqi",
+    "台风",
+)
+
+
 def _looks_like_resume_request(user_input: Any) -> bool:
     text = _stringify_user_input(user_input)
     return any(keyword in text for keyword in ("简历", "履历", "CV", "求职"))
@@ -59,7 +78,7 @@ def _heuristic_langgraph_tool_choice(
         ):
             return "1"
 
-    if web_search_enabled and any(keyword in text for keyword in ("最新", "今天", "新闻", "联网", "网上")):
+    if web_search_enabled and any(keyword in text for keyword in _WEB_SEARCH_INTENT_KEYWORDS):
         return "2"
 
     return ""

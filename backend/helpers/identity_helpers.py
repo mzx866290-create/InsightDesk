@@ -134,7 +134,35 @@ def sync_external_identity(
     }
 
 
+def sync_external_identity_payload(
+    body: Any,
+    *,
+    identity_store: Any,
+    effective_config_value: Callable[[str], str],
+    now: Callable[[], float],
+) -> dict[str, Any]:
+    allowed_domains = getattr(body, "allowed_domains", None) or [
+        item.strip()
+        for item in str(effective_config_value("allowed_domains") or "").split(",")
+        if item.strip()
+    ]
+    return sync_external_identity(
+        identity_store=identity_store,
+        claims=getattr(body, "claims", {}),
+        provider=getattr(body, "provider", None)
+        or effective_config_value("provider")
+        or "oidc",
+        allowed_domains=allowed_domains,
+        default_org_id=getattr(body, "default_org_id", ""),
+        default_role=getattr(body, "default_role", "viewer"),
+        group_org_map=getattr(body, "group_org_map", None),
+        group_role_map=dict(getattr(body, "group_role_map", {}) or {}),
+        now=now,
+    )
+
+
 __all__ = [
     "map_external_identity_claims",
     "sync_external_identity",
+    "sync_external_identity_payload",
 ]

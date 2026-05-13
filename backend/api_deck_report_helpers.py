@@ -2,6 +2,7 @@
 
 from backend.helpers.deck_report_helpers import (
     DeckExportGateError,
+    apply_deck_template_metadata,
     attach_deck_delivery_audit,
     apply_deck_update,
     build_deck_delivery_response,
@@ -21,6 +22,7 @@ from backend.helpers.deck_report_helpers import (
 
 __all__ = [
     "DeckExportGateError",
+    "apply_deck_template_metadata",
     "attach_deck_delivery_audit",
     "apply_deck_update",
     "build_deck_delivery_response",

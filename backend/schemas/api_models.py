@@ -2,7 +2,7 @@
 
 from typing import Any, Literal, Optional
 
-from agent_mcp_helpers import default_mcp_server_names
+from backend.agent_mcp_helpers import default_mcp_server_names
 from backend.deck_service import DeckSlide
 from pydantic import BaseModel, Field
 
@@ -17,6 +17,205 @@ class ModelConfig(BaseModel):
     api_key_ref: str = ""
     temperature: float = 0.3
     agent_mode: str = "auto"
+
+
+class ProviderCatalogItem(BaseModel):
+    id: str
+    connection_type: str
+    aliases: list[str] = Field(default_factory=list)
+    capabilities: list[str] = Field(default_factory=list)
+    default_base_url: str = ""
+    default_model: str = ""
+    base_url_env_keys: list[str] = Field(default_factory=list)
+    model_env_keys: list[str] = Field(default_factory=list)
+
+
+class ProviderCatalogResponse(BaseModel):
+    providers: list[ProviderCatalogItem]
+    default_provider: str = "ollama"
+    total: int = 0
+
+
+class AgentCatalogItem(BaseModel):
+    name: str
+    description: str = ""
+    capabilities: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentCatalogSummary(BaseModel):
+    total: int = 0
+    builtin: int = 0
+    plugin: int = 0
+
+
+class AgentPluginManifestIssue(BaseModel):
+    file: str = ""
+    code: str = ""
+    message: str = ""
+
+
+class AgentPluginManifestStatus(BaseModel):
+    enabled: bool = True
+    directory_count: int = 0
+    scanned_count: int = 0
+    loaded_count: int = 0
+    issue_count: int = 0
+    issues: list[AgentPluginManifestIssue] = Field(default_factory=list)
+
+
+class AgentPluginMarketplaceTemplate(BaseModel):
+    name: str
+    description: str = ""
+    capabilities: list[str] = Field(default_factory=list)
+    category: str = ""
+    risk_level: str = "medium"
+    requires_approval: bool = False
+    approval_reason: str = ""
+    source: str = "builtin"
+    installed: bool = False
+    template: bool = True
+    manifest: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentPluginMarketplaceSummary(BaseModel):
+    total: int = 0
+    installed: int = 0
+    available: int = 0
+    categories: int = 0
+    issue_count: int = 0
+
+
+class AgentPluginMarketplaceResponse(BaseModel):
+    templates: list[AgentPluginMarketplaceTemplate] = Field(default_factory=list)
+    summary: AgentPluginMarketplaceSummary = Field(
+        default_factory=AgentPluginMarketplaceSummary
+    )
+    issues: list[AgentPluginManifestIssue] = Field(default_factory=list)
+
+
+class InstalledAgentPluginSummary(BaseModel):
+    name: str = ""
+    agent: Optional[AgentCatalogItem] = None
+    manifest_path: str = ""
+    executed_entrypoint: bool = False
+
+
+class UninstalledAgentPluginSummary(BaseModel):
+    name: str = ""
+    manifest_path: str = ""
+    deleted_manifest: bool = False
+    existed: bool = False
+
+
+class AgentCatalogResponse(BaseModel):
+    agents: list[AgentCatalogItem] = Field(default_factory=list)
+    summary: AgentCatalogSummary = Field(default_factory=AgentCatalogSummary)
+    plugin_manifests: AgentPluginManifestStatus = Field(
+        default_factory=AgentPluginManifestStatus
+    )
+    marketplace: AgentPluginMarketplaceResponse = Field(
+        default_factory=AgentPluginMarketplaceResponse
+    )
+    installed: Optional[InstalledAgentPluginSummary] = None
+    uninstalled: Optional[UninstalledAgentPluginSummary] = None
+
+
+class DeliveryTemplateItem(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    artifact_type: Literal["report", "deck"]
+    category: str = ""
+    tags: list[str] = Field(default_factory=list)
+    target_format: str = ""
+    preview: str = ""
+    suggested_options: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DeliveryTemplateSummary(BaseModel):
+    total: int = 0
+    builtin: int = 0
+    manifest: int = 0
+    report: int = 0
+    deck: int = 0
+
+
+class DeliveryTemplateManifestIssue(BaseModel):
+    file: str = ""
+    code: str = ""
+    message: str = ""
+
+
+class DeliveryTemplateManifestStatus(BaseModel):
+    enabled: bool = True
+    directory_count: int = 0
+    scanned_count: int = 0
+    loaded_count: int = 0
+    issue_count: int = 0
+    issues: list[DeliveryTemplateManifestIssue] = Field(default_factory=list)
+
+
+class InstalledDeliveryTemplateSummary(BaseModel):
+    id: str = ""
+    template: Optional[DeliveryTemplateItem] = None
+    manifest_path: str = ""
+    executed_template_code: bool = False
+
+
+class UninstalledDeliveryTemplateSummary(BaseModel):
+    id: str = ""
+    manifest_path: str = ""
+    deleted_manifest: bool = False
+    existed: bool = False
+
+
+class DeliveryTemplateCatalogResponse(BaseModel):
+    templates: list[DeliveryTemplateItem] = Field(default_factory=list)
+    summary: DeliveryTemplateSummary = Field(default_factory=DeliveryTemplateSummary)
+    manifests: DeliveryTemplateManifestStatus = Field(
+        default_factory=DeliveryTemplateManifestStatus
+    )
+    installed: Optional[InstalledDeliveryTemplateSummary] = None
+    uninstalled: Optional[UninstalledDeliveryTemplateSummary] = None
+
+
+class AssistantPresetToolConfig(BaseModel):
+    web_search_enabled: bool = False
+    knowledge_base_enabled: bool = True
+    mcp_servers_enabled: list[str] = Field(default_factory=list)
+
+
+class AssistantPresetRequest(BaseModel):
+    name: str
+    avatar: str = ""
+    system_prompt_id: str = ""
+    default_model_config: ModelConfig = Field(default_factory=ModelConfig)
+    tool_config: AssistantPresetToolConfig = Field(
+        default_factory=AssistantPresetToolConfig
+    )
+    starters: list[str] = Field(default_factory=list)
+
+
+class AssistantPresetResponse(BaseModel):
+    id: str
+    name: str
+    avatar: str = ""
+    system_prompt_id: str = ""
+    default_model_config: ModelConfig = Field(default_factory=ModelConfig)
+    tool_config: AssistantPresetToolConfig = Field(
+        default_factory=AssistantPresetToolConfig
+    )
+    starters: list[str] = Field(default_factory=list)
+    is_default: bool = False
+    is_active: bool = False
+    created_at: float = 0
+    updated_at: float = 0
+
+
+class AssistantPresetListResponse(BaseModel):
+    presets: list[AssistantPresetResponse]
 
 
 class ImageInput(BaseModel):
@@ -43,6 +242,7 @@ class ChatRequest(BaseModel):
     knowledge_base_enabled: bool = True
     enabled_mcp_servers: list[str] = Field(default_factory=list)
     answer_group_id: Optional[str] = None
+    omit_history: bool = False
 
 
 class SingleChatRequest(BaseModel):
@@ -59,6 +259,7 @@ class SingleChatRequest(BaseModel):
     persist_ai_history: bool = True
     replace_ai_history: bool = False
     exclude_ai_answer_group_id: Optional[str] = None
+    omit_history: bool = False
 
 
 class CreateSessionRequest(BaseModel):
@@ -138,12 +339,23 @@ class SecurityStatusResponse(BaseModel):
     weak_auth_token_count: int
     legacy_auth_token_count: int
     share_link_secret_healthy: bool
+    share_link_secret_uses_default: bool
+    share_link_secret_min_length: int
     remote_share_ready: bool
     remote_management_rate_limit_enabled: bool
     remote_management_rate_limit_window_seconds: int
     remote_management_rate_limit_window_seconds_source: str
     remote_management_rate_limit_max_requests: int
     remote_management_rate_limit_max_requests_source: str
+    remote_management_rate_limit_scope: str
+    remote_management_rate_limit_storage: str
+    remote_management_rate_limit_path_prefixes: list[str]
+    remote_management_rate_limit_response_headers: list[str]
+    remote_management_rate_limit_tracked_principal_count: int
+    remote_management_rate_limit_active_request_count: int
+    remote_management_rate_limit_blocked_count: int
+    remote_management_rate_limit_last_blocked_at: float | None = None
+    remote_management_rate_limit_next_reset_after_seconds: int
     share_link_ttl_seconds: int
     share_link_ttl_hours: float
     cors_allow_credentials: bool
@@ -466,6 +678,7 @@ class ImportSessionMessageRequest(BaseModel):
     panel_id: str = ""
     answer_group_id: str = ""
     workflow_nodes: list[dict[str, Any]] = Field(default_factory=list)
+    token_usage: dict[str, Any] = Field(default_factory=dict)
     task_id: str = ""
     task_type: str = ""
 
@@ -496,6 +709,8 @@ class GenerateReportRequest(BaseModel):
     session_id: str
     answer_group_id: Optional[str] = None
     panel_id: Optional[str] = None
+    template_id: str = ""
+    template_options: dict[str, Any] = Field(default_factory=dict)
 
 
 class CreateDeckRequest(BaseModel):
@@ -506,6 +721,8 @@ class CreateDeckRequest(BaseModel):
     theme: str = "default"
     answer_group_id: Optional[str] = None
     panel_id: Optional[str] = None
+    template_id: str = ""
+    template_options: dict[str, Any] = Field(default_factory=dict)
 
 
 class GenerateArtifactRequest(BaseModel):
@@ -517,6 +734,8 @@ class GenerateArtifactRequest(BaseModel):
     knowledge_base_enabled: bool = True
     target_slide_count: int = Field(default=8, ge=4, le=10)
     theme: str = "default"
+    template_id: str = ""
+    template_options: dict[str, Any] = Field(default_factory=dict)
 
 
 class UpdateArtifactRequest(BaseModel):

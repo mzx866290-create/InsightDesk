@@ -10,6 +10,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END, StateGraph
 
+from backend.core.tracing import trace_span
 from backend.agent.langgraph_helpers import (
     AgentState,
     _emit_stream_item,
@@ -52,12 +53,12 @@ async def build_langgraph_agent(
 ):
     """
     构建 LangGraph 轻量 Agent (适合小模型)
-    
+
     Args:
         llm: LLM 实例
         pipeline: DocPipeline 实例
         verbose: 是否显示详细日志
-    
+
     Returns:
         编译后的 LangGraph 实例
     """
@@ -65,6 +66,7 @@ async def build_langgraph_agent(
         pipeline,
         web_search_enabled=web_search_enabled,
         knowledge_base_enabled=knowledge_base_enabled,
+        trace_tool_execution=False,
     )
     tools_by_name = {tool.name: tool for tool in tools_list}
     tools_dict, tool_options, allowed_choices = _build_enabled_tool_directory(
@@ -75,7 +77,7 @@ async def build_langgraph_agent(
 
     async def classify_intent(
         state: AgentState,
-        config: RunnableConfig | None = None,
+        config: RunnableConfig = None,
     ) -> AgentState:
         """节点1: 分类用户意图，选择工具"""
         started_at = time.monotonic()
@@ -116,6 +118,8 @@ async def build_langgraph_agent(
             classify_prompt = (
                 f"{role_desc}\n"
                 "如果用户提到知识库、上传文档、附件、已有资料、简历内容，优先选择知识库工具，不要把它当成普通寒暄。\n"
+                "如果用户问题依赖公开互联网信息，例如本地地点、商家口碑、榜单攻略、旅行、商品服务或近期公开事实，且联网搜索已开启，优先选择联网搜索或快速问答工具。\n"
+                "如果问题只是闲聊、翻译、改写、写作、代码解释，且不依赖外部最新资料，选择 0。\n"
                 "请根据用户问题选择最合适的工具编号，只输出一个数字。\n\n"
                 f"{available_tools}\n\n"
                 f"{history_text}"
@@ -125,18 +129,18 @@ async def build_langgraph_agent(
 
             response = await _ainvoke_llm_with_timeout(llm, classify_prompt, timeout_seconds=20)
             choice = response.content.strip()
-            
+
             choice_char = ""
             for char in choice:
                 if char == "0" or char in allowed_choices:
                     choice_char = char
                     break
-            
+
             if not choice_char:
                 choice_char = "0"
-            
+
             logger.info("[LangGraph] tool_choice=%s", choice_char)
-            
+
             state["tool_choice"] = choice_char
             _emit_workflow_state(
                 config,
@@ -145,7 +149,7 @@ async def build_langgraph_agent(
                 duration_ms=int((time.monotonic() - started_at) * 1000),
             )
             return state
-            
+
         except Exception as exc:
             logger.exception("[LangGraph] 意图分类失败")
             state["tool_choice"] = "0"
@@ -157,10 +161,10 @@ async def build_langgraph_agent(
                 error=str(exc),
             )
             return state
-    
+
     async def execute_tool(
         state: AgentState,
-        config: RunnableConfig | None = None,
+        config: RunnableConfig = None,
     ) -> AgentState:
         """节点2: 执行选定的工具"""
         import json as _json
@@ -170,7 +174,7 @@ async def build_langgraph_agent(
         chat_history = state.get("chat_history", [])
 
         _emit_workflow_state(config, "execute_tool", "running")
-        
+
         if tool_choice not in tools_dict:
             state["tool_result"] = ""
             state["sources"] = []
@@ -182,18 +186,18 @@ async def build_langgraph_agent(
                 duration_ms=int((time.monotonic() - started_at) * 1000),
             )
             return state
-        
+
         tool_func = tools_dict[tool_choice]
-        
+
         try:
             logger.info("[LangGraph] tool_name=%s 开始执行", tool_func.name)
             t0 = time.monotonic()
-            
+
             # Query rewriting for web search tools (2=web_search, 3=quick_answer)
             actual_input = user_input
             if tool_choice in ("2", "3"):
                 actual_input = await _rewrite_search_query(llm, user_input, chat_history)
-            
+
             # Determine the correct parameter name for the tool
             if "question" in tool_func.args:
                 params = {"question": actual_input}
@@ -215,13 +219,30 @@ async def build_langgraph_agent(
                 tool_name=tool_func.name,
                 tool_params=params,
             )
-            
-            result = await tool_func.ainvoke(params)
-            
-            latency_ms = int((time.monotonic() - t0) * 1000)
 
-            # Extract __SOURCES__ marker if present
-            result, sources = _extract_sources_from_marked_result(result)
+            async with trace_span(
+                "tool.execute",
+                {
+                    "component": "agent.tool",
+                    "tool.name": tool_func.name,
+                    "tool.choice": tool_choice,
+                    "tool.param_keys": sorted(params.keys()),
+                },
+            ) as span:
+                result = await tool_func.ainvoke(params)
+
+                latency_ms = int((time.monotonic() - t0) * 1000)
+
+                # Extract __SOURCES__ marker if present
+                result, sources = _extract_sources_from_marked_result(result)
+                span.set_attributes(
+                    {
+                        "tool.status": "success",
+                        "tool.duration_ms": latency_ms,
+                        "tool.result_size": len(result),
+                        "tool.source_count": len(sources),
+                    }
+                )
 
             state["tool_result"] = result
             state["sources"] = sources
@@ -238,7 +259,7 @@ async def build_langgraph_agent(
                 tool_result_summary=_compact_tool_result_for_prompt(result, max_chars=220),
                 retrieval_meta=state.get("retrieval_meta") or None,
             )
-            
+
         except Exception as e:
             logger.exception("[LangGraph] tool_name=%s 执行失败", tool_func.name)
             state["tool_result"] = f"❌ 工具执行失败: {str(e)}"
@@ -252,12 +273,12 @@ async def build_langgraph_agent(
                 tool_name=tool_func.name,
                 error=str(e),
             )
-        
+
         return state
-    
+
     async def generate_answer(
         state: AgentState,
-        config: RunnableConfig | None = None,
+        config: RunnableConfig = None,
     ) -> AgentState:
         """节点3: 生成最终回答，并在引用文档时注入脚注标记"""
         started_at = time.monotonic()
@@ -267,7 +288,7 @@ async def build_langgraph_agent(
         prompt_tool_result = _compact_tool_result_for_prompt(tool_result, max_chars=1800)
         chat_history = state.get("chat_history", [])
         sources = state.get("sources", [])
-        
+
         history_text = ""
         if chat_history:
             recent_history = chat_history[-4:]
@@ -276,7 +297,7 @@ async def build_langgraph_agent(
                     history_text += f"用户: {msg.content}\n"
                 elif isinstance(msg, AIMessage):
                     history_text += f"助手: {msg.content}\n"
-        
+
         role_desc = system_prompt or "你是一个企业知识库助手"
         streaming_enabled = callable(_graph_configurable_value(config, "stream_item_sink", None))
         streamed_output_parts: list[str] = []
@@ -329,7 +350,7 @@ async def build_langgraph_agent(
 用户: {user_input}
 
 请用自然、友好的语言回答："""
-        
+
         try:
             if streaming_enabled:
                 stream_filter = _ThinkTagStreamFilter()
@@ -408,7 +429,7 @@ async def build_langgraph_agent(
                 "completed",
                 duration_ms=int((time.monotonic() - started_at) * 1000),
             )
-            
+
         except Exception as e:
             if _is_timeout_error(e):
                 logger.warning(
@@ -517,24 +538,24 @@ async def build_langgraph_agent(
                 duration_ms=int((time.monotonic() - started_at) * 1000),
                 error=str(e),
             )
-        
+
         return state
-    
+
     def should_use_tool(state: AgentState) -> Literal["execute_tool", "generate_answer"]:
         """条件边: 判断是否需要使用工具"""
         tool_choice = state.get("tool_choice", "0")
         if tool_choice in tools_dict:
             return "execute_tool"
         return "generate_answer"
-    
+
     workflow = StateGraph(AgentState)
-    
+
     workflow.add_node("classify_intent", classify_intent)
     workflow.add_node("execute_tool", execute_tool)
     workflow.add_node("generate_answer", generate_answer)
-    
+
     workflow.set_entry_point("classify_intent")
-    
+
     workflow.add_conditional_edges(
         "classify_intent",
         should_use_tool,
@@ -543,12 +564,12 @@ async def build_langgraph_agent(
             "generate_answer": "generate_answer",
         }
     )
-    
+
     workflow.add_edge("execute_tool", "generate_answer")
     workflow.add_edge("generate_answer", END)
-    
+
     app = workflow.compile()
-    
+
     logger.info("✓ LangGraph 轻量 Agent 已构建（最多 2 次 LLM 调用）")
-    
+
     return app

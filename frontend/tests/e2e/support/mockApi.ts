@@ -363,6 +363,18 @@ interface MockResearchArchive {
   updated_at: number
 }
 
+interface MockSystemPrompt {
+  id: string
+  name: string
+  content: string
+  is_default: boolean
+  is_active: boolean
+  created_at: number
+  updated_at: number
+  vector_store_id?: string
+  dashboard_template?: Record<string, unknown>
+}
+
 const now = 1_710_000_000
 const defaultWorkspace = {
   workspace_id: 'workspace-default',
@@ -375,7 +387,7 @@ const defaultWorkspace = {
   session_count: 0,
 }
 
-const defaultPrompt = {
+const defaultPrompt: MockSystemPrompt = {
   id: 'prompt-default',
   name: 'AI Assistant',
   content: 'You are a helpful assistant.',
@@ -1778,6 +1790,23 @@ async function fulfillJson(route: Route, payload: unknown, status = 200): Promis
   })
 }
 
+export async function mockSecurityAuditFailure(
+  page: Page,
+  target: 'summary' | 'events' | 'cleanup',
+  detail: string,
+  status = 500,
+): Promise<void> {
+  const routeMatchers = {
+    summary: '**/api/security/audit-summary**',
+    events: '**/api/security/audit-events**',
+    cleanup: '**/api/security/audit-events/cleanup**',
+  } satisfies Record<typeof target, string>
+
+  await page.route(routeMatchers[target], async (route) => {
+    await fulfillJson(route, { detail }, status)
+  })
+}
+
 async function fulfillSse(route: Route, body: string): Promise<void> {
   await route.fulfill({
     status: 200,
@@ -1799,9 +1828,11 @@ function asRecord(value: unknown): Record<string, unknown> {
 export async function installAppApiMocks(page: Page): Promise<void> {
   let sessionCounter = 1
   let taskCounter = 1
+  let promptCounter = 1
   let cloudModelApiKeyCounter = 1
   let tavilyApiKey = ''
   const sessions: MockSession[] = []
+  const prompts: MockSystemPrompt[] = [{ ...defaultPrompt }]
   const sessionMessages = new Map<string, MockMessagesPayload>()
   const tasks = new Map<string, MockTask>()
   let approvalPolicy: MockApprovalPolicy = {
@@ -1814,6 +1845,11 @@ export async function installAppApiMocks(page: Page): Promise<void> {
   const taskPollCounts = new Map<string, number>()
   const decks = new Map<string, MockDeck>([['deck-mock-1', createMockDeck()]])
   const cloudModelApiKeys = new Map<string, string>()
+  let documentStats = {
+    status: 'ready',
+    total_docs: 3,
+    store_path: 'mock://knowledge-base/faiss',
+  }
   const identityOrgs: MockIdentityOrg[] = []
   const identityUsers: MockIdentityUser[] = []
   const identityMemberships: MockIdentityMembership[] = []
@@ -1856,6 +1892,196 @@ export async function installAppApiMocks(page: Page): Promise<void> {
       display_name: 'name',
       groups: 'groups',
     },
+  }
+  const kbStore = {
+    storePath: 'memory://knowledge-base/default',
+    embeddingModel: 'text-embedding-3-large',
+    lastUpdated: now + 18,
+    chunks: [
+      {
+        chunk_id: 'kb-chunk-1',
+        position: 0,
+        source: 'ops-handbook.md',
+        content: 'Incident escalation starts with severity triage and paging the on-call incident commander.',
+        preview: 'Incident escalation starts with severity triage and paging the on-call incident commander.',
+        char_count: 92,
+        metadata: { path: 'docs/ops-handbook.md' },
+      },
+      {
+        chunk_id: 'kb-chunk-2',
+        position: 1,
+        source: 'incident-playbook.md',
+        content: 'Escalation policy requires the operations lead to notify security when an incident affects customer data.',
+        preview: 'Escalation policy requires the operations lead to notify security when an incident affects customer data.',
+        char_count: 106,
+        metadata: { path: 'docs/incident-playbook.md' },
+      },
+      {
+        chunk_id: 'kb-chunk-3',
+        position: 2,
+        source: 'customer-faq.md',
+        content: 'Customers can request support updates through the help desk and receive the latest incident status summary.',
+        preview: 'Customers can request support updates through the help desk and receive the latest incident status summary.',
+        char_count: 106,
+        metadata: { path: 'docs/customer-faq.md' },
+      },
+    ],
+  }
+
+  const normalizeKbPreview = (content: string) =>
+    content.length > 160 ? `${content.slice(0, 157)}...` : content
+
+  const touchKnowledgeBase = () => {
+    kbStore.lastUpdated += 1
+  }
+
+  const reindexKnowledgeBaseChunks = () => {
+    kbStore.chunks = kbStore.chunks.map((chunk, index) => ({
+      ...chunk,
+      position: index,
+      preview: normalizeKbPreview(chunk.content),
+      char_count: chunk.content.length,
+    }))
+    touchKnowledgeBase()
+  }
+
+  const buildKbDocuments = () => {
+    const counts = new Map<string, number>()
+    for (const chunk of kbStore.chunks) {
+      counts.set(chunk.source, (counts.get(chunk.source) ?? 0) + 1)
+    }
+    return [...counts.entries()]
+      .map(([name, chunks]) => ({ name, chunks }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }
+
+  const buildKbHealthPayload = () => {
+    const totalChars = kbStore.chunks.reduce((sum, chunk) => sum + chunk.char_count, 0)
+    return {
+      index_status: kbStore.chunks.length > 0 ? 'healthy' : 'empty',
+      total_chunks: kbStore.chunks.length,
+      store_path: kbStore.storePath,
+      store_size_mb: Number(Math.max(0.3, totalChars / 2048).toFixed(2)),
+      documents: buildKbDocuments(),
+      embedding_model: kbStore.embeddingModel,
+      last_updated: kbStore.lastUpdated,
+    }
+  }
+
+  const buildKbChunksPayload = (url: URL) => {
+    const query = url.searchParams.get('query')?.trim().toLowerCase() ?? ''
+    const source = url.searchParams.get('source')?.trim().toLowerCase() ?? ''
+    const offsetRaw = Number(url.searchParams.get('offset') ?? '0')
+    const limitRaw = Number(url.searchParams.get('limit') ?? '12')
+    const offset = Number.isFinite(offsetRaw) ? Math.max(0, Math.floor(offsetRaw)) : 0
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 12
+
+    const filtered = kbStore.chunks.filter((chunk) => {
+      const matchesQuery =
+        !query ||
+        [chunk.source, chunk.content, chunk.preview]
+          .join('\n')
+          .toLowerCase()
+          .includes(query)
+      const matchesSource = !source || chunk.source.toLowerCase().includes(source)
+      return matchesQuery && matchesSource
+    })
+
+    const items = filtered.slice(offset, offset + limit)
+
+    return {
+      items,
+      total: filtered.length,
+      offset,
+      limit,
+      has_more: offset + items.length < filtered.length,
+      store_path: kbStore.storePath,
+    }
+  }
+
+  const buildKbRetrievalPayload = (body: Record<string, unknown>) => {
+    const query = typeof body.query === 'string' ? body.query.trim() : ''
+    const requestedMode =
+      body.retrieval_mode === 'keyword' || body.retrieval_mode === 'hybrid'
+        ? body.retrieval_mode
+        : 'semantic'
+    const searchK =
+      typeof body.search_k === 'number' && Number.isFinite(body.search_k)
+        ? Math.max(1, Math.floor(body.search_k))
+        : 5
+    const fetchK =
+      typeof body.fetch_k === 'number' && Number.isFinite(body.fetch_k)
+        ? Math.max(searchK, Math.floor(body.fetch_k))
+        : Math.max(searchK, 10)
+    const useRerank = body.use_rerank === true
+    const searchMode =
+      requestedMode === 'hybrid'
+        ? useRerank
+          ? 'hybrid_rerank'
+          : 'hybrid'
+        : requestedMode === 'keyword'
+          ? 'keyword'
+          : useRerank
+            ? 'semantic_rerank'
+            : 'semantic'
+
+    const queryTerms = query
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .map((term) => term.trim())
+      .filter((term) => term.length > 0)
+
+    const rankedResults = kbStore.chunks
+      .map((chunk) => {
+        const haystack = [chunk.source, chunk.content, chunk.preview].join('\n').toLowerCase()
+        const matchedTerms = queryTerms.filter((term) => haystack.includes(term))
+        return {
+          chunk,
+          matchedTerms,
+          score: matchedTerms.length * 0.35 + (chunk.source.includes('incident') ? 0.22 : 0.11),
+        }
+      })
+      .filter((entry) => entry.matchedTerms.length > 0)
+      .sort((left, right) => right.score - left.score || left.chunk.position - right.chunk.position)
+
+    const fallbackResults = kbStore.chunks.slice(0, Math.min(2, kbStore.chunks.length)).map((chunk, index) => ({
+      chunk,
+      matchedTerms: queryTerms.slice(0, 2),
+      score: 0.4 - index * 0.05,
+    }))
+
+    const selected = (rankedResults.length > 0 ? rankedResults : fallbackResults).slice(0, 2)
+    const topResults = selected.map((entry, index) => ({
+      rank: index + 1,
+      source: entry.chunk.source,
+      snippet: entry.chunk.preview,
+      score: Number(entry.score.toFixed(3)),
+      channel: 'knowledge-base',
+      matched_terms: entry.matchedTerms,
+    }))
+
+    return {
+      results_count: topResults.length,
+      latency_ms: 42,
+      retrieval_mode: requestedMode,
+      search_mode: searchMode,
+      search_k: searchK,
+      top_k: topResults.length,
+      fetch_k: fetchK,
+      rewrite_query: query,
+      rewrite_applied: false,
+      query_terms: queryTerms,
+      coverage: {
+        unique_sources: new Set(topResults.map((item) => item.source)).size,
+        source_ratio: kbStore.chunks.length > 0 ? topResults.length / kbStore.chunks.length : 0,
+        matched_terms: queryTerms,
+        matched_term_count: queryTerms.length,
+      },
+      top_results: topResults,
+      semantic_candidates: requestedMode === 'keyword' ? [] : topResults,
+      keyword_candidates: requestedMode === 'semantic' ? [] : topResults,
+      fused_candidates: requestedMode === 'hybrid' ? topResults : [],
+    }
   }
 
   const buildMcpApprovalsPayload = (connector?: Record<string, unknown>) => {
@@ -2165,6 +2391,7 @@ export async function installAppApiMocks(page: Page): Promise<void> {
       const answerGroupId =
         typeof params.answer_group_id === 'string' ? params.answer_group_id : 'unknown-answer-group'
       const panelId = typeof params.panel_id === 'string' ? params.panel_id : 'panel-1'
+      const templateId = typeof params.template_id === 'string' ? params.template_id : ''
       const reportArtifactId = `artifact-report-${task.task_id}`
       const archive = researchArchives[0]
       return {
@@ -2184,6 +2411,7 @@ export async function installAppApiMocks(page: Page): Promise<void> {
             '## Key Findings',
             '- The async task flow completed successfully.',
             '- The report preview can be opened from the assistant message.',
+            ...(templateId ? [`- Template selected: ${templateId}.`] : []),
           ].join('\n'),
           claim_evidence_chains: archive?.claim_evidence_chains ?? [],
           paragraph_citations: archive?.paragraph_citations ?? [],
@@ -2242,6 +2470,87 @@ export async function installAppApiMocks(page: Page): Promise<void> {
     const url = new URL(request.url())
     const path = url.pathname
     const method = request.method()
+
+    if (method === 'GET' && path === '/api/agents/catalog') {
+      await fulfillJson(route, {
+        agents: [
+          {
+            name: 'research',
+            description: 'Research Agent for search, evidence collection, and deep research tasks.',
+            capabilities: ['research', 'deep_research', 'web_search'],
+            metadata: {},
+          },
+          {
+            name: 'support_triage',
+            description: 'Support triage plugin from a declarative manifest.',
+            capabilities: ['support_triage'],
+            metadata: {
+              plugin: true,
+              source: 'plugin_manifest',
+              runtime: 'static_manifest',
+              version: '1.0.0',
+            },
+          },
+        ],
+        summary: {
+          total: 2,
+          builtin: 1,
+          plugin: 1,
+        },
+        plugin_manifests: {
+          enabled: true,
+          directory_count: 1,
+        },
+      })
+      return
+    }
+
+    if (method === 'GET' && path === '/api/delivery-templates/catalog') {
+      await fulfillJson(route, {
+        templates: [
+          {
+            id: 'executive_report',
+            name: 'Executive Report',
+            description: 'Concise decision-ready report template.',
+            artifact_type: 'report',
+            category: 'business',
+            tags: ['executive', 'markdown'],
+            target_format: 'markdown',
+            preview: 'Summary → Findings → Actions',
+            suggested_options: { tone: 'executive', include_sources: true },
+            metadata: { source: 'builtin' },
+          },
+          {
+            id: 'board_deck',
+            name: 'Board Deck',
+            description: 'Evidence-ready Deck/PPT template.',
+            artifact_type: 'deck',
+            category: 'presentation',
+            tags: ['deck', 'pptx'],
+            target_format: 'pptx',
+            preview: 'Cover → Insights → Evidence appendix',
+            suggested_options: { target_slide_count: 8, theme: 'midnight' },
+            metadata: { source: 'builtin' },
+          },
+        ],
+        summary: {
+          total: 2,
+          builtin: 2,
+          manifest: 0,
+          report: 1,
+          deck: 1,
+        },
+        manifests: {
+          enabled: true,
+          directory_count: 1,
+          scanned_count: 1,
+          loaded_count: 0,
+          issue_count: 0,
+          issues: [],
+        },
+      })
+      return
+    }
 
     if (method === 'GET' && path === '/api/integrations/connectors') {
       await fulfillJson(route, buildIntegratorConnectorsPayload(integratorConnectors))
@@ -2483,8 +2792,78 @@ export async function installAppApiMocks(page: Page): Promise<void> {
       return
     }
 
+    if (method === 'GET' && path === '/api/knowledge-base/health') {
+      await fulfillJson(route, buildKbHealthPayload())
+      return
+    }
+
+    if (method === 'GET' && path === '/api/knowledge-base/chunks') {
+      await fulfillJson(route, buildKbChunksPayload(url))
+      return
+    }
+
+    if (method === 'POST' && path === '/api/knowledge-base/test-retrieval') {
+      await fulfillJson(route, buildKbRetrievalPayload(asRecord(request.postDataJSON() ?? {})))
+      return
+    }
+
+    const kbChunkMatch = path.match(/^\/api\/knowledge-base\/chunks\/([^/]+)$/)
+    if (kbChunkMatch) {
+      const chunkId = decodeURIComponent(kbChunkMatch[1])
+      const chunkIndex = kbStore.chunks.findIndex((chunk) => chunk.chunk_id === chunkId)
+      if (chunkIndex < 0) {
+        await fulfillJson(route, { detail: `Unknown knowledge base chunk: ${chunkId}` }, 404)
+        return
+      }
+
+      if (method === 'PATCH') {
+        const body = asRecord(request.postDataJSON() ?? {})
+        const nextContent = typeof body.content === 'string' ? body.content : kbStore.chunks[chunkIndex].content
+        const nextSource = typeof body.source === 'string' ? body.source : kbStore.chunks[chunkIndex].source
+        kbStore.chunks[chunkIndex] = {
+          ...kbStore.chunks[chunkIndex],
+          content: nextContent,
+          source: nextSource,
+          preview: normalizeKbPreview(nextContent),
+          char_count: nextContent.length,
+        }
+        touchKnowledgeBase()
+        await fulfillJson(route, { ok: true, chunk_id: chunkId, reindexed: false })
+        return
+      }
+
+      if (method === 'DELETE') {
+        kbStore.chunks = kbStore.chunks.filter((chunk) => chunk.chunk_id !== chunkId)
+        reindexKnowledgeBaseChunks()
+        await fulfillJson(route, { ok: true, chunk_id: chunkId })
+        return
+      }
+    }
+
+    if (method === 'DELETE' && path === '/api/knowledge-base') {
+      kbStore.chunks = []
+      touchKnowledgeBase()
+      await fulfillJson(route, { ok: true, deleted: true, store_path: kbStore.storePath })
+      return
+    }
+
+    if (method === 'DELETE' && path === '/api/knowledge-base/by-path') {
+      kbStore.chunks = []
+      touchKnowledgeBase()
+      await fulfillJson(route, {
+        ok: true,
+        deleted: true,
+        store_path: url.searchParams.get('path') ?? kbStore.storePath,
+      })
+      return
+    }
+
     if (method === 'PUT' && path === '/api/connectors/mcp/config') {
       const body = asRecord(request.postDataJSON() ?? {})
+      if (body.fail_hot_update === true) {
+        await fulfillJson(route, { detail: 'mcp hot update failed' }, 500)
+        return
+      }
       const nextConfig = asRecord(body.config)
       mcpConfig = Object.keys(nextConfig).length > 0 ? nextConfig : body
       await fulfillJson(route, buildMcpConfigPayload())
@@ -2514,6 +2893,47 @@ export async function installAppApiMocks(page: Page): Promise<void> {
     }
 
     if (method === 'GET' && path === '/api/connectors/mcp/runtime-health') {
+      const runtimeMode = url.searchParams.get('mode')?.trim() ?? ''
+      if (runtimeMode === 'unhealthy') {
+        const servers = [
+          {
+            name: 'knowledge-base',
+            status: 'healthy',
+            healthy: true,
+            tool_count: 2,
+            tools: ['knowledge_lookup', 'knowledge_diagnostics'],
+            duration_ms: 24.5,
+            error: null,
+          },
+          {
+            name: 'custom-crm',
+            status: 'error',
+            healthy: false,
+            tool_count: 0,
+            tools: [],
+            duration_ms: 250.4,
+            error: 'Mock CRM handshake failed',
+          },
+        ]
+        await fulfillJson(route, {
+          status: 'degraded',
+          servers,
+          summary: {
+            total: 2,
+            healthy: 1,
+            unhealthy: 1,
+            tool_count: 2,
+            status_counts: { healthy: 1, error: 1 },
+            alert_count: 1,
+            unhealthy_connectors: ['custom-crm'],
+            slow_connectors: [],
+          },
+          history: buildMcpRuntimeHealthHistory(),
+          history_limit: 20,
+        })
+        return
+      }
+
       const servers = [
         {
           name: 'knowledge-base',
@@ -2726,7 +3146,119 @@ export async function installAppApiMocks(page: Page): Promise<void> {
     }
 
     if (method === 'GET' && path === '/api/prompts') {
-      await fulfillJson(route, { prompts: [defaultPrompt] })
+      await fulfillJson(route, { prompts })
+      return
+    }
+
+    if (method === 'POST' && path === '/api/prompts') {
+      const body = (request.postDataJSON() ?? {}) as {
+        name?: string
+        content?: string
+        vector_store_id?: string
+        dashboard_template?: Record<string, unknown>
+      }
+      const name = typeof body.name === 'string' ? body.name.trim() : ''
+      const content = typeof body.content === 'string' ? body.content.trim() : ''
+      if (!name || !content) {
+        await fulfillJson(route, { detail: 'Prompt name and content are required.' }, 400)
+        return
+      }
+
+      promptCounter += 1
+      const prompt = {
+        id: `prompt-custom-${promptCounter}`,
+        name,
+        content,
+        is_default: false,
+        is_active: false,
+        created_at: now + promptCounter,
+        updated_at: now + promptCounter,
+        vector_store_id:
+          typeof body.vector_store_id === 'string' && body.vector_store_id.trim()
+            ? body.vector_store_id.trim()
+            : undefined,
+        dashboard_template: asRecord(body.dashboard_template),
+      }
+      prompts.push(prompt)
+      await fulfillJson(route, prompt)
+      return
+    }
+
+    const promptActivateMatch = path.match(/^\/api\/prompts\/([^/]+)\/activate$/)
+    if (method === 'POST' && promptActivateMatch) {
+      const promptId = decodeURIComponent(promptActivateMatch[1])
+      const prompt = prompts.find((item) => item.id === promptId)
+      if (!prompt) {
+        await fulfillJson(route, { detail: `Unknown prompt: ${promptId}` }, 404)
+        return
+      }
+
+      for (const item of prompts) {
+        item.is_active = item.id === promptId
+      }
+      promptCounter += 1
+      prompt.updated_at = now + promptCounter
+      await fulfillJson(route, { ok: true, kb_status: 'loaded' })
+      return
+    }
+
+    const promptMatch = path.match(/^\/api\/prompts\/([^/]+)$/)
+    if (promptMatch) {
+      const promptId = decodeURIComponent(promptMatch[1])
+      const promptIndex = prompts.findIndex((item) => item.id === promptId)
+      if (promptIndex === -1) {
+        await fulfillJson(route, { detail: `Unknown prompt: ${promptId}` }, 404)
+        return
+      }
+
+      const prompt = prompts[promptIndex]
+      if (method === 'PUT') {
+        const body = (request.postDataJSON() ?? {}) as {
+          name?: string
+          content?: string
+          vector_store_id?: string
+          dashboard_template?: Record<string, unknown>
+        }
+        const name = typeof body.name === 'string' ? body.name.trim() : ''
+        const content = typeof body.content === 'string' ? body.content.trim() : ''
+        if (!name || !content) {
+          await fulfillJson(route, { detail: 'Prompt name and content are required.' }, 400)
+          return
+        }
+
+        promptCounter += 1
+        const updatedPrompt = {
+          ...prompt,
+          name,
+          content,
+          updated_at: now + promptCounter,
+          vector_store_id:
+            typeof body.vector_store_id === 'string' && body.vector_store_id.trim()
+              ? body.vector_store_id.trim()
+              : undefined,
+          dashboard_template: asRecord(body.dashboard_template),
+        }
+        prompts[promptIndex] = updatedPrompt
+        await fulfillJson(route, updatedPrompt)
+        return
+      }
+
+      if (method === 'DELETE') {
+        if (prompt.is_default) {
+          await fulfillJson(route, { detail: 'Default prompt cannot be deleted.' }, 400)
+          return
+        }
+        prompts.splice(promptIndex, 1)
+        if (prompt.is_active && prompts.length > 0) {
+          prompts[0].is_active = true
+        }
+        await fulfillJson(route, { ok: true })
+        return
+      }
+    }
+
+    if (path.startsWith('/api/prompts/')) {
+      await fulfillJson(route, { detail: `Unhandled mock route: ${method} ${path}` }, 404)
       return
     }
 
@@ -2754,6 +3286,88 @@ export async function installAppApiMocks(page: Page): Promise<void> {
         user_id: 'playwright-local',
         is_local: true,
       })
+      return
+    }
+
+    if (method === 'GET' && path === '/api/security/status') {
+      await fulfillJson(route, {
+        allow_remote_clients: true,
+        local_only_mode: false,
+        remote_auth_ready: true,
+        admin_token_configured: true,
+        remote_admin_ready: true,
+        auth_token_count: 1,
+        configured_roles: ['admin'],
+        auth_token_hygiene_healthy: true,
+        weak_auth_token_count: 0,
+        legacy_auth_token_count: 0,
+        share_link_secret_healthy: false,
+        share_link_secret_uses_default: true,
+        share_link_secret_min_length: 16,
+        remote_share_ready: false,
+        remote_management_rate_limit_enabled: true,
+        remote_management_rate_limit_window_seconds: 60,
+        remote_management_rate_limit_window_seconds_source: 'default',
+        remote_management_rate_limit_max_requests: 120,
+        remote_management_rate_limit_max_requests_source: 'default',
+        share_link_ttl_seconds: 604800,
+        share_link_ttl_hours: 168,
+        cors_allow_credentials: false,
+        cors_allowed_origins: [],
+        request_id_header: 'X-Request-ID',
+        process_time_header: 'X-Process-Time-Ms',
+        security_audit_storage: 'sqlite',
+        security_audit_history_limit: 1000,
+        security_audit_history_limit_source: 'default',
+        security_audit_persisted_count: auditEvents.length,
+        security_audit_memory_window_limit: 500,
+        chat_file_limits: {
+          max_count: 6,
+          max_bytes: 10485760,
+          max_chars_per_file: 8000,
+          max_total_chars: 24000,
+          preview_chars: 4000,
+        },
+        document_upload_limits: {
+          max_count: 12,
+          max_file_bytes: 52428800,
+          max_total_bytes: 209715200,
+        },
+      })
+      return
+    }
+
+    if (method === 'POST' && path === '/api/documents/upload') {
+      const taskId = `task-document-upload-${taskCounter}`
+      taskCounter += 1
+      const task: MockTask = {
+        task_id: taskId,
+        task_type: 'document_ingestion',
+        status: 'pending',
+        progress: 15,
+        result: 'Document upload accepted',
+        created_at: now + taskCounter,
+        updated_at: now + taskCounter,
+      }
+      tasks.set(taskId, task)
+      taskPollCounts.set(taskId, 0)
+      documentStats = {
+        status: 'ready',
+        total_docs: documentStats.total_docs + 1,
+        store_path: documentStats.store_path,
+      }
+      await fulfillJson(route, {
+        ok: true,
+        task_id: taskId,
+        task_type: task.task_type,
+        status: task.status,
+        message: 'Mock document upload accepted',
+      })
+      return
+    }
+
+    if (method === 'GET' && path === '/api/documents/stats') {
+      await fulfillJson(route, documentStats)
       return
     }
 

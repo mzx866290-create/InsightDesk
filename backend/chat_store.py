@@ -28,6 +28,7 @@ SQLITE_BUSY_TIMEOUT_MS = 5000
 _UNSET = object()
 DEFAULT_WORKSPACE_ID = "workspace-default"
 DEFAULT_WORKSPACE_NAME = "默认工作区"
+DEFAULT_ASSISTANT_PRESET_ID = "assistant-preset-default"
 WORKSPACE_COLOR_CHOICES = {"slate", "blue", "green", "amber", "rose"}
 WORKSPACE_DECK_THEME_CHOICES = {"default", "midnight", "sunrise"}
 
@@ -109,6 +110,7 @@ def _init_messages_table(conn: sqlite3.Connection) -> None:
             files_json TEXT DEFAULT '',
             sources_json TEXT DEFAULT '',
             workflow_json TEXT DEFAULT '',
+            token_usage_json TEXT DEFAULT '',
             task_id TEXT DEFAULT '',
             task_type TEXT DEFAULT '',
             feedback_value INTEGER DEFAULT 0
@@ -138,6 +140,9 @@ def _init_messages_table(conn: sqlite3.Connection) -> None:
     if "workflow_json" not in existing_cols:
         cursor.execute("ALTER TABLE messages ADD COLUMN workflow_json TEXT DEFAULT ''")
         logger.info("Migrated messages table: added 'workflow_json' column")
+    if "token_usage_json" not in existing_cols:
+        cursor.execute("ALTER TABLE messages ADD COLUMN token_usage_json TEXT DEFAULT ''")
+        logger.info("Migrated messages table: added 'token_usage_json' column")
     if "task_id" not in existing_cols:
         cursor.execute("ALTER TABLE messages ADD COLUMN task_id TEXT DEFAULT ''")
         logger.info("Migrated messages table: added 'task_id' column")
@@ -580,6 +585,59 @@ def _init_system_prompts_table(conn: sqlite3.Connection) -> None:
         logger.info("Seeded built-in default system prompt")
 
 
+def _init_assistant_presets_table(conn: sqlite3.Connection) -> None:
+    """Ensure assistant preset storage exists and includes one safe default."""
+    _init_system_prompts_table(conn)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS assistant_presets (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            avatar TEXT DEFAULT '',
+            system_prompt_id TEXT DEFAULT '',
+            default_model_config_json TEXT DEFAULT '{}',
+            tool_config_json TEXT DEFAULT '{}',
+            starters_json TEXT DEFAULT '[]',
+            is_default INTEGER DEFAULT 0,
+            is_active INTEGER DEFAULT 0,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_assistant_presets_active_updated
+        ON assistant_presets(is_active DESC, updated_at DESC)
+        """
+    )
+    cursor.execute("SELECT COUNT(1) FROM assistant_presets")
+    if cursor.fetchone()[0] == 0:
+        now = time.time()
+        cursor.execute(
+            """
+            INSERT INTO assistant_presets (
+                id, name, avatar, system_prompt_id, default_model_config_json,
+                tool_config_json, starters_json, is_default, is_active, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+            """,
+            (
+                DEFAULT_ASSISTANT_PRESET_ID,
+                "企业知识库助手",
+                "🤖",
+                "builtin-default",
+                json.dumps(_default_assistant_model_config(), ensure_ascii=False),
+                json.dumps(_normalize_assistant_tool_config(), ensure_ascii=False),
+                json.dumps(["总结这份材料", "检索知识库并给出出处"], ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+    conn.commit()
+
+
 def _normalize_content(content: Any) -> str:
     """Convert LangChain message content to plain text."""
     if isinstance(content, str):
@@ -637,6 +695,37 @@ def _parse_json_object(raw: Any) -> Dict[str, Any]:
     except (TypeError, ValueError, json.JSONDecodeError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _normalize_token_usage(value: Any = None) -> Dict[str, Any]:
+    payload = value if isinstance(value, dict) else _parse_json_object(value)
+
+    def as_int(key: str) -> int:
+        try:
+            return max(0, int(payload.get(key) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    prompt_tokens = as_int("prompt_tokens")
+    completion_tokens = as_int("completion_tokens")
+    total_tokens = as_int("total_tokens") or prompt_tokens + completion_tokens
+    normalized: Dict[str, Any] = {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "estimated": bool(payload.get("estimated", False)),
+    }
+    for key in (
+        "panel_id",
+        "model_id",
+        "estimation_method",
+        "call_count",
+        "real_count",
+        "estimated_count",
+    ):
+        if key in payload:
+            normalized[key] = payload[key]
+    return normalized if any((prompt_tokens, completion_tokens, total_tokens, payload)) else {}
 
 
 def _normalize_tags(tags: Optional[List[str]] = None) -> List[str]:
@@ -743,7 +832,7 @@ def _normalize_workspace_tool_config(value: Any = None) -> Dict[str, Any]:
             mcp_servers_enabled.append(server_name)
             seen_servers.add(server_name)
     else:
-        mcp_servers_enabled = ["knowledge-base", "web-search"]
+        mcp_servers_enabled = []
     return {
         "web_search_enabled": bool(payload.get("web_search_enabled", False)),
         "knowledge_base_enabled": bool(payload.get("knowledge_base_enabled", True)),
@@ -767,6 +856,62 @@ def _normalize_workspace_output_preset(value: Any = None) -> Dict[str, Any]:
         "deck_theme": deck_theme,
         "target_slide_count": target_slide_count,
     }
+
+
+def _default_assistant_model_config() -> Dict[str, Any]:
+    return {
+        "panel_id": "assistant-preset-panel",
+        "provider": "ollama",
+        "connection_type": "ollama",
+        "model": "qwen3.5-2B:latest",
+        "base_url": "http://localhost:11434",
+        "api_key": "",
+        "api_key_ref": "",
+        "temperature": 0.3,
+        "agent_mode": "auto",
+    }
+
+
+def _normalize_assistant_model_config(value: Any = None) -> Dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    normalized = _normalize_workspace_panel_configs(
+        [{**_default_assistant_model_config(), **payload}]
+    )
+    return normalized[0] if normalized else _default_assistant_model_config()
+
+
+def _normalize_assistant_tool_config(value: Any = None) -> Dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    raw_servers = payload.get("mcp_servers_enabled")
+    servers: List[str] = []
+    if isinstance(raw_servers, list):
+        seen_servers: set[str] = set()
+        for item in raw_servers:
+            server_name = str(item or "").strip()
+            if not server_name or server_name in seen_servers:
+                continue
+            servers.append(server_name)
+            seen_servers.add(server_name)
+    return {
+        "web_search_enabled": bool(payload.get("web_search_enabled", False)),
+        "knowledge_base_enabled": bool(payload.get("knowledge_base_enabled", True)),
+        "mcp_servers_enabled": servers,
+    }
+
+
+def _normalize_assistant_starters(value: Any = None) -> List[str]:
+    raw_items = value if isinstance(value, list) else []
+    starters: List[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        starter = " ".join(str(item or "").strip().split())
+        if not starter or starter in seen:
+            continue
+        starters.append(starter[:160])
+        seen.add(starter)
+        if len(starters) >= 8:
+            break
+    return starters
 
 
 def _normalize_message_feedback_value(value: Any = None) -> int:
@@ -1020,6 +1165,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
             _init_retrieval_feedback_table(conn)
             _init_bookmarks_table(conn)
             _init_system_prompts_table(conn)
+            _init_assistant_presets_table(conn)
 
     def _ensure_session_exists(self) -> None:
         """Ensure session record exists in sessions table."""
@@ -1088,6 +1234,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
                         files_json,
                         sources_json,
                         workflow_json,
+                        token_usage_json,
                         task_id,
                         task_type,
                         COALESCE(feedback_value, 0),
@@ -1122,6 +1269,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
                         files_json,
                         sources_json,
                         workflow_json,
+                        token_usage_json,
                         task_id,
                         task_type,
                         COALESCE(feedback_value, 0),
@@ -1165,6 +1313,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
             _,
             images_json,
             files_json,
+            _,
             _,
             _,
             _,
@@ -1243,10 +1392,11 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
                 "files": _normalize_files(_parse_json_list(row[7])),
                 "sources": _parse_json_list(row[8]),
                 "workflow_nodes": _parse_json_list(row[9]),
-                "task_id": row[10] or "",
-                "task_type": row[11] or "",
-                "feedback_value": _normalize_message_feedback_value(row[12]),
-                "timestamp": float(row[13] or 0),
+                "token_usage": _normalize_token_usage(row[10]),
+                "task_id": row[11] or "",
+                "task_type": row[12] or "",
+                "feedback_value": _normalize_message_feedback_value(row[13]),
+                "timestamp": float(row[14] or 0),
             }
             for row in rows
         ]
@@ -1263,6 +1413,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
         workflow_nodes: Optional[List[Dict[str, Any]]] = None,
         task_id: str = "",
         task_type: str = "",
+        token_usage: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         Add a message to the session history.
@@ -1289,6 +1440,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
             normalized_files = _normalize_files(files)
             normalized_sources = _normalize_metadata_list(sources)
             normalized_workflow = _normalize_metadata_list(workflow_nodes)
+            normalized_token_usage = _normalize_token_usage(token_usage)
             normalized_task_id = str(task_id or "")
             normalized_task_type = str(task_type or "")
 
@@ -1297,9 +1449,10 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
                 """
                 INSERT INTO messages (
                     session_id, type, content, timestamp, model_id, panel_id, answer_group_id,
-                    images_json, files_json, sources_json, workflow_json, task_id, task_type
+                    images_json, files_json, sources_json, workflow_json, token_usage_json,
+                    task_id, task_type
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self.session_id,
@@ -1313,6 +1466,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
                     json.dumps(normalized_files, ensure_ascii=False),
                     json.dumps(normalized_sources, ensure_ascii=False),
                     json.dumps(normalized_workflow, ensure_ascii=False),
+                    json.dumps(normalized_token_usage, ensure_ascii=False),
                     normalized_task_id,
                     normalized_task_type,
                 ),
@@ -1386,6 +1540,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
         workflow_nodes: Optional[List[Dict[str, Any]]] = None,
         task_id: str = "",
         task_type: str = "",
+        token_usage: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.add_message(
             AIMessage(content=message),
@@ -1398,6 +1553,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
             workflow_nodes=workflow_nodes,
             task_id=task_id,
             task_type=task_type,
+            token_usage=token_usage,
         )
 
     def add_user_message_once(
@@ -3751,7 +3907,7 @@ def promote_panel_answer(
 
         cursor.execute(
             """
-            SELECT id, content, model_id, sources_json, workflow_json, task_id, task_type
+            SELECT id, content, model_id, sources_json, workflow_json, token_usage_json, task_id, task_type
             FROM messages
             WHERE session_id = ?
               AND type = 'ai'
@@ -3770,8 +3926,9 @@ def promote_panel_answer(
         source_model_id = str(source_row[2] or "")
         source_sources_json = str(source_row[3] or "")
         source_workflow_json = str(source_row[4] or "")
-        source_task_id = str(source_row[5] or "")
-        source_task_type = str(source_row[6] or "")
+        source_token_usage_json = str(source_row[5] or "")
+        source_task_id = str(source_row[6] or "")
+        source_task_type = str(source_row[7] or "")
 
         cursor.execute(
             """
@@ -3791,7 +3948,7 @@ def promote_panel_answer(
             cursor.execute(
                 """
                 UPDATE messages
-                SET content = ?, model_id = ?, sources_json = ?, workflow_json = ?, task_id = ?, task_type = ?
+                SET content = ?, model_id = ?, sources_json = ?, workflow_json = ?, token_usage_json = ?, task_id = ?, task_type = ?
                 WHERE id = ?
                 """,
                 (
@@ -3799,6 +3956,7 @@ def promote_panel_answer(
                     source_model_id,
                     source_sources_json,
                     source_workflow_json,
+                    source_token_usage_json,
                     source_task_id,
                     source_task_type,
                     int(target_row[0]),
@@ -3809,9 +3967,9 @@ def promote_panel_answer(
                 """
                 INSERT INTO messages (
                     session_id, type, content, timestamp, model_id, panel_id, answer_group_id,
-                    sources_json, workflow_json, task_id, task_type
+                    sources_json, workflow_json, token_usage_json, task_id, task_type
                 )
-                VALUES (?, 'ai', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, 'ai', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     session_id,
@@ -3822,6 +3980,7 @@ def promote_panel_answer(
                     answer_group_id,
                     source_sources_json,
                     source_workflow_json,
+                    source_token_usage_json,
                     source_task_id,
                     source_task_type,
                 ),
@@ -3840,6 +3999,7 @@ def promote_panel_answer(
             "model_id": source_model_id,
             "sources": _parse_json_list(source_sources_json),
             "workflow_nodes": _parse_json_list(source_workflow_json),
+            "token_usage": _normalize_token_usage(source_token_usage_json),
             "task_id": source_task_id,
             "task_type": source_task_type,
         }
@@ -3971,6 +4131,211 @@ def activate_system_prompt(prompt_id: str, db_path: str = DB_PATH) -> bool:
         cursor.execute("UPDATE system_prompts SET is_active = 0")
         cursor.execute(
             "UPDATE system_prompts SET is_active = 1 WHERE id = ?", (prompt_id,)
+        )
+        conn.commit()
+        return True
+
+
+# ── Assistant Preset CRUD ───────────────────────────────────────────────────
+
+
+def _row_to_assistant_preset(row: tuple) -> Dict[str, Any]:
+    return {
+        "id": row[0],
+        "name": row[1],
+        "avatar": row[2] or "",
+        "system_prompt_id": row[3] or "",
+        "default_model_config": _normalize_assistant_model_config(
+            _parse_json_object(row[4])
+        ),
+        "tool_config": _normalize_assistant_tool_config(_parse_json_object(row[5])),
+        "starters": _normalize_assistant_starters(_parse_string_list(row[6])),
+        "is_default": bool(row[7]),
+        "is_active": bool(row[8]),
+        "created_at": row[9],
+        "updated_at": row[10],
+    }
+
+
+def _ensure_assistant_presets_init(db_path: str = DB_PATH) -> None:
+    with connect_sqlite(db_path) as conn:
+        _init_assistant_presets_table(conn)
+
+
+def get_all_assistant_presets(db_path: str = DB_PATH) -> List[Dict[str, Any]]:
+    _ensure_assistant_presets_init(db_path)
+    with connect_sqlite(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, name, avatar, system_prompt_id, default_model_config_json,
+                   tool_config_json, starters_json, is_default, is_active, created_at, updated_at
+            FROM assistant_presets
+            ORDER BY is_default DESC, created_at ASC
+            """
+        )
+        return [_row_to_assistant_preset(row) for row in cursor.fetchall()]
+
+
+def get_active_assistant_preset(db_path: str = DB_PATH) -> Optional[Dict[str, Any]]:
+    _ensure_assistant_presets_init(db_path)
+    with connect_sqlite(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, name, avatar, system_prompt_id, default_model_config_json,
+                   tool_config_json, starters_json, is_default, is_active, created_at, updated_at
+            FROM assistant_presets
+            WHERE is_active = 1
+            LIMIT 1
+            """
+        )
+        row = cursor.fetchone()
+        return _row_to_assistant_preset(row) if row else None
+
+
+def create_assistant_preset(
+    name: str,
+    db_path: str = DB_PATH,
+    *,
+    avatar: str = "",
+    system_prompt_id: str = "",
+    default_model_config: Optional[Dict[str, Any]] = None,
+    tool_config: Optional[Dict[str, Any]] = None,
+    starters: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    _ensure_assistant_presets_init(db_path)
+    normalized_name = str(name or "").strip()
+    if not normalized_name:
+        raise ValueError("助手预设名称不能为空")
+    now = time.time()
+    preset_id = str(uuid.uuid4())
+    normalized_model_config = _normalize_assistant_model_config(default_model_config)
+    normalized_tool_config = _normalize_assistant_tool_config(tool_config)
+    normalized_starters = _normalize_assistant_starters(starters)
+    with connect_sqlite(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO assistant_presets (
+                id, name, avatar, system_prompt_id, default_model_config_json,
+                tool_config_json, starters_json, is_default, is_active, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
+            """,
+            (
+                preset_id,
+                normalized_name[:80],
+                str(avatar or "").strip()[:16],
+                str(system_prompt_id or "").strip(),
+                json.dumps(normalized_model_config, ensure_ascii=False),
+                json.dumps(normalized_tool_config, ensure_ascii=False),
+                json.dumps(normalized_starters, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+    return {
+        "id": preset_id,
+        "name": normalized_name[:80],
+        "avatar": str(avatar or "").strip()[:16],
+        "system_prompt_id": str(system_prompt_id or "").strip(),
+        "default_model_config": normalized_model_config,
+        "tool_config": normalized_tool_config,
+        "starters": normalized_starters,
+        "is_default": False,
+        "is_active": False,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def update_assistant_preset(
+    preset_id: str,
+    name: str,
+    db_path: str = DB_PATH,
+    *,
+    avatar: str = "",
+    system_prompt_id: str = "",
+    default_model_config: Optional[Dict[str, Any]] = None,
+    tool_config: Optional[Dict[str, Any]] = None,
+    starters: Optional[List[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    _ensure_assistant_presets_init(db_path)
+    normalized_name = str(name or "").strip()
+    if not normalized_name:
+        raise ValueError("助手预设名称不能为空")
+    now = time.time()
+    normalized_model_config = _normalize_assistant_model_config(default_model_config)
+    normalized_tool_config = _normalize_assistant_tool_config(tool_config)
+    normalized_starters = _normalize_assistant_starters(starters)
+    with connect_sqlite(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            UPDATE assistant_presets
+            SET name = ?, avatar = ?, system_prompt_id = ?,
+                default_model_config_json = ?, tool_config_json = ?,
+                starters_json = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                normalized_name[:80],
+                str(avatar or "").strip()[:16],
+                str(system_prompt_id or "").strip(),
+                json.dumps(normalized_model_config, ensure_ascii=False),
+                json.dumps(normalized_tool_config, ensure_ascii=False),
+                json.dumps(normalized_starters, ensure_ascii=False),
+                now,
+                preset_id,
+            ),
+        )
+        if cursor.rowcount == 0:
+            return None
+        conn.commit()
+    return next(
+        (preset for preset in get_all_assistant_presets(db_path) if preset["id"] == preset_id),
+        None,
+    )
+
+
+def delete_assistant_preset(preset_id: str, db_path: str = DB_PATH) -> bool:
+    _ensure_assistant_presets_init(db_path)
+    with connect_sqlite(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(1) FROM assistant_presets")
+        if cursor.fetchone()[0] <= 1:
+            return False
+        cursor.execute("DELETE FROM assistant_presets WHERE id = ?", (preset_id,))
+        if cursor.rowcount == 0:
+            return False
+        cursor.execute("SELECT COUNT(1) FROM assistant_presets WHERE is_active = 1")
+        if cursor.fetchone()[0] == 0:
+            cursor.execute(
+                """
+                UPDATE assistant_presets
+                SET is_active = 1
+                WHERE id = (
+                    SELECT id FROM assistant_presets ORDER BY is_default DESC, created_at ASC LIMIT 1
+                )
+                """
+            )
+        conn.commit()
+        return True
+
+
+def activate_assistant_preset(preset_id: str, db_path: str = DB_PATH) -> bool:
+    _ensure_assistant_presets_init(db_path)
+    with connect_sqlite(db_path) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM assistant_presets WHERE id = ?", (preset_id,))
+        if not cursor.fetchone():
+            return False
+        cursor.execute("UPDATE assistant_presets SET is_active = 0")
+        cursor.execute(
+            "UPDATE assistant_presets SET is_active = 1, updated_at = ? WHERE id = ?",
+            (time.time(), preset_id),
         )
         conn.commit()
         return True

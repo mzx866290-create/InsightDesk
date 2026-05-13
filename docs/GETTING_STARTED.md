@@ -1,5 +1,12 @@
 # Getting Started
 
+## Scope Notes
+
+InsightDesk is a self-hosted Web workbench by default. You do not need a desktop
+installer, full SaaS tenant setup, or production Alertmanager routing to try the
+project locally. Start with one model provider, one browser session, and the
+default `memory` task backend.
+
 ## Recommended Path
 
 If your goal is to run the project quickly:
@@ -87,6 +94,16 @@ npm run dev -- --host 0.0.0.0 --port 5173
 ```bash
 start.bat
 ```
+
+### Connectivity Check
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\check_frontend_backend_connectivity.ps1
+```
+
+This check starts temporary backend/frontend processes, verifies the backend API,
+the Vite homepage, and the Vite `/api` proxy, then stops the temporary
+processes.
 
 ## LangGraph Mode
 

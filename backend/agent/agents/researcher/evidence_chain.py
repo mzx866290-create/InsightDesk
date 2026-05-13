@@ -57,6 +57,8 @@ def _match_sources(
 
     matched: list[tuple[int, ResearchSource]] = []
     for index, source, source_labels in sources:
+        if source.adoption_role != "evidence":
+            continue
         if labels.intersection(source_labels):
             matched.append((index, source))
     return matched
@@ -75,6 +77,10 @@ def _source_payload(index: int, source: ResearchSource) -> dict[str, object]:
         "source_tier": source.source_tier,
         "source_family": source.source_family,
         "freshness_band": source.freshness_band,
+        "heat_score": round(float(source.heat_score or 0.0), 4),
+        "heat_level": source.heat_level,
+        "adoption_role": source.adoption_role,
+        "quality_flags": list(source.quality_flags),
         "published_at": source.doc.published_at,
         "snippet": (source.doc.raw_text or source.doc.snippet)[:500],
         "selection_reason": source.selection_reason,

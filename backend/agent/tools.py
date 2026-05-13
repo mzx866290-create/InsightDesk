@@ -167,7 +167,7 @@ def create_tools(
     @tool
     async def web_search(search_query: str, max_results: int = 5) -> str:
         """
-        搜索互联网获取实时信息
+        搜索互联网获取公开信息。适用于实时信息、新闻、本地地点、商家口碑、榜单攻略、商品服务和外部知识。
 
         Args:
             search_query: 搜索关键词
@@ -184,7 +184,7 @@ def create_tools(
     @tool
     async def quick_answer(user_question: str) -> str:
         """
-        快速问答 - 直接返回 AI 总结答案,不返回详细搜索结果
+        快速问答 - 基于联网搜索直接返回总结答案。适用于本地生活、旅行攻略、商品服务和近期公开信息。
 
         Args:
             user_question: 问题

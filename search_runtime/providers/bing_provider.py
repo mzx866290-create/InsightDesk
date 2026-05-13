@@ -36,7 +36,10 @@ def _extract_published_at(raw_value: str | None) -> str | None:
     if not raw_text:
         return None
 
-    parsed = email.utils.parsedate_to_datetime(raw_text)
+    try:
+        parsed = email.utils.parsedate_to_datetime(raw_text)
+    except (TypeError, ValueError):
+        parsed = None
     if parsed is not None:
         return parsed.strftime("%Y-%m-%d")
 

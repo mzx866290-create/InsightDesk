@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 import backend.deck_service as deck_service
@@ -72,6 +74,7 @@ class FakeCursor:
                 panel_id = ""
                 sources_json = "[]"
                 workflow_json = "[]"
+                token_usage_json = "{}"
                 task_id = ""
                 task_type = ""
             else:
@@ -87,6 +90,7 @@ class FakeCursor:
                     files_json,
                     sources_json,
                     workflow_json,
+                    token_usage_json,
                     task_id,
                     task_type,
                 ) = params
@@ -104,6 +108,7 @@ class FakeCursor:
                 files_json,
                 sources_json,
                 workflow_json,
+                token_usage_json,
                 task_id,
                 task_type,
                 0,
@@ -167,6 +172,7 @@ class FakeCursor:
                     row[11],
                     row[12],
                     row[13],
+                    row[14],
                     timestamp,
                 )
                 self.rowcount = 1
@@ -188,8 +194,9 @@ class FakeCursor:
                     row[10],
                     row[11],
                     row[12],
+                    row[13],
                     int(feedback_value),
-                    row[14],
+                    row[15],
                 )
                 self.rowcount = 1
         elif normalized.startswith("insert into message_search"):
@@ -273,6 +280,7 @@ class FakeCursor:
                     row[12],
                     row[13],
                     row[14],
+                    row[15],
                 )
                 for row in rows
             ]
@@ -285,7 +293,7 @@ class FakeCursor:
                     continue
                 message_row = self.state.setdefault("messages", {}).get(rowid)
                 if message_row:
-                    rows.append((message_row[0], message_row[2], message_row[3], message_row[14]))
+                    rows.append((message_row[0], message_row[2], message_row[3], message_row[15]))
             rows.sort(key=lambda row: row[0], reverse=True)
             self._result = rows[:limit]
         elif normalized.startswith("delete from message_search"):
@@ -978,14 +986,9 @@ def test_chat_store_routes_message_feedback_to_postgres(monkeypatch):
 
 def test_phase_summary_memory_uses_postgres_history_without_sqlite_db_path(monkeypatch):
     import asyncio
-    import importlib
-    import sys
-    from pathlib import Path
     from types import SimpleNamespace
 
-    backend_path = str(Path.cwd() / "backend")
-    if backend_path not in sys.path:
-        sys.path.insert(0, backend_path)
+    import backend.chat_store as chat_store
     from backend.core import session_summary_runtime
 
     monkeypatch.setenv("DATABASE_PROVIDER", "postgres")
@@ -1014,26 +1017,24 @@ def test_phase_summary_memory_uses_postgres_history_without_sqlite_db_path(monke
             "created": True,
         }
 
-    legacy_chat_store = importlib.import_module("chat_store")
     monkeypatch.setattr(factory, "create_chat_message_history", lambda session_id: FakeHistory())
-    monkeypatch.setattr(legacy_chat_store, "list_session_memory", fake_list_session_memory)
-    monkeypatch.setattr(legacy_chat_store, "pin_session_memory", fake_pin_session_memory)
-
-    async def fake_try_llm(*args, **kwargs):
-        return None
+    monkeypatch.setattr(chat_store, "list_session_memory", fake_list_session_memory)
+    monkeypatch.setattr(chat_store, "pin_session_memory", fake_pin_session_memory)
 
     ctx = SimpleNamespace(
         SESSION_MEMORY_AUTO_SUMMARY_MIN_TURNS=2,
         SESSION_MEMORY_AUTO_SUMMARY_MIN_NEW_TURNS=1,
         SESSION_MEMORY_AUTO_SUMMARY_WINDOW_SIZE=4,
-        _summary_turns=lambda records: [
+        SESSION_MEMORY_AUTO_SUMMARY_MAX_CONTENT_CHARS=1000,
+        re=re,
+        summary_turns=lambda records, clip_text: [
             {"user": "u1", "assistant": "a1"},
             {"user": "u2", "assistant": "a2"},
         ],
         latest_auto_summary=lambda summaries: None,
         covered_turns_from_summary=lambda summary: 0,
-        _build_phase_summary_content=lambda turns, total_turns: "summary text",
-        _try_llm_phase_summary_content=fake_try_llm,
+        build_phase_summary_content=lambda turns, **kwargs: "summary text",
+        summary_llm_enabled=lambda: False,
         summarize_window_meta=lambda **kwargs: {"source": "auto", **kwargs},
     )
 
@@ -1100,6 +1101,12 @@ def test_postgres_chat_message_history_add_get_clear_and_search_with_fake_connec
         panel_id="panel-main",
         answer_group_id="turn-1",
         sources=[{"title": "Doc"}],
+        token_usage={
+            "prompt_tokens": 10,
+            "completion_tokens": 4,
+            "total_tokens": 14,
+            "estimated": False,
+        },
     )
     all_messages = store.get_all_messages()
     records = store.get_all_message_records()
@@ -1112,6 +1119,7 @@ def test_postgres_chat_message_history_add_get_clear_and_search_with_fake_connec
     ]
     assert records[1]["model_id"] == "model-a"
     assert records[1]["sources"] == [{"title": "Doc"}]
+    assert records[1]["token_usage"]["total_tokens"] == 14
     assert [hit["content"] for hit in hits] == ["Alpha answer", "Need alpha search"]
     assert state["messages"] == {}
     assert state["message_search"] == {}
@@ -1157,7 +1165,7 @@ def test_postgres_chat_message_history_rerun_helpers_with_fake_connection():
         panel_id="panel-main",
         answer_group_id="turn-1",
     )
-    assert state["messages"][2][13] == 1
+    assert state["messages"][2][14] == 1
 
     rerun_messages = store.get_panel_messages_for_rerun(
         "panel-main",

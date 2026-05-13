@@ -37,6 +37,10 @@ def _build_citation_panel_payload(
             "source_tier": source.source_tier,
             "source_family": source.source_family,
             "freshness_band": source.freshness_band,
+            "heat_score": round(float(source.heat_score or 0.0), 4),
+            "heat_level": source.heat_level,
+            "adoption_role": source.adoption_role,
+            "quality_flags": list(source.quality_flags),
             "published_at": source.doc.published_at,
             "snippet": (source.doc.raw_text or source.doc.snippet)[:500],
         }

@@ -737,6 +737,123 @@ def test_task_approval_policy_marks_matching_workflow_steps_for_approval():
     }
 
 
+def test_plugin_manifest_requires_approval_in_requested_plan(tmp_path):
+    plugin_dir = tmp_path / "agent_plugins"
+    plugin_dir.mkdir()
+    (plugin_dir / "external-publisher.json").write_text(
+        json.dumps(
+            {
+                "name": "external_publisher",
+                "description": "Publishes workflow output to an external system.",
+                "capabilities": ["external_publish"],
+                "output_prefix": "External publisher completed",
+                "risk_level": "critical",
+                "requires_approval": True,
+                "approval_reason": "External side effect.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = create_default_agent_registry(plugin_dirs=[plugin_dir])
+
+    state = asyncio.run(
+        run_orchestrator(
+            "publish final report",
+            registry=registry,
+            requested_tasks=["external_publish"],
+        )
+    )
+
+    step = state["plan"][0]
+
+    assert state["status"] == "waiting_approval"
+    assert state["needs_human_approval"] is True
+    assert step["agent"] == "external_publisher"
+    assert step["requires_approval"] is True
+    assert step["approval_status"] == "pending"
+    assert step["metadata"]["agent_plugin"] is True
+    assert step["metadata"]["agent_source"] == "plugin_manifest"
+    assert step["metadata"]["risk_level"] == "critical"
+    assert step["metadata"]["approval_reason"] == "External side effect."
+
+
+def test_plugin_manifest_risk_level_participates_in_approval_policy(tmp_path):
+    plugin_dir = tmp_path / "agent_plugins"
+    plugin_dir.mkdir()
+    (plugin_dir / "auditor.json").write_text(
+        json.dumps(
+            {
+                "name": "external_auditor",
+                "description": "Reviews sensitive external audit data.",
+                "capabilities": ["external_audit"],
+                "risk_level": "high",
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = create_default_agent_registry(plugin_dirs=[plugin_dir])
+
+    state = asyncio.run(
+        run_orchestrator(
+            "audit external records",
+            registry=registry,
+            requested_tasks=["external_audit"],
+            context={"task_approval_policy": {"enabled": True}},
+        )
+    )
+
+    step = state["plan"][0]
+
+    assert state["status"] == "waiting_approval"
+    assert step["metadata"]["risk_level"] == "high"
+    assert step["metadata"]["approval_policy_match"] == {
+        "reason": "high_risk",
+        "risk_level": "high",
+        "reviewer_role": "admin",
+    }
+
+
+def test_plugin_manifest_metadata_enriches_supplied_plan(tmp_path):
+    plugin_dir = tmp_path / "agent_plugins"
+    plugin_dir.mkdir()
+    (plugin_dir / "legal-review.json").write_text(
+        json.dumps(
+            {
+                "name": "legal_review",
+                "description": "Reviews legal-risk output.",
+                "capabilities": ["legal_review"],
+                "risk_level": "high",
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = create_default_agent_registry(plugin_dirs=[plugin_dir])
+
+    state = asyncio.run(
+        run_orchestrator(
+            "review external contract summary",
+            registry=registry,
+            context={"task_approval_policy": {"enabled": True}},
+            plan=[
+                {
+                    "id": "legal-step",
+                    "agent": "legal_review",
+                    "task_type": "legal_review",
+                    "description": "Review summary",
+                    "status": "pending",
+                }
+            ],
+        )
+    )
+
+    step = state["plan"][0]
+
+    assert state["status"] == "waiting_approval"
+    assert step["metadata"]["agent_plugin"] is True
+    assert step["metadata"]["risk_level"] == "high"
+    assert step["metadata"]["approval_policy_match"]["reason"] == "high_risk"
+
+
 def test_dag_failure_blocks_only_downstream_and_completes_independent_branch():
     registry = AgentRegistry()
     registry.register(WorkflowProbeAgent("research", "research", fail=True))

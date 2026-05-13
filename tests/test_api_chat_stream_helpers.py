@@ -38,6 +38,7 @@ def test_build_agent_config_payload_includes_optional_task_metadata():
         raw_user_message="hello",
         raw_images=[{"name": "chart.png"}],
         raw_files=[{"name": "brief.txt"}],
+        omit_history=True,
         task_id="task-1",
         task_type="generate_dashboard",
     )
@@ -56,6 +57,7 @@ def test_build_agent_config_payload_includes_optional_task_metadata():
             "raw_user_message": "hello",
             "raw_images": [{"name": "chart.png"}],
             "raw_files": [{"name": "brief.txt"}],
+            "omit_history": True,
             "task_id": "task-1",
             "task_type": "generate_dashboard",
         }

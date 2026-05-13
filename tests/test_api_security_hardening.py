@@ -6,7 +6,8 @@ import time
 from fastapi.testclient import TestClient
 
 import backend.api_server as api_server
-from backend.api_security_audit_store import SQLiteSecurityAuditStore
+from backend.core.runtime_metrics import new_runtime_metrics_state
+from backend.stores.security_audit_store import SQLiteSecurityAuditStore
 from backend.stores.config_store import SQLiteAppConfigStore
 from backend.stores.sso_session_store import SQLiteSsoSessionStore
 from backend.helpers.share_helpers import encode_share_token
@@ -66,7 +67,7 @@ def _reset_runtime_observability(monkeypatch, *, uptime_seconds: float = 5.0):
     monkeypatch.setattr(
         api_server,
         "_runtime_metrics",
-        api_server._new_runtime_metrics_state(),
+        new_runtime_metrics_state(),
     )
 
 
@@ -245,6 +246,8 @@ def test_security_status_endpoint_reports_guard_health(monkeypatch):
     assert payload["weak_auth_token_count"] == 3
     assert payload["legacy_auth_token_count"] == 0
     assert payload["share_link_secret_healthy"] is True
+    assert payload["share_link_secret_uses_default"] is False
+    assert payload["share_link_secret_min_length"] == api_server.MIN_SHARE_LINK_SECRET_LENGTH
     assert payload["remote_share_ready"] is True
     assert payload["remote_management_rate_limit_enabled"] is True
     assert payload["remote_management_rate_limit_window_seconds"] >= 1
@@ -265,6 +268,16 @@ def test_security_status_endpoint_reports_guard_health(monkeypatch):
         "env_clamped",
         "invalid_env_clamped",
     }
+    assert payload["remote_management_rate_limit_scope"] == "remote-management"
+    assert payload["remote_management_rate_limit_storage"] == "memory"
+    assert "/api/security/" in payload["remote_management_rate_limit_path_prefixes"]
+    assert "/api/auth/" in payload["remote_management_rate_limit_path_prefixes"]
+    assert "X-RateLimit-Limit" in payload["remote_management_rate_limit_response_headers"]
+    assert "Retry-After" in payload["remote_management_rate_limit_response_headers"]
+    assert payload["remote_management_rate_limit_tracked_principal_count"] >= 0
+    assert payload["remote_management_rate_limit_active_request_count"] >= 0
+    assert payload["remote_management_rate_limit_blocked_count"] >= 0
+    assert payload["remote_management_rate_limit_next_reset_after_seconds"] >= 0
     assert payload["request_id_header"] == "X-Request-ID"
     assert payload["process_time_header"] == "X-Process-Time-Ms"
     assert payload["security_audit_storage"] == "sqlite"
@@ -281,6 +294,26 @@ def test_security_status_endpoint_reports_guard_health(monkeypatch):
     assert payload["security_audit_memory_window_limit"] >= 1
     assert payload["chat_file_limits"]["max_count"] >= 1
     assert payload["document_upload_limits"]["max_count"] >= 1
+
+
+def test_security_status_reports_default_share_secret(monkeypatch):
+    _set_remote_mode(monkeypatch)
+    _set_auth_catalog(monkeypatch)
+    _reset_security_audit_events(monkeypatch)
+    monkeypatch.setenv("SHARE_LINK_SECRET", api_server.DEFAULT_SHARE_LINK_SECRET)
+    client = TestClient(api_server.app)
+
+    response = client.get(
+        "/api/security/status",
+        headers={"Authorization": "Bearer viewer-token"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["share_link_secret_healthy"] is False
+    assert payload["share_link_secret_uses_default"] is True
+    assert payload["share_link_secret_min_length"] == api_server.MIN_SHARE_LINK_SECRET_LENGTH
+    assert payload["remote_share_ready"] is False
 
 
 def test_viewer_token_can_access_status_and_whoami(monkeypatch):
@@ -838,10 +871,62 @@ def test_remote_management_rate_limit_blocks_repeated_admin_requests(monkeypatch
     assert third.headers["X-RateLimit-Remaining"] == "0"
     assert third.headers["X-RateLimit-Scope"] == "remote-management"
     assert int(third.headers["Retry-After"]) >= 1
+    status = client.get(
+        "/api/security/status",
+        headers={"Authorization": "Bearer admin-token"},
+    )
+    assert status.status_code == 429
+    direct_payload = api_server._security_status_payload()
+    assert direct_payload["remote_management_rate_limit_tracked_principal_count"] >= 1
+    assert direct_payload["remote_management_rate_limit_blocked_count"] >= 1
+    assert direct_payload["remote_management_rate_limit_last_blocked_at"] is not None
+    assert direct_payload["remote_management_rate_limit_next_reset_after_seconds"] >= 1
     assert any(
         item["action"] == "remote_management_rate_limit" and item["result"] == "blocked"
         for item in api_server._security_audit_events
     )
+
+
+def test_remote_management_rate_limit_status_prunes_expired_principals(monkeypatch):
+    _reset_remote_management_rate_limit(monkeypatch)
+    monkeypatch.setattr(api_server, "REMOTE_MANAGEMENT_RATE_LIMIT_WINDOW_SECONDS", 60)
+    now = {"value": 1_000.0}
+    monkeypatch.setattr(api_server.time, "time", lambda: now["value"])
+    monkeypatch.setattr(
+        api_server,
+        "_remote_management_rate_limits",
+        {
+            "expired": {
+                "window_started_at": 900.0,
+                "count": 4.0,
+                "blocked_count": 2.0,
+                "last_blocked_at": 905.0,
+            },
+            "active": {
+                "window_started_at": 970.0,
+                "count": 1.0,
+            },
+        },
+    )
+
+    status = api_server._remote_management_rate_limit_status()
+
+    assert "expired" not in api_server._remote_management_rate_limits
+    assert status["tracked_principal_count"] == 1
+    assert status["active_request_count"] == 1
+    assert status["blocked_count"] == 0
+    assert status["last_blocked_at"] is None
+    assert status["next_reset_after_seconds"] == 30
+
+    now["value"] = 1_031.0
+    expired_status = api_server._remote_management_rate_limit_status()
+
+    assert api_server._remote_management_rate_limits == {}
+    assert expired_status["tracked_principal_count"] == 0
+    assert expired_status["active_request_count"] == 0
+    assert expired_status["blocked_count"] == 0
+    assert expired_status["last_blocked_at"] is None
+    assert expired_status["next_reset_after_seconds"] == 0
 
 
 def test_local_requests_bypass_remote_management_rate_limit(monkeypatch):

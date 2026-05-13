@@ -1,20 +1,21 @@
 import asyncio
 import logging
 
-from backend.api_task_runtime_helpers import task_stale_health_payload
+from backend.helpers.task_runtime_helpers import task_stale_health_payload
 from backend.helpers.task_runtime_helpers import (
     attach_current_kb_status,
     arq_keep_result_from_env,
     arq_queue_name_from_env,
     arq_should_start_task_record,
     arq_worker_max_jobs_from_env,
+    build_runtime_task_summary_payload,
     enqueue_task,
     list_tasks_payload,
     normalize_task_backend,
     task_record_payload,
     task_runtime_health_summary,
 )
-from backend.api_task_store import TaskRecord, TaskStatus
+from backend.stores.task_store import TaskRecord, TaskStatus
 from backend.tasks.backends import build_task_queue_backend, dispatch_task_record
 
 
@@ -166,6 +167,123 @@ def test_list_tasks_payload_includes_stale_and_queue_health():
         "retry_enabled": True,
         "worker_drain_enabled": True,
         "worker_heartbeat_enabled": True,
+    }
+
+
+def test_build_runtime_task_summary_payload_counts_memory_tasks_without_queue_health():
+    async def fail_queue_health():
+        raise AssertionError("queue health should only be read for arq/redis backends")
+
+    base_time = 4_000_000_000.0
+    payload = asyncio.run(
+        build_runtime_task_summary_payload(
+            [
+                TaskRecord(
+                    task_id="pending",
+                    task_type="generate_report",
+                    status=TaskStatus.PENDING,
+                    params={},
+                    session_id="session-1",
+                    created_at=base_time,
+                    updated_at=base_time + 10,
+                ),
+                TaskRecord(
+                    task_id="running",
+                    task_type="web_research",
+                    status=TaskStatus.RUNNING,
+                    params={},
+                    session_id="session-1",
+                    created_at=base_time + 20,
+                    updated_at=base_time + 30,
+                ),
+                TaskRecord(
+                    task_id="failed",
+                    task_type="web_research",
+                    status=TaskStatus.FAILED,
+                    params={},
+                    session_id="session-2",
+                    created_at=base_time + 40,
+                    updated_at=base_time + 50,
+                ),
+            ],
+            task_backend="memory",
+            arq_queue_health_payload=fail_queue_health,
+            arq_runtime_config_for_tasks=lambda: {},
+        )
+    )
+
+    assert payload["in_memory_total"] == 3
+    assert payload["pending"] == 1
+    assert payload["running"] == 1
+    assert payload["completed"] == 0
+    assert payload["failed"] == 1
+    assert payload["latest_task_updated_at"] == base_time + 50
+    assert "queue" not in payload["health"]
+    assert payload["health"]["summary"]["status"] in {"ok", "warning"}
+
+    unknown_backend_payload = asyncio.run(
+        build_runtime_task_summary_payload(
+            [],
+            task_backend="unsupported-but-non-arq",
+            arq_queue_health_payload=fail_queue_health,
+            arq_runtime_config_for_tasks=lambda: {},
+        )
+    )
+    assert unknown_backend_payload["in_memory_total"] == 0
+    assert "queue" not in unknown_backend_payload["health"]
+
+
+def test_build_runtime_task_summary_payload_includes_arq_queue_and_runtime_health():
+    async def queue_health():
+        return {
+            "enabled": True,
+            "status": "warning",
+            "queue_name": "ops:tasks",
+            "length": 8,
+            "warning_count": 1,
+            "warnings": ["arq_queue_backlog"],
+        }
+
+    base_time = 4_000_000_000.0
+    payload = asyncio.run(
+        build_runtime_task_summary_payload(
+            [
+                TaskRecord(
+                    task_id="completed",
+                    task_type="generate_report",
+                    status=TaskStatus.COMPLETED,
+                    params={},
+                    session_id="session-1",
+                    created_at=base_time,
+                    updated_at=base_time + 15,
+                )
+            ],
+            task_backend="redis",
+            arq_queue_health_payload=queue_health,
+            arq_runtime_config_for_tasks=lambda: {
+                "backend": "arq",
+                "queue_name": "ops:tasks",
+                "retry": {"enabled": True},
+                "worker": {
+                    "drain": {"enabled": True},
+                    "heartbeat": {"enabled": False},
+                },
+            },
+        )
+    )
+
+    assert payload["completed"] == 1
+    assert payload["health"]["queue"]["length"] == 8
+    assert payload["health"]["runtime"]["queue_name"] == "ops:tasks"
+    assert payload["health"]["summary"] == {
+        "status": "warning",
+        "warning_count": 1,
+        "stale_warning_count": 0,
+        "queue_warning_count": 1,
+        "warning_codes": ["arq_queue_backlog"],
+        "retry_enabled": True,
+        "worker_drain_enabled": True,
+        "worker_heartbeat_enabled": False,
     }
 
 

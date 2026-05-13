@@ -1,8 +1,10 @@
 import asyncio
+from datetime import UTC, datetime
 
 from backend.agent import (
     DeepResearchAgent,
     ResearchAgentConfig,
+    build_claim_evidence_chains,
     summarize_reusable_archives,
     build_fallback_research_plan,
     build_query_matrix,
@@ -10,8 +12,10 @@ from backend.agent import (
     create_runtime_agent_registry,
     evaluate_research_sources,
     select_priority_sources,
+    verify_atomic_claims,
 )
 from search_runtime.types import (
+    AtomicClaim,
     ResearchFinding,
     ResearchPlan,
     ResearchQuery,
@@ -129,7 +133,7 @@ def test_source_evaluator_adds_v2_metadata_and_prioritizes_primary_sources():
             url="https://pbc.gov.cn/update",
             snippet="official",
             domain="pbc.gov.cn",
-            published_at="2026-04-20",
+            published_at=datetime.now(UTC).date().isoformat(),
         ),
     ]
 
@@ -139,7 +143,89 @@ def test_source_evaluator_adds_v2_metadata_and_prioritizes_primary_sources():
     assert evaluated[0].source_tier == "tertiary"
     assert evaluated[1].source_tier == "primary"
     assert evaluated[1].provider_caveat == "no strict time filter"
+    assert evaluated[1].adoption_role == "evidence"
+    assert evaluated[1].heat_level == "hot"
     assert priority[0].doc.doc_id == "primary"
+
+
+def test_source_evaluator_rejects_detailed_low_quality_sources():
+    docs = [
+        SearchDocument(
+            doc_id="low-detail",
+            provider="fake",
+            title="Detailed repost thread",
+            url="https://zhihu.com/question/ai-policy",
+            snippet="Long but unverified commentary",
+            raw_text="Detailed commentary. " * 80,
+            domain="zhihu.com",
+            confidence=0.38,
+            trust_score=0.32,
+            freshness_score=0.2,
+            source_quality="low",
+        ),
+        SearchDocument(
+            doc_id="official",
+            provider="fake",
+            title="Official policy release",
+            url="https://pbc.gov.cn/policy",
+            snippet="Official source",
+            domain="pbc.gov.cn",
+            published_at=datetime.now(UTC).date().isoformat(),
+            confidence=0.86,
+            trust_score=0.96,
+            freshness_score=0.95,
+            source_quality="high",
+        ),
+    ]
+
+    evaluated = evaluate_research_sources(docs)
+    low_detail = evaluated[0]
+    official = evaluated[1]
+    priority = select_priority_sources(evaluated, limit=2)
+
+    assert low_detail.heat_level == "cold"
+    assert low_detail.adoption_role == "rejected"
+    assert "detailed_low_trust" in low_detail.quality_flags
+    assert official.adoption_role == "evidence"
+    assert [source.doc.doc_id for source in priority] == ["official"]
+
+
+def test_claim_verifier_ignores_rejected_sources_as_evidence():
+    evaluated = evaluate_research_sources(
+        [
+            SearchDocument(
+                doc_id="low-detail",
+                provider="fake",
+                title="Detailed repost thread",
+                url="https://zhihu.com/question/ai-policy",
+                snippet="Long but unverified commentary",
+                raw_text="Detailed commentary. " * 80,
+                domain="zhihu.com",
+                confidence=0.38,
+                trust_score=0.32,
+                freshness_score=0.2,
+                source_quality="low",
+            )
+        ]
+    )
+    claims = [
+        AtomicClaim(
+            claim_id="claim-001",
+            facet="policy",
+            text="A policy changed based on a commentary thread.",
+            claim_type="policy_signal",
+            candidate_sources=["low-detail"],
+        )
+    ]
+
+    verifications = verify_atomic_claims(claims, evaluated)
+    evidence_chains = build_claim_evidence_chains(claims, evaluated, verifications)
+
+    assert verifications[0].status == "unverified"
+    assert verifications[0].supporting_sources == []
+    assert "ignored non-evidence source roles: rejected" in verifications[0].verification_note
+    assert evidence_chains[0]["supporting_source_count"] == 0
+    assert evidence_chains[0]["sources"] == []
 
 
 def test_deep_research_agent_calls_deep_runner_with_task_metadata():

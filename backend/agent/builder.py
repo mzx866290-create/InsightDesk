@@ -63,6 +63,28 @@ def __getattr__(name: str) -> Any:
     return value
 
 
+def _resolve_requested_agent_mode(
+    *,
+    provider: str,
+    requested_mode: str,
+    web_search_enabled: bool,
+) -> tuple[str, str]:
+    """Return the concrete runtime mode and why it was selected."""
+    normalized_requested_mode = str(requested_mode or "auto").strip().lower() or "auto"
+
+    if normalized_requested_mode == "auto":
+        if provider == "openai_compatible":
+            return "function_calling", "auto_openai_compatible"
+        return "langgraph", "auto_non_openai_provider"
+
+    if normalized_requested_mode == "plain_chat" and web_search_enabled:
+        if provider == "openai_compatible":
+            return "function_calling", "plain_chat_requires_tool_router_for_web_search"
+        return "langgraph", "plain_chat_requires_tool_router_for_web_search"
+
+    return normalized_requested_mode, "requested"
+
+
 async def build_agent(
     provider: Optional[str] = None,
     model_name: Optional[str] = None,
@@ -98,19 +120,25 @@ async def build_agent(
     """
     provider = normalize_connection_type(provider, base_url)
     system_prompt = _normalize_runtime_system_prompt(system_prompt)
-    
-    if agent_mode == "auto":
-        if provider == "openai_compatible":
-            actual_mode = "function_calling"
-        else:
-            actual_mode = "langgraph"
+
+    requested_agent_mode = str(agent_mode or "auto").strip().lower() or "auto"
+    actual_mode, agent_mode_reason = _resolve_requested_agent_mode(
+        provider=provider,
+        requested_mode=requested_agent_mode,
+        web_search_enabled=web_search_enabled,
+    )
+
+    if requested_agent_mode == "auto":
         logger.info(
             "[Auto] provider=%s -> agent_mode=%s (openai_compatible=function_calling, ollama=langgraph)",
             provider,
             actual_mode,
         )
-    else:
-        actual_mode = agent_mode
+    elif requested_agent_mode != actual_mode:
+        logger.info(
+            "联网搜索已开启：plain_chat 请求升级为 %s 工具路由模式",
+            actual_mode,
+        )
     
     llm = get_llm(provider, model_name, base_url, api_key, temperature)
 
@@ -134,6 +162,9 @@ async def build_agent(
         "dashboard_template": dashboard_template,
         "knowledge_base_enabled": knowledge_base_enabled,
         "web_search_enabled": web_search_enabled,
+        "requested_agent_mode": requested_agent_mode,
+        "actual_agent_mode": actual_mode,
+        "agent_mode_reason": agent_mode_reason,
     }
     
     if actual_mode == "langgraph":
@@ -154,10 +185,11 @@ async def build_agent(
         return PlainChatWrapper(**wrapper_kwargs)
     
     else:
-        try:
-            from langchain_classic.agents import AgentExecutor, create_tool_calling_agent
-        except ModuleNotFoundError:
-            from langchain.agents import AgentExecutor, create_tool_calling_agent
+        agent_executor_cls = globals().get("AgentExecutor")
+        create_agent_fn = globals().get("create_tool_calling_agent")
+        if agent_executor_cls is None or create_agent_fn is None:
+            from langchain_classic.agents import AgentExecutor as agent_executor_cls
+            from langchain_classic.agents import create_tool_calling_agent as create_agent_fn
         from langchain_core.prompts import ChatPromptTemplate
 
         all_tools = await build_runtime_tools(
@@ -188,9 +220,9 @@ async def build_agent(
             ("placeholder", "{agent_scratchpad}"),
         ])
         
-        base_agent = create_tool_calling_agent(llm, all_tools, prompt)
+        base_agent = create_agent_fn(llm, all_tools, prompt)
         
-        agent_executor = AgentExecutor(
+        agent_executor = agent_executor_cls(
             agent=base_agent,
             tools=all_tools,
             verbose=verbose,

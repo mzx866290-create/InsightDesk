@@ -11,11 +11,9 @@ import {
   promotePanelAnswer,
   streamSingleChat,
 } from '../../api/client'
-import { useTaskStore } from '../../stores/taskStore'
 import type { ActiveStreamControl } from './streamControl'
 import { useWorkflowStore } from '../../stores/workflowStore'
 import { WorkflowVisualizer } from '../workflow/WorkflowVisualizer'
-import { parseWorkflowEvent } from '../../api/workflowClient'
 import {
   getAnswerGroupReview,
   promoteRecommendedAnswerGroup,
@@ -31,6 +29,7 @@ import type {
 import { exportConversationAsMarkdown } from '../../utils/exportConversation'
 import { ChatPanelHeader } from './ChatPanelHeader'
 import { AnswerReviewModal } from './AnswerReviewModal'
+import { dispatchChatStreamChunk } from '../../hooks/useChatStreaming'
 
 // 默认快捷提问（当角色没有特定提示时使用）
 const DEFAULT_STARTERS = [
@@ -71,6 +70,7 @@ function mapMessages(messages: Message[]): PanelMessage[] {
     taskId: message.task_id,
     taskType: message.task_type,
     workflowNodes: message.workflow_nodes,
+    tokenUsage: message.token_usage,
     timestamp: message.timestamp,
     feedbackValue: message.feedback_value,
   }))
@@ -373,6 +373,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       taskId: payload.task_id,
       taskType: payload.task_type,
       workflowNodes: payload.workflow_nodes ?? [],
+      tokenUsage: payload.token_usage,
     })
     if (payload.workflow_nodes && payload.workflow_nodes.length > 0) {
       hydrateWorkflow(targetPanelId, payload.workflow_nodes)
@@ -466,6 +467,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             task_id: item.taskId,
             task_type: item.taskType,
             workflow_nodes: item.workflowNodes,
+            token_usage: item.tokenUsage,
           })),
       })
 
@@ -615,6 +617,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           taskId: existingAssistantMessage.taskId,
           taskType: existingAssistantMessage.taskType,
           workflowNodes: existingAssistantMessage.workflowNodes,
+          tokenUsage: existingAssistantMessage.tokenUsage,
           timestamp: existingAssistantMessage.timestamp,
         }
       : null
@@ -678,6 +681,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         taskId: undefined,
         taskType: undefined,
         workflowNodes: undefined,
+        tokenUsage: undefined,
         timestamp: Date.now() / 1000,
       })
     } else {
@@ -698,81 +702,32 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       answerGroupId,
       true,
       (chunk) => {
-        if (chunk.panel_id !== panel.id) return
-
-        const workflowEvent = parseWorkflowEvent(chunk)
-        if (workflowEvent) {
-          useWorkflowStore.getState().updateNodeStatus(
-            panel.id,
-            workflowEvent.node_name,
-            workflowEvent.status,
-            {
-              toolName: workflowEvent.tool_name,
-              toolParams: workflowEvent.tool_params,
-              toolResult: workflowEvent.tool_result_summary,
-              retrievalMeta: workflowEvent.retrieval_meta,
-              error: workflowEvent.error,
-            },
-          )
-          return
-        }
-
-        if (chunk.type === 'chunk' && chunk.content) {
-          appendChunk(panel.id, targetMessageId, chunk.content, assistantMeta)
-          return
-        }
-
-        if (chunk.type === 'sources' && chunk.sources) {
-          setSources(panel.id, targetMessageId, chunk.sources, assistantMeta)
-          return
-        }
-
-        if (chunk.type === 'task_created' && chunk.task_id) {
-          const taskStore = useTaskStore.getState()
-          taskStore.addTask({
-            task_id: chunk.task_id,
-            task_type: chunk.task_type ?? 'task',
-            status: 'pending',
-            progress: 0,
-            created_at: Date.now() / 1000,
-            updated_at: Date.now() / 1000,
-          })
-          taskStore.startPolling(chunk.task_id)
-          setTaskId(panel.id, targetMessageId, chunk.task_id, chunk.task_type)
-          return
-        }
-
-        if (chunk.type === 'done') {
-          const workflowSnapshot = useWorkflowStore.getState().getWorkflow(panel.id)?.nodes
-          if (workflowSnapshot && workflowSnapshot.length > 0) {
-            replaceAssistantMessageByAnswerGroup(panel.id, answerGroupId, {
-              workflowNodes: workflowSnapshot,
-            })
-          }
+        dispatchChatStreamChunk({
+          chunk,
+          messageId: targetMessageId,
+          answerGroupId,
+          assistantMeta,
+          expectedPanelId: panel.id,
+          errorFallback: sseErrorFallback,
+          errorMeta: {
+            answerGroupId,
+            retryMode,
+          },
+          beforeError: () => {
+            rerunAbortControllerRef.current = null
+            restorePreviousAssistant()
+          },
+          onDone: () => {
           rerunAbortControllerRef.current = null
-          setAssistantStreaming(panel.id, targetMessageId, false)
           onStreamingChange(panel.id, false)
           setActiveStreamControl(null)
           touchSession()
-          return
-        }
-
-        if (chunk.type === 'error') {
-          rerunAbortControllerRef.current = null
-          restorePreviousAssistant()
-          addErrorMessage(
-            panel.id,
-            chunk.content ?? sseErrorFallback,
-            chunk.error_code,
-            chunk.suggestion,
-            {
-              answerGroupId,
-              retryMode,
-            },
-          )
-          onStreamingChange(panel.id, false)
-          setActiveStreamControl(null)
-        }
+          },
+          onError: () => {
+            onStreamingChange(panel.id, false)
+            setActiveStreamControl(null)
+          },
+        })
       },
       () => {
         rerunAbortControllerRef.current = null

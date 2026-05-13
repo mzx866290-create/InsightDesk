@@ -11,6 +11,7 @@ from urllib.parse import unquote_to_bytes
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 
+from backend.delivery_templates import validate_delivery_template_selection
 from backend.routes.resource_access_helpers import (
     filter_visible_resources,
     grant_resource_owner,
@@ -19,6 +20,8 @@ from backend.routes.resource_access_helpers import (
 )
 from backend.helpers.deck_report_helpers import (
     DeckExportGateError,
+    apply_deck_template_metadata,
+    apply_report_template_metadata,
     attach_deck_delivery_audit,
     build_deck_delivery_response,
     update_deck_block_refs,
@@ -419,10 +422,19 @@ def build_content_router(
         messages: list[Any],
         answer_group_id: str = "",
         panel_id: str = "",
+        template_id: str = "",
+        template_options: dict[str, Any] | None = None,
     ) -> tuple[Any, str, str]:
         qa_pairs = ensure_deckable_chat(messages)
         title = build_chat_report_title(messages)
-        markdown = build_report_markdown(messages, title)
+        clean_template_id = str(template_id or "").strip()
+        clean_template_options = dict(template_options or {})
+        validate_delivery_template_selection(clean_template_id, artifact_type="report")
+        markdown = apply_report_template_metadata(
+            build_report_markdown(messages, title),
+            template_id=clean_template_id,
+            template_options=clean_template_options,
+        )
         artifact = build_report_artifact(
             session_id=session_id,
             title=title,
@@ -430,6 +442,8 @@ def build_content_router(
             qa_pairs=qa_pairs,
             answer_group_id=answer_group_id,
             panel_id=panel_id,
+            template_id=clean_template_id,
+            template_options=clean_template_options,
         )
         resolve_artifact_store().save(artifact)
         return artifact, title, markdown
@@ -1843,6 +1857,12 @@ def build_content_router(
             raise HTTPException(status_code=404, detail="Requested deck scope was not found.") from exc
         if not messages:
             raise HTTPException(status_code=400, detail="No messages were found in this session.")
+        template_id = str(getattr(request, "template_id", "") or "").strip()
+        template_options = dict(getattr(request, "template_options", {}) or {})
+        try:
+            validate_delivery_template_selection(template_id, artifact_type="deck")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
             deck = await resolve_build_deck()(
                 messages=messages,
@@ -1854,6 +1874,11 @@ def build_content_router(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        apply_deck_template_metadata(
+            deck,
+            template_id=template_id,
+            template_options=template_options,
+        )
         attach_deck_delivery_audit(deck)
         resolve_deck_store().save(deck)
         art = create_deck_artifact_for_deck(deck)
@@ -2091,6 +2116,8 @@ def build_content_router(
                 messages=msgs,
                 answer_group_id=str(request.answer_group_id or "").strip(),
                 panel_id=str(request.panel_id or "").strip(),
+                template_id=str(getattr(request, "template_id", "") or "").strip(),
+                template_options=dict(getattr(request, "template_options", {}) or {}),
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2462,6 +2489,8 @@ def build_content_router(
                     messages=messages,
                     answer_group_id=str(request.answer_group_id or "").strip(),
                     panel_id=str(request.panel_id or "").strip(),
+                    template_id=str(getattr(request, "template_id", "") or "").strip(),
+                    template_options=dict(getattr(request, "template_options", {}) or {}),
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2488,6 +2517,12 @@ def build_content_router(
         if request.artifact_type == "deck":
             if request.panel_config is None:
                 raise HTTPException(status_code=400, detail="Deck artifact requires panel_config.")
+            template_id = str(getattr(request, "template_id", "") or "").strip()
+            template_options = dict(getattr(request, "template_options", {}) or {})
+            try:
+                validate_delivery_template_selection(template_id, artifact_type="deck")
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
             try:
                 deck = await resolve_build_deck()(
                     messages=messages,
@@ -2499,6 +2534,11 @@ def build_content_router(
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
+            apply_deck_template_metadata(
+                deck,
+                template_id=template_id,
+                template_options=template_options,
+            )
             attach_deck_delivery_audit(deck)
             resolve_deck_store().save(deck)
             artifact = create_deck_artifact_for_deck(deck)

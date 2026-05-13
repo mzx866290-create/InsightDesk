@@ -2,6 +2,7 @@
 
 from backend.helpers.task_runtime_helpers import (
     attach_current_kb_status,
+    build_runtime_task_summary_payload,
     enqueue_task,
     list_tasks_payload,
     task_record_payload,
@@ -43,6 +44,7 @@ __all__ = [
     "DEFAULT_ARQ_RUNNING_STALE_SECONDS",
     "DEFAULT_ARQ_WORKER_MAX_JOBS",
     "attach_current_kb_status",
+    "build_runtime_task_summary_payload",
     "arq_pending_stale_seconds_from_env",
     "arq_keep_result_from_env",
     "arq_queue_health_payload",

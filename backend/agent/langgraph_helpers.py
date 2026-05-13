@@ -6,8 +6,7 @@ from typing import Any, Literal, Optional, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from backend.agent.llm import _ainvoke_llm_with_timeout
-from search_runtime.service import rewrite_search_query_for_web
+from search_runtime.service import rewrite_search_query_for_web, rewrite_search_query_with_llm
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +24,6 @@ async def _rewrite_search_query(llm, user_input: str, chat_history: list[BaseMes
         优化后的搜索查询
     """
     fallback_query = rewrite_search_query_for_web(user_input)
-    if not chat_history:
-        return fallback_query
 
     history_text = ""
     recent_history = chat_history[-4:]
@@ -36,24 +33,13 @@ async def _rewrite_search_query(llm, user_input: str, chat_history: list[BaseMes
         elif isinstance(msg, AIMessage):
             history_text += f"助手: {msg.content}\n"
 
-    if not history_text.strip():
-        return fallback_query
-
-    rewrite_prompt = f"""你是搜索查询优化器。根据对话上下文，将用户的问题改写为最优的搜索引擎查询词。
-只输出改写后的查询词，不要解释。
-保留用户原始问题中的产品名、版本号、组织名、日期和域名约束，不要凭空新增事实。
-
-对话上下文:
-{history_text}
-
-用户问题: {user_input}
-
-优化后的搜索查询:"""
-
     try:
-        response = await _ainvoke_llm_with_timeout(llm, rewrite_prompt, timeout_seconds=20)
-        rewritten = response.content.strip()
-        normalized = rewrite_search_query_for_web(rewritten or user_input)
+        normalized = await rewrite_search_query_with_llm(
+            llm,
+            user_input,
+            chat_history=history_text,
+            timeout_seconds=20,
+        )
         logger.info("[QueryRewrite] original=%s -> rewritten=%s", user_input[:50], normalized[:80])
         return normalized if normalized else fallback_query
     except Exception:

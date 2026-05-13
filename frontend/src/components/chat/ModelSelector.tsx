@@ -1,14 +1,15 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { ChevronDown, Cloud, Cpu, X } from 'lucide-react'
 import { useChatStore } from '../../stores/chatStore'
 import {
   defaultBaseUrlForConnectionType,
   defaultModelForConnectionType,
   getConnectionTypeLabel,
+  getProviderCatalog,
   getOllamaModels,
   normalizeConnectionType,
 } from '../../api/client'
-import type { ConnectionType, ModelConfig } from '../../api/client'
+import type { ConnectionType, ModelConfig, ProviderCatalogResponse } from '../../api/client'
 
 interface ModelSelectorProps {
   panelId: string
@@ -42,6 +43,30 @@ const COMPATIBLE_PRESETS: Array<{
   },
 ]
 
+const PROVIDER_BUTTONS: Array<{
+  id: ConnectionType
+  icon: 'cloud' | 'cpu'
+  label: string
+}> = [
+  { id: 'openai_compatible', icon: 'cloud', label: 'OpenAI 兼容' },
+  { id: 'ollama', icon: 'cpu', label: 'Ollama' },
+  { id: 'deepseek', icon: 'cloud', label: 'DeepSeek' },
+  { id: 'anthropic', icon: 'cloud', label: 'Anthropic' },
+  { id: 'google', icon: 'cloud', label: 'Google Gemini' },
+]
+
+const CONNECTION_TYPES: ConnectionType[] = [
+  'ollama',
+  'openai_compatible',
+  'deepseek',
+  'anthropic',
+  'google',
+]
+
+function isConnectionType(value: string): value is ConnectionType {
+  return CONNECTION_TYPES.includes(value as ConnectionType)
+}
+
 export const ModelSelector: React.FC<ModelSelectorProps> = ({
   panelId,
   modelConfig,
@@ -63,12 +88,51 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   const [ollamaModels, setOllamaModels] = useState<string[]>([])
   const [customModel, setCustomModel] = useState('')
   const [presetName, setPresetName] = useState('')
+  const [providerCatalog, setProviderCatalog] = useState<ProviderCatalogResponse | null>(null)
+  const [providerCatalogLoaded, setProviderCatalogLoaded] = useState(false)
 
   const connectionType = normalizeConnectionType(
     modelConfig.connection_type ?? modelConfig.provider,
     modelConfig.base_url,
   )
   const connectionLabel = getConnectionTypeLabel(modelConfig)
+  const providerButtons = useMemo(() => {
+    if (!providerCatalog?.providers.length) return PROVIDER_BUTTONS
+
+    const availableTypes = new Set(
+      providerCatalog.providers
+        .map((provider) => provider.connection_type)
+        .filter(isConnectionType),
+    )
+    const availableButtons = PROVIDER_BUTTONS.filter((button) => availableTypes.has(button.id))
+    return availableButtons.length > 0 ? availableButtons : PROVIDER_BUTTONS
+  }, [providerCatalog])
+
+  useEffect(() => {
+    if (!open || providerCatalogLoaded) return
+    let cancelled = false
+
+    getProviderCatalog()
+      .then((catalog) => {
+        if (!cancelled) {
+          setProviderCatalog(catalog)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setProviderCatalog(null)
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setProviderCatalogLoaded(true)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [open, providerCatalogLoaded])
 
   useEffect(() => {
     if (!open) return
@@ -177,10 +241,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
         >
           <div className="mb-3 rounded-lg bg-bg-tertiary p-1">
             <div className="grid grid-cols-2 gap-1">
-              {([
-                { id: 'openai_compatible', icon: <Cloud size={11} />, label: 'OpenAI 兼容' },
-                { id: 'ollama', icon: <Cpu size={11} />, label: 'Ollama' },
-              ] as const).map((item) => (
+              {providerButtons.map((item) => (
                 <button
                   key={item.id}
                   type="button"
@@ -193,7 +254,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                       : 'text-text-secondary hover:text-text-primary'
                   } disabled:cursor-not-allowed disabled:opacity-50`}
                 >
-                  {item.icon}
+                  {item.icon === 'cpu' ? <Cpu size={11} /> : <Cloud size={11} />}
                   {item.label}
                 </button>
               ))}

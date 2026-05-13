@@ -7,11 +7,12 @@ from backend.helpers.agent_stream_helpers import (
     dashboard_prompt_excerpt,
     fail_dashboard_task,
     finalize_dashboard_task,
+    fallback_generate_with_llm,
     resolve_non_stream_agent_result,
     stream_agent_item,
     task_created_event,
 )
-from backend.api_task_store import TaskStatus
+from backend.stores.task_store import TaskStatus
 
 
 def test_dashboard_prompt_excerpt_compacts_whitespace_and_limits_length():
@@ -45,13 +46,27 @@ def test_stream_agent_item_handles_sources_workflow_and_chunks():
         "panel-1",
         {"type": "workflow_state", "node_name": "classify", "status": "running"},
     )
+    token_event, token_chunk = stream_agent_item(
+        "panel-1",
+        {
+            "type": "token_usage",
+            "token_usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 3,
+                "total_tokens": 13,
+                "estimated": False,
+            },
+        },
+    )
     chunk_event, chunk_value = stream_agent_item("panel-1", "hello")
 
     assert sources_chunk is None
     assert workflow_chunk is None
+    assert token_chunk is None
     assert chunk_value == "hello"
     assert json.loads(sources_event.removeprefix("data: ").strip())["type"] == "sources"
     assert json.loads(workflow_event.removeprefix("data: ").strip())["status"] == "running"
+    assert json.loads(token_event.removeprefix("data: ").strip())["token_usage"]["total_tokens"] == 13
     assert json.loads(chunk_event.removeprefix("data: ").strip())["content"] == "hello"
 
 
@@ -126,6 +141,54 @@ def test_resolve_non_stream_agent_result_returns_terminal_error_without_intermed
     assert payloads[0]["type"] == "error"
     assert payloads[0]["error_code"] == "MAX_ITERATIONS"
     assert payloads[1]["type"] == "done"
+
+
+def test_fallback_generate_with_llm_uses_resolved_model_config():
+    calls = []
+
+    class FakeLLM:
+        async def ainvoke(self, prompt):
+            calls.append(("prompt", prompt))
+            return SimpleNamespace(content=" fallback answer ")
+
+    def create_llm(**kwargs):
+        calls.append(("llm", kwargs))
+        return FakeLLM()
+
+    logger = SimpleNamespace(warning=lambda *args, **kwargs: None)
+
+    result = asyncio.run(
+        fallback_generate_with_llm(
+            {
+                "provider": "ollama",
+                "connection_type": "ollama",
+                "panel_id": "panel-1",
+                "model": "llama3",
+                "base_url": "http://localhost:11434",
+                "api_key": "direct-key",
+                "temperature": 0.2,
+            },
+            "hello",
+            "tool result",
+            app_config_store=object(),
+            logger=logger,
+            create_llm=create_llm,
+        )
+    )
+
+    assert result == "fallback answer"
+    assert calls[0] == (
+        "llm",
+        {
+            "provider": "ollama",
+            "model_name": "llama3",
+            "base_url": "http://localhost:11434",
+            "api_key": "direct-key",
+            "temperature": 0.2,
+        },
+    )
+    assert "User question:\nhello" in calls[1][1]
+    assert "Tool outputs:\ntool result" in calls[1][1]
 
 
 def test_finalize_dashboard_task_marks_completion_when_card_is_present():

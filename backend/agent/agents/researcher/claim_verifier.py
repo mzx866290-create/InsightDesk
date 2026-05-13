@@ -46,14 +46,21 @@ def verify_atomic_claims(
             if source is not None and source not in matched_sources:
                 matched_sources.append(source)
         if not matched_sources and sources:
-            matched_sources = sources[:1]
+            evidence_fallback = [source for source in sources if source.adoption_role == "evidence"]
+            matched_sources = evidence_fallback[:1] or sources[:1]
 
-        families = {source.source_family for source in matched_sources if source.source_family}
-        has_primary = any(source.source_tier == "primary" for source in matched_sources)
+        evidence_sources = [
+            source for source in matched_sources if source.adoption_role == "evidence"
+        ]
+        ineligible_sources = [
+            source for source in matched_sources if source.adoption_role != "evidence"
+        ]
+        families = {source.source_family for source in evidence_sources if source.source_family}
+        has_primary = any(source.source_tier == "primary" for source in evidence_sources)
         has_date = bool(claim.date)
         supporting = [
             source.doc.title or source.doc.url or source.doc.doc_id
-            for source in matched_sources
+            for source in evidence_sources
         ]
 
         if claim.claim_type == "policy_signal" and has_primary:
@@ -64,14 +71,18 @@ def verify_atomic_claims(
             status = "verified"
             strength = "high" if has_primary else "medium"
             note = f"supported by {len(families)} independent source families"
-        elif matched_sources:
+        elif evidence_sources:
             status = "partial"
             strength = "medium" if has_primary else "low"
             note = "supported by limited or single-family evidence"
         else:
             status = "unverified"
             strength = "low"
-            note = "no supporting source matched"
+            note = "no eligible evidence source matched"
+
+        if ineligible_sources:
+            blocked_roles = sorted({source.adoption_role for source in ineligible_sources})
+            note = f"{note}; ignored non-evidence source roles: {', '.join(blocked_roles)}"
 
         if require_date and claim.claim_type in {"event", "data_point", "policy_signal"} and not has_date:
             if status == "verified":

@@ -1,98 +1,126 @@
 """Security, auth, share-link, and audit runtime helpers.
 
-Functions receive the API server module as ``ctx`` to preserve backwards-compatible
-monkeypatching of private helpers during the ongoing api_server split.
+Functions receive a narrow runtime context instead of the full API server module.
+The context is a dynamic proxy, so existing tests can still monkeypatch private
+helpers while the allowed dependency surface stays explicit.
 """
 
 from __future__ import annotations
 
+import json
+import os
 from typing import Any, Optional
 
-from fastapi import Request
+from fastapi import HTTPException, Request
+
+from backend.core import env_runtime, model_config_runtime, request_runtime
+from backend.helpers.security_helpers import (
+    auth_token_is_weak,
+    auth_token_preview,
+    build_auth_token_catalog_payload,
+    build_security_audit_summary_payload,
+    build_security_audit_aggregate_report_payload,
+    build_security_audit_archive_policy_payload,
+    build_security_audit_siem_export_payload,
+    build_security_status_payload,
+    build_sso_config_payload,
+    ceil_seconds,
+    normalize_auth_role,
+    normalize_sso_config_update as normalize_sso_config_update_value,
+    role_rank,
+    sanitize_log_value,
+    sanitize_request_path,
+    share_link_audit_payload,
+    security_audit_detail_value,
+    security_audit_event_org,
+    security_audit_event_tenant,
+    security_audit_event_to_payload,
+    security_audit_redacted_details,
+    security_audit_siem_event_payload,
+    filter_security_audit_events,
+    safe_epoch_seconds,
+    token_fingerprint,
+    token_preview,
+)
+
+SECURITY_RUNTIME_CONTEXT_ATTRIBUTES = (
+    "ALLOW_REMOTE_CLIENTS", "AUTH_ROLE_RANKS", "CHAT_ATTACHMENT_PREVIEW_CHARS", "CHAT_FILE_MAX_BYTES",
+    "CHAT_FILE_MAX_CHARS_PER_FILE", "CHAT_FILE_MAX_COUNT", "CHAT_FILE_MAX_TOTAL_CHARS", "DEFAULT_AUTH_ROLE",
+    "DEFAULT_AUTH_USER_IDS", "DEFAULT_SHARE_LINK_SECRET", "DOCUMENT_UPLOAD_MAX_COUNT", "DOCUMENT_UPLOAD_MAX_FILE_BYTES",
+    "DOCUMENT_UPLOAD_MAX_TOTAL_BYTES", "MIN_AUTH_TOKEN_RECOMMENDED_LENGTH", "MIN_SHARE_LINK_SECRET_LENGTH",
+    "REMOTE_MANAGEMENT_RATE_LIMIT_ENABLED", "REMOTE_MANAGEMENT_RATE_LIMIT_MAX_REQUESTS", "REMOTE_MANAGEMENT_RATE_LIMIT_MAX_REQUESTS_SOURCE", "REMOTE_MANAGEMENT_RATE_LIMIT_WINDOW_SECONDS",
+    "REMOTE_MANAGEMENT_RATE_LIMIT_WINDOW_SECONDS_SOURCE", "SECURITY_AUDIT_HISTORY_LIMIT", "SECURITY_AUDIT_HISTORY_LIMIT_SOURCE", "SECURITY_AUDIT_MEMORY_WINDOW_LIMIT",
+    "SHARE_LINK_SECRET", "SHARE_LINK_TTL_SECONDS", "_REMOTE_MANAGEMENT_RATE_LIMIT_PATH_PREFIXES",
+    "_get_security_audit_store", "_persist_security_audit_event",
+    "_effective_sso_config_value", "_effective_sso_session_ttl_seconds",
+    "_set_sso_config_field",
+    "_remote_management_rate_limit_lock", "_remote_management_rate_limits",
+    "_request_is_local", "_resolve_sso_session_token",
+    "_security_audit_events", "_security_audit_events_lock",
+    "logger", "time",
+)
 
 
-def _hash_secret(ctx, secret: str) -> str:
-    if not secret:
-        return "no-key"
-    return ctx.hashlib.sha256(secret.encode("utf-8")).hexdigest()[:12]
+class SecurityRuntimeContext:
+    """Whitelist-backed dynamic proxy for security runtime dependencies."""
+
+    __slots__ = ("_allowed_attributes", "_source")
+
+    def __init__(
+        self,
+        source: Any,
+        allowed_attributes: tuple[str, ...] = SECURITY_RUNTIME_CONTEXT_ATTRIBUTES,
+    ) -> None:
+        self._source = source
+        self._allowed_attributes = frozenset(allowed_attributes)
+
+    def __getattr__(self, name: str) -> Any:
+        if name not in self._allowed_attributes:
+            raise AttributeError(f"Security runtime context has no dependency {name!r}")
+        return getattr(self._source, name)
 
 
-def _token_fingerprint(ctx, token: str) -> str:
-    normalized = str(token or "").strip()
-    if not normalized:
-        return "empty"
-    return ctx.hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
-
-
-def _token_preview(ctx, token: str) -> str:
-    normalized = str(token or "").strip()
-    if len(normalized) <= 10:
-        return normalized
-    return f"{normalized[:6]}...{normalized[-4:]}"
-
-
-def _auth_token_preview(ctx, token: str) -> str:
-    normalized = str(token or "").strip()
-    if not normalized:
-        return "empty"
-    if len(normalized) <= 4:
-        return "*" * len(normalized)
-    if len(normalized) <= 8:
-        return f"{normalized[:2]}...{normalized[-2:]}"
-    return f"{normalized[:4]}...{normalized[-2:]}"
-
-
-def _request_client_ip(ctx, request: Request) -> str:
-    client = getattr(request, "client", None)
-    host = getattr(client, "host", "") if client is not None else ""
-    return str(host or "").strip()
-
-
-def _request_user_agent(ctx, request: Request) -> str:
-    return str(request.headers.get("user-agent") or "").strip()
+def build_security_runtime_context(source: Any) -> SecurityRuntimeContext:
+    missing = [
+        attribute
+        for attribute in SECURITY_RUNTIME_CONTEXT_ATTRIBUTES
+        if not hasattr(source, attribute)
+    ]
+    if missing:
+        raise AttributeError(
+            "Security runtime context missing required attributes: " + ", ".join(missing)
+        )
+    return SecurityRuntimeContext(source)
 
 
 def _request_is_local(ctx, request: Request) -> bool:
-    client = getattr(request, "client", None)
-    host = getattr(client, "host", "") if client is not None else ""
-    return ctx._is_loopback_host(host)
+    return env_runtime.is_loopback_host(request_runtime.request_client_ip(request))
 
 
 def _current_admin_api_token(ctx) -> str:
-    return str(ctx.os.getenv("ADMIN_API_TOKEN", "") or "").strip()
+    return str(os.getenv("ADMIN_API_TOKEN", "") or "").strip()
 
 
 def _normalize_auth_role(ctx, role: Any, *, default: str | None = None) -> str:
-    normalized = str(role or "").strip().lower()
-    if normalized in ctx.AUTH_ROLE_RANKS:
-        return normalized
-    return ctx.DEFAULT_AUTH_ROLE if default is None else default
+    return normalize_auth_role(
+        role,
+        role_ranks=ctx.AUTH_ROLE_RANKS,
+        default=ctx.DEFAULT_AUTH_ROLE if default is None else default,
+    )
 
 
 def _role_rank(ctx, role: str) -> int:
-    return ctx.AUTH_ROLE_RANKS.get(ctx._normalize_auth_role(role), 0)
-
-
-def _sanitize_log_value(ctx, value: Any, *, max_length: int = 256) -> str:
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    text = ctx.re.sub("[\\r\\n\\t]+", " ", text)
-    text = ctx.re.sub("\\s{2,}", " ", text)
-    if len(text) > max_length:
-        return f"{text[: max_length - 3]}..."
-    return text
-
-
-def _auth_capabilities_for_role(ctx, role: str) -> list[str]:
-    return ctx._build_auth_capabilities_for_role(
-        role, normalize_auth_role=ctx._normalize_auth_role, role_rank=ctx._role_rank
+    return role_rank(
+        role,
+        role_ranks=ctx.AUTH_ROLE_RANKS,
+        normalize_role=lambda value: _normalize_auth_role(ctx, value),
     )
 
 
 def _auth_token_is_weak(ctx, token: Any) -> bool:
-    normalized = str(token or "").strip()
-    return len(normalized) < ctx.MIN_AUTH_TOKEN_RECOMMENDED_LENGTH
+    return auth_token_is_weak(
+        token, min_length=ctx.MIN_AUTH_TOKEN_RECOMMENDED_LENGTH
+    )
 
 
 def _auth_token_hygiene_summary(
@@ -101,14 +129,14 @@ def _auth_token_hygiene_summary(
     records = (
         auth_records
         if auth_records is not None
-        else ctx._configured_auth_token_records()
+        else _configured_auth_token_records(ctx)
     )
     weak_count = 0
     legacy_count = 0
     for record in records:
         token = record.get("token") or ""
         auth_source = str(record.get("auth_source") or "").strip()
-        if ctx._auth_token_is_weak(token):
+        if _auth_token_is_weak(ctx, token):
             weak_count += 1
         if auth_source.startswith("legacy_"):
             legacy_count += 1
@@ -128,23 +156,23 @@ def _configured_auth_token_records(ctx) -> list[dict[str, str]]:
         normalized_token = str(token or "").strip()
         if not normalized_token or normalized_token in token_records:
             return
-        normalized_role = ctx._normalize_auth_role(role)
-        normalized_user_id = ctx._sanitize_log_value(
+        normalized_role = _normalize_auth_role(ctx, role)
+        normalized_user_id = sanitize_log_value(
             user_id or ctx.DEFAULT_AUTH_USER_IDS[normalized_role], max_length=128
         )
         token_records[normalized_token] = {
             "token": normalized_token,
             "role": normalized_role,
             "user_id": normalized_user_id,
-            "auth_source": ctx._sanitize_log_value(auth_source, max_length=64)
+            "auth_source": sanitize_log_value(auth_source, max_length=64)
             or "token_catalog",
         }
 
-    raw_catalog = str(ctx.os.getenv("APP_AUTH_TOKENS_JSON", "") or "").strip()
+    raw_catalog = str(os.getenv("APP_AUTH_TOKENS_JSON", "") or "").strip()
     if raw_catalog:
         try:
-            parsed_catalog = ctx.json.loads(raw_catalog)
-        except ctx.json.JSONDecodeError:
+            parsed_catalog = json.loads(raw_catalog)
+        except json.JSONDecodeError:
             ctx.logger.warning("Failed to parse APP_AUTH_TOKENS_JSON")
         else:
             catalog_entries: list[Any] = []
@@ -169,19 +197,19 @@ def _configured_auth_token_records(ctx) -> list[dict[str, str]]:
                     auth_source=entry.get("auth_source") or "app_auth_tokens_json",
                 )
     _add_token_record(
-        ctx._current_admin_api_token(),
+        _current_admin_api_token(ctx),
         role="admin",
         user_id="admin",
         auth_source="legacy_admin_token",
     )
     _add_token_record(
-        ctx.os.getenv("EDITOR_API_TOKEN"),
+        os.getenv("EDITOR_API_TOKEN"),
         role="editor",
         user_id="editor",
         auth_source="legacy_editor_token",
     )
     _add_token_record(
-        ctx.os.getenv("VIEWER_API_TOKEN"),
+        os.getenv("VIEWER_API_TOKEN"),
         role="viewer",
         user_id="viewer",
         auth_source="legacy_viewer_token",
@@ -196,7 +224,7 @@ def _configured_auth_token_map(ctx) -> dict[str, dict[str, str]]:
             "user_id": record["user_id"],
             "auth_source": record["auth_source"],
         }
-        for record in ctx._configured_auth_token_records()
+        for record in _configured_auth_token_records(ctx)
     }
 
 
@@ -214,7 +242,7 @@ def _extract_request_token(ctx, request: Request) -> str:
 
 
 def _extract_admin_token(ctx, request: Request) -> str:
-    return ctx._extract_request_token(request)
+    return _extract_request_token(ctx, request)
 
 
 def _request_auth_mode(ctx, request: Request) -> str:
@@ -233,7 +261,7 @@ def _request_auth_mode(ctx, request: Request) -> str:
 
 
 def _admin_auth_mode(ctx, request: Request) -> str:
-    return ctx._request_auth_mode(request)
+    return _request_auth_mode(ctx, request)
 
 
 def _resolve_request_auth(ctx, request: Request) -> dict[str, Any]:
@@ -242,7 +270,7 @@ def _resolve_request_auth(ctx, request: Request) -> dict[str, Any]:
         return cached
     is_local_request = ctx._request_is_local(request)
     bypass_enabled = not ctx.ALLOW_REMOTE_CLIENTS or is_local_request
-    auth_mode = ctx._request_auth_mode(request)
+    auth_mode = _request_auth_mode(ctx, request)
     token_present = False
     token_valid = False
     trusted_user_id = ""
@@ -250,26 +278,26 @@ def _resolve_request_auth(ctx, request: Request) -> dict[str, Any]:
     trusted_source = ""
     if bypass_enabled:
         trusted_user_id = (
-            ctx._sanitize_log_value(request.headers.get("X-User-Id"), max_length=128)
+            sanitize_log_value(request.headers.get("X-User-Id"), max_length=128)
             or "local"
         )
         trusted_role = "admin"
         trusted_source = "local_bypass" if is_local_request else "local_only_mode"
         token_valid = True
     else:
-        request_token = ctx._extract_request_token(request)
+        request_token = _extract_request_token(ctx, request)
         token_present = bool(request_token)
-        auth_record = ctx._configured_auth_token_map().get(request_token)
+        auth_record = _configured_auth_token_map(ctx).get(request_token)
         if auth_record is not None:
             trusted_user_id = str(auth_record.get("user_id") or "").strip()
-            trusted_role = ctx._normalize_auth_role(auth_record.get("role"))
+            trusted_role = _normalize_auth_role(ctx, auth_record.get("role"))
             trusted_source = str(auth_record.get("auth_source") or "").strip()
             token_valid = True
         elif hasattr(ctx, "_resolve_sso_session_token"):
             auth_record = ctx._resolve_sso_session_token(request_token)
             if auth_record is not None:
                 trusted_user_id = str(auth_record.get("user_id") or "").strip()
-                trusted_role = ctx._normalize_auth_role(auth_record.get("role"))
+                trusted_role = _normalize_auth_role(ctx, auth_record.get("role"))
                 trusted_source = str(auth_record.get("auth_source") or "").strip()
                 token_valid = True
     resolved_auth = {
@@ -287,24 +315,15 @@ def _resolve_request_auth(ctx, request: Request) -> dict[str, Any]:
 
 
 def _request_user_id(ctx, request: Request) -> str:
-    return str(ctx._resolve_request_auth(request).get("user_id") or "").strip()
+    return str(_resolve_request_auth(ctx, request).get("user_id") or "").strip()
 
 
 def _request_user_role(ctx, request: Request) -> str:
-    return str(ctx._resolve_request_auth(request).get("role") or "").strip()
+    return str(_resolve_request_auth(ctx, request).get("role") or "").strip()
 
 
 def _request_auth_source(ctx, request: Request) -> str:
-    return str(ctx._resolve_request_auth(request).get("auth_source") or "").strip()
-
-
-def _sanitize_request_path(ctx, path: str) -> str:
-    normalized = str(path or "").strip() or "/"
-    if normalized.startswith("/api/share-links/"):
-        return "/api/share-links/<token>"
-    if normalized.startswith("/shared/"):
-        return "/shared/<token>"
-    return normalized
+    return str(_resolve_request_auth(ctx, request).get("auth_source") or "").strip()
 
 
 def _remote_management_rate_limit_applies(ctx, request: Request) -> bool:
@@ -314,7 +333,7 @@ def _remote_management_rate_limit_applies(ctx, request: Request) -> bool:
         return False
     if str(request.method or "").strip().upper() == "OPTIONS":
         return False
-    path = ctx._sanitize_request_path(request.url.path)
+    path = sanitize_request_path(request.url.path)
     return any(
         (
             path.startswith(prefix)
@@ -324,33 +343,23 @@ def _remote_management_rate_limit_applies(ctx, request: Request) -> bool:
 
 
 def _remote_management_rate_limit_principal(ctx, request: Request) -> str:
-    token = ctx._extract_request_token(request)
+    token = _extract_request_token(ctx, request)
     if token:
-        return f"token:{ctx._token_fingerprint(token)}"
-    ip = ctx._request_client_ip(request) or "unknown"
+        return f"token:{token_fingerprint(token)}"
+    ip = request_runtime.request_client_ip(request) or "unknown"
     return f"ip:{ip}"
-
-
-def _ceil_seconds(ctx, seconds: float) -> int:
-    normalized = float(seconds or 0.0)
-    if normalized <= 0:
-        return 0
-    truncated = int(normalized)
-    if float(truncated) < normalized:
-        truncated += 1
-    return max(1, truncated)
 
 
 def _consume_remote_management_rate_limit(
     ctx, request: Request
 ) -> dict[str, Any] | None:
-    if not ctx._remote_management_rate_limit_applies(request):
+    if not _remote_management_rate_limit_applies(ctx, request):
         return None
     now = ctx.time.time()
     window_seconds = int(ctx.REMOTE_MANAGEMENT_RATE_LIMIT_WINDOW_SECONDS)
     max_requests = int(ctx.REMOTE_MANAGEMENT_RATE_LIMIT_MAX_REQUESTS)
-    principal = ctx._remote_management_rate_limit_principal(request)
-    path = ctx._sanitize_request_path(request.url.path)
+    principal = _remote_management_rate_limit_principal(ctx, request)
+    path = sanitize_request_path(request.url.path)
     with ctx._remote_management_rate_limit_lock:
         expired_cutoff = now - float(window_seconds)
         stale_principals = [
@@ -372,6 +381,8 @@ def _consume_remote_management_rate_limit(
             state["count"] = float(current_count)
             ctx._remote_management_rate_limits[principal] = state
         else:
+            state["blocked_count"] = float(int(state.get("blocked_count", 0.0) or 0) + 1)
+            state["last_blocked_at"] = float(now)
             ctx._remote_management_rate_limits[principal] = state
         remaining = max(0, max_requests - current_count)
         reset_after_seconds = max(
@@ -379,7 +390,7 @@ def _consume_remote_management_rate_limit(
             float(window_seconds)
             - (now - float(state.get("window_started_at", now) or now)),
         )
-        retry_after = ctx._ceil_seconds(reset_after_seconds) if not allowed else 0
+        retry_after = ceil_seconds(reset_after_seconds) if not allowed else 0
     return {
         "allowed": bool(allowed),
         "principal": principal,
@@ -388,16 +399,68 @@ def _consume_remote_management_rate_limit(
         "remaining": remaining,
         "window_seconds": window_seconds,
         "retry_after": retry_after,
-        "reset_after_seconds": ctx._ceil_seconds(reset_after_seconds),
+        "reset_after_seconds": ceil_seconds(reset_after_seconds),
+    }
+
+
+def _remote_management_rate_limit_status(ctx) -> dict[str, Any]:
+    now = ctx.time.time()
+    window_seconds = int(ctx.REMOTE_MANAGEMENT_RATE_LIMIT_WINDOW_SECONDS)
+    with ctx._remote_management_rate_limit_lock:
+        expired_cutoff = now - float(window_seconds)
+        stale_principals = [
+            key
+            for key, value in ctx._remote_management_rate_limits.items()
+            if float(value.get("window_started_at", 0.0) or 0.0) <= expired_cutoff
+        ]
+        for key in stale_principals:
+            ctx._remote_management_rate_limits.pop(key, None)
+
+        active_states = list(ctx._remote_management_rate_limits.values())
+        blocked_count = sum(
+            int(value.get("blocked_count", 0.0) or 0) for value in active_states
+        )
+        last_blocked_values = [
+            float(value.get("last_blocked_at", 0.0) or 0.0)
+            for value in active_states
+            if float(value.get("last_blocked_at", 0.0) or 0.0) > 0
+        ]
+        reset_after_values = [
+            ceil_seconds(
+                max(
+                    0.0,
+                    float(window_seconds)
+                    - (now - float(value.get("window_started_at", now) or now)),
+                )
+            )
+            for value in active_states
+        ]
+
+    return {
+        "path_prefixes": list(ctx._REMOTE_MANAGEMENT_RATE_LIMIT_PATH_PREFIXES),
+        "response_headers": [
+            "X-RateLimit-Limit",
+            "X-RateLimit-Remaining",
+            "X-RateLimit-Reset",
+            "X-RateLimit-Scope",
+            "Retry-After",
+        ],
+        "tracked_principal_count": len(active_states),
+        "active_request_count": sum(
+            int(value.get("count", 0.0) or 0) for value in active_states
+        ),
+        "blocked_count": blocked_count,
+        "last_blocked_at": max(last_blocked_values) if last_blocked_values else None,
+        "next_reset_after_seconds": min(reset_after_values) if reset_after_values else 0,
     }
 
 
 def _current_share_link_secret(ctx) -> str:
-    return str(ctx.os.getenv("SHARE_LINK_SECRET", ctx.SHARE_LINK_SECRET) or "").strip()
+    return str(os.getenv("SHARE_LINK_SECRET", ctx.SHARE_LINK_SECRET) or "").strip()
 
 
 def _share_link_secret_is_weak(ctx) -> bool:
-    secret = ctx._current_share_link_secret()
+    secret = _current_share_link_secret(ctx)
     return (
         not secret
         or secret == ctx.DEFAULT_SHARE_LINK_SECRET
@@ -405,85 +468,81 @@ def _share_link_secret_is_weak(ctx) -> bool:
     )
 
 
+def _share_link_secret_uses_default(ctx) -> bool:
+    return _current_share_link_secret(ctx) == ctx.DEFAULT_SHARE_LINK_SECRET
+
+
 def _require_remote_role(
     ctx, request: Request, *, minimum_role: str = "admin"
 ) -> dict[str, Any]:
-    auth = ctx._resolve_request_auth(request)
+    auth = _resolve_request_auth(ctx, request)
     if auth["bypass_enabled"]:
         return auth
-    configured_records = ctx._configured_auth_token_records()
+    configured_records = _configured_auth_token_records(ctx)
     if not configured_records and not auth["token_valid"]:
-        ctx._audit_security_event(
+        _audit_security_event(
+            ctx,
             "remote_auth_guard",
             request,
             result="blocked",
             details=f"reason=auth_not_configured required_role={minimum_role}",
         )
-        raise ctx.HTTPException(
+        raise HTTPException(
             status_code=503,
             detail="Remote access is disabled until API tokens are configured.",
         )
     if not auth["token_valid"]:
         reason = "missing_token" if not auth["token_present"] else "invalid_token"
-        ctx._audit_security_event(
+        _audit_security_event(
+            ctx,
             "remote_auth_guard",
             request,
             result="rejected",
             details=f"reason={reason} required_role={minimum_role}",
         )
-        raise ctx.HTTPException(status_code=403, detail="Missing or invalid API token.")
+        raise HTTPException(status_code=403, detail="Missing or invalid API token.")
     actual_role = str(auth["role"] or "").strip()
-    if ctx._role_rank(actual_role) < ctx._role_rank(minimum_role):
-        ctx._audit_security_event(
+    if _role_rank(ctx, actual_role) < _role_rank(ctx, minimum_role):
+        _audit_security_event(
+            ctx,
             "remote_auth_guard",
             request,
             result="rejected",
             details=f"reason=insufficient_role required_role={minimum_role} actual_role={actual_role or '<none>'}",
         )
-        raise ctx.HTTPException(
+        raise HTTPException(
             status_code=403, detail=f"Insufficient role: {minimum_role} required."
         )
     return auth
 
 
 def _require_remote_viewer(ctx, request: Request) -> dict[str, Any]:
-    return ctx._require_remote_role(request, minimum_role="viewer")
+    return _require_remote_role(ctx, request, minimum_role="viewer")
 
 
 def _require_remote_editor(ctx, request: Request) -> dict[str, Any]:
-    return ctx._require_remote_role(request, minimum_role="editor")
+    return _require_remote_role(ctx, request, minimum_role="editor")
 
 
 def _require_remote_admin(ctx, request: Request) -> dict[str, Any]:
-    return ctx._require_remote_role(request, minimum_role="admin")
+    return _require_remote_role(ctx, request, minimum_role="admin")
 
 
 def _require_remote_share_secret(ctx, request: Request) -> None:
     if not ctx.ALLOW_REMOTE_CLIENTS or ctx._request_is_local(request):
         return
-    if ctx._share_link_secret_is_weak():
-        ctx._audit_security_event(
+    if _share_link_secret_is_weak(ctx):
+        _audit_security_event(
+            ctx,
             "remote_share_guard",
             request,
             result="blocked",
             details="reason=weak_share_link_secret",
         )
-        raise ctx.HTTPException(
+        raise HTTPException(
             status_code=503,
             detail="Remote sharing is disabled until SHARE_LINK_SECRET is strong enough.",
         )
-
-
-def _content_hash(ctx, value: Any) -> str:
-    if value in (None, ""):
-        return ""
-    if isinstance(value, str):
-        payload = value
-    else:
-        payload = ctx.json.dumps(
-            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-        )
-    return ctx.hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _audit_security_event(
@@ -493,23 +552,23 @@ def _audit_security_event(
     event = {
         "timestamp": ctx.time.time(),
         "request_id": str(request_id or "").strip(),
-        "action": ctx._sanitize_log_value(action, max_length=128),
-        "result": ctx._sanitize_log_value(result, max_length=32),
-        "ip": ctx._sanitize_log_value(ctx._request_client_ip(request), max_length=64),
+        "action": sanitize_log_value(action, max_length=128),
+        "result": sanitize_log_value(result, max_length=32),
+        "ip": sanitize_log_value(request_runtime.request_client_ip(request), max_length=64),
         "is_local": bool(ctx._request_is_local(request)),
-        "auth_mode": ctx._sanitize_log_value(
-            ctx._request_auth_mode(request), max_length=32
+        "auth_mode": sanitize_log_value(
+            _request_auth_mode(ctx, request), max_length=32
         ),
-        "auth_source": ctx._sanitize_log_value(
-            ctx._request_auth_source(request), max_length=64
+        "auth_source": sanitize_log_value(
+            _request_auth_source(ctx, request), max_length=64
         ),
-        "user_id": ctx._sanitize_log_value(
-            ctx._request_user_id(request), max_length=128
+        "user_id": sanitize_log_value(
+            _request_user_id(ctx, request), max_length=128
         ),
-        "user_role": ctx._sanitize_log_value(
-            ctx._request_user_role(request), max_length=64
+        "user_role": sanitize_log_value(
+            _request_user_role(ctx, request), max_length=64
         ),
-        "details": ctx._sanitize_log_value(details, max_length=512),
+        "details": sanitize_log_value(details, max_length=512),
     }
     with ctx._security_audit_events_lock:
         ctx._security_audit_events.append(event)
@@ -534,36 +593,17 @@ def _share_link_audit_payload(
     ctx, record: Any, *, now: Optional[float] = None
 ) -> dict[str, Any]:
     current_time = ctx.time.time() if now is None else float(now)
-    revoked_at = getattr(record, "revoked_at", None)
-    expires_at = float(getattr(record, "expires_at", 0) or 0)
-    share_token = str(getattr(record, "share_token", "") or "").strip()
-    return {
-        "resource_type": str(getattr(record, "resource_type", "") or "").strip(),
-        "resource_id": str(getattr(record, "resource_id", "") or "").strip(),
-        "created_at": float(getattr(record, "created_at", 0) or 0),
-        "expires_at": expires_at,
-        "revoked_at": float(revoked_at) if revoked_at is not None else None,
-        "is_active": revoked_at is None and expires_at > current_time,
-        "created_by_ip": str(getattr(record, "created_by_ip", "") or "").strip(),
-        "created_user_agent": str(
-            getattr(record, "created_user_agent", "") or ""
-        ).strip(),
-        "access_count": int(getattr(record, "access_count", 0) or 0),
-        "last_accessed_at": float(getattr(record, "last_accessed_at", 0))
-        if getattr(record, "last_accessed_at", None) is not None
-        else None,
-        "last_accessed_ip": str(getattr(record, "last_accessed_ip", "") or "").strip(),
-        "last_accessed_user_agent": str(
-            getattr(record, "last_accessed_user_agent", "") or ""
-        ).strip(),
-        "share_token_preview": ctx._token_preview(share_token),
-        "share_token_fingerprint": ctx._token_fingerprint(share_token),
-    }
+    return share_link_audit_payload(
+        record,
+        current_time=current_time,
+        token_preview_func=token_preview,
+        token_fingerprint_func=token_fingerprint,
+    )
 
 
 def _security_status_payload(ctx) -> dict[str, Any]:
-    cors_origins, cors_allow_credentials = ctx._cors_settings()
-    return ctx._build_security_status_payload(
+    cors_origins, cors_allow_credentials = env_runtime.cors_settings()
+    return build_security_status_payload(
         allow_remote_clients=ctx.ALLOW_REMOTE_CLIENTS,
         share_link_ttl_seconds=ctx.SHARE_LINK_TTL_SECONDS,
         remote_management_rate_limit_enabled=ctx.REMOTE_MANAGEMENT_RATE_LIMIT_ENABLED,
@@ -571,6 +611,7 @@ def _security_status_payload(ctx) -> dict[str, Any]:
         remote_management_rate_limit_window_seconds_source=ctx.REMOTE_MANAGEMENT_RATE_LIMIT_WINDOW_SECONDS_SOURCE,
         remote_management_rate_limit_max_requests=ctx.REMOTE_MANAGEMENT_RATE_LIMIT_MAX_REQUESTS,
         remote_management_rate_limit_max_requests_source=ctx.REMOTE_MANAGEMENT_RATE_LIMIT_MAX_REQUESTS_SOURCE,
+        remote_management_rate_limit_status=_remote_management_rate_limit_status(ctx),
         security_audit_history_limit=ctx.SECURITY_AUDIT_HISTORY_LIMIT,
         security_audit_history_limit_source=ctx.SECURITY_AUDIT_HISTORY_LIMIT_SOURCE,
         security_audit_memory_window_limit=ctx.SECURITY_AUDIT_MEMORY_WINDOW_LIMIT,
@@ -588,10 +629,14 @@ def _security_status_payload(ctx) -> dict[str, Any]:
         },
         cors_allowed_origins=cors_origins,
         cors_allow_credentials=cors_allow_credentials,
-        configured_auth_token_records=ctx._configured_auth_token_records,
-        auth_token_hygiene_summary=ctx._auth_token_hygiene_summary,
-        role_rank=ctx._role_rank,
-        share_link_secret_is_weak=ctx._share_link_secret_is_weak,
+        configured_auth_token_records=lambda: _configured_auth_token_records(ctx),
+        auth_token_hygiene_summary=lambda auth_records=None: (
+            _auth_token_hygiene_summary(ctx, auth_records)
+        ),
+        role_rank=lambda value: _role_rank(ctx, value),
+        share_link_secret_is_weak=lambda: _share_link_secret_is_weak(ctx),
+        share_link_secret_uses_default=lambda: _share_link_secret_uses_default(ctx),
+        min_share_link_secret_length=ctx.MIN_SHARE_LINK_SECRET_LENGTH,
         read_security_audit_event_count=lambda: (
             ctx._get_security_audit_store().count_events()
         ),
@@ -599,116 +644,115 @@ def _security_status_payload(ctx) -> dict[str, Any]:
     )
 
 
+def _sso_config_payload(ctx) -> dict[str, Any]:
+    return build_sso_config_payload(
+        provider=ctx._effective_sso_config_value("provider"),
+        issuer_url=ctx._effective_sso_config_value("issuer_url"),
+        authorization_endpoint=ctx._effective_sso_config_value(
+            "authorization_endpoint"
+        ),
+        token_endpoint=ctx._effective_sso_config_value("token_endpoint"),
+        jwks_url=ctx._effective_sso_config_value("jwks_url"),
+        client_id=ctx._effective_sso_config_value("client_id"),
+        client_secret=ctx._effective_sso_config_value("client_secret"),
+        allowed_domains=ctx._effective_sso_config_value("allowed_domains"),
+        scopes=ctx._effective_sso_config_value("scopes"),
+        default_role=_normalize_auth_role(
+            ctx,
+            ctx._effective_sso_config_value("default_role"),
+            default=ctx.DEFAULT_AUTH_ROLE,
+        ),
+        session_ttl_seconds=ctx._effective_sso_session_ttl_seconds(),
+    )
+
+
+def _normalize_sso_config_update(ctx, field: str, value: Any) -> str:
+    try:
+        return normalize_sso_config_update_value(
+            field,
+            value,
+            default_auth_role=ctx.DEFAULT_AUTH_ROLE,
+            normalize_auth_role=lambda role, *, default=ctx.DEFAULT_AUTH_ROLE: (
+                _normalize_auth_role(ctx, role, default=default)
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _save_sso_config_payload(ctx, body: Any) -> dict[str, Any]:
+    data = model_config_runtime.base_model_payload(body)
+    clear_client_secret = bool(data.pop("clear_client_secret", False))
+    for field in (
+        "provider",
+        "issuer_url",
+        "authorization_endpoint",
+        "token_endpoint",
+        "jwks_url",
+        "client_id",
+        "allowed_domains",
+        "scopes",
+        "default_role",
+        "session_ttl_seconds",
+    ):
+        if field not in data or data[field] is None:
+            continue
+        ctx._set_sso_config_field(
+            field,
+            _normalize_sso_config_update(ctx, field, data[field]),
+        )
+
+    client_secret = data.get("client_secret")
+    if clear_client_secret:
+        ctx._set_sso_config_field("client_secret", "")
+    elif client_secret is not None and str(client_secret or "").strip():
+        ctx._set_sso_config_field("client_secret", str(client_secret or "").strip())
+
+    return _sso_config_payload(ctx)
+
+
 def _auth_token_catalog_payload(ctx) -> dict[str, Any]:
-    return ctx._build_auth_token_catalog_payload(
+    return build_auth_token_catalog_payload(
         default_role=ctx.DEFAULT_AUTH_ROLE,
-        configured_auth_token_records=ctx._configured_auth_token_records,
-        auth_token_hygiene_summary=ctx._auth_token_hygiene_summary,
-        auth_token_preview=ctx._auth_token_preview,
-        token_fingerprint=ctx._token_fingerprint,
-        auth_token_is_weak=ctx._auth_token_is_weak,
-        role_rank=ctx._role_rank,
+        configured_auth_token_records=lambda: _configured_auth_token_records(ctx),
+        auth_token_hygiene_summary=lambda auth_records=None: (
+            _auth_token_hygiene_summary(ctx, auth_records)
+        ),
+        auth_token_preview=auth_token_preview,
+        token_fingerprint=token_fingerprint,
+        auth_token_is_weak=lambda token: _auth_token_is_weak(ctx, token),
+        role_rank=lambda value: _role_rank(ctx, value),
     )
 
 
 def _safe_epoch_seconds(value: Any) -> float | None:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return None
-    if parsed < 0:
-        return None
-    return parsed
+    return safe_epoch_seconds(value)
 
 
 def _security_audit_event_to_payload(record: Any) -> dict[str, Any]:
-    return {
-        "timestamp": record.timestamp,
-        "request_id": record.request_id,
-        "action": record.action,
-        "result": record.result,
-        "ip": record.ip,
-        "is_local": record.is_local,
-        "auth_mode": record.auth_mode,
-        "auth_source": record.auth_source,
-        "user_id": record.user_id,
-        "user_role": record.user_role,
-        "details": record.details,
-        "tenant_id": getattr(record, "tenant_id", "") or "",
-        "org_id": getattr(record, "org_id", "") or "",
-        "legal_hold": bool(getattr(record, "legal_hold", False)),
-    }
+    return security_audit_event_to_payload(record)
 
 
 def _security_audit_detail_value(ctx, details: Any, *names: str) -> str:
-    normalized_names = {str(name or "").strip().lower() for name in names}
-    for match in ctx.re.finditer(
-        r"(?P<key>[A-Za-z_][A-Za-z0-9_-]*)=(?P<value>[^ ]*)",
-        str(details or ""),
-    ):
-        key = str(match.group("key") or "").strip().lower()
-        if key in normalized_names:
-            return str(match.group("value") or "").strip()
-    return ""
+    return security_audit_detail_value(details, *names)
 
 
 def _security_audit_event_org(event: dict[str, Any]) -> str:
-    return str(event.get("org_id") or "").strip()
+    return security_audit_event_org(event)
 
 
 def _security_audit_event_tenant(event: dict[str, Any]) -> str:
-    tenant = str(event.get("tenant_id") or "").strip()
-    return tenant or _security_audit_event_org(event)
+    return security_audit_event_tenant(event)
 
 
 def _security_audit_redacted_details(ctx, details: Any) -> str:
-    """Keep detail context useful for SIEM while removing obvious secrets."""
-
-    text = ctx._sanitize_log_value(details, max_length=512)
-    if not text:
-        return ""
-    sensitive_key_pattern = (
-        r"(?i)\b(token|secret|password|passwd|authorization|api[_-]?key|"
-        r"client[_-]?secret|state|nonce|code|session[_-]?token)=([^ ]+)"
-    )
-    text = ctx.re.sub(sensitive_key_pattern, lambda match: f"{match.group(1)}=<redacted>", text)
-    text = ctx.re.sub(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+", "Bearer <redacted>", text)
-    return text
+    return security_audit_redacted_details(details)
 
 
 def _security_audit_siem_event_payload(
     ctx, event: dict[str, Any]
 ) -> dict[str, Any]:
-    action = ctx._sanitize_log_value(event.get("action"), max_length=128)
-    result = ctx._sanitize_log_value(event.get("result"), max_length=32)
-    org_id = _security_audit_event_org(event) or _security_audit_detail_value(
-        ctx, event.get("details"), "org_id", "org", "organization_id"
-    )
-    tenant_id = _security_audit_event_tenant(event) or _security_audit_detail_value(
-        ctx, event.get("details"), "tenant_id", "tenant"
-    )
-    if not tenant_id and org_id:
-        tenant_id = org_id
-    return {
-        "time": float(_safe_epoch_seconds(event.get("timestamp")) or 0.0),
-        "request_id": ctx._sanitize_log_value(event.get("request_id"), max_length=128),
-        "action": action,
-        "result": result,
-        "category": ctx._security_audit_category_for_action(action),
-        "user_id": ctx._sanitize_log_value(event.get("user_id"), max_length=128),
-        "user_role": ctx._sanitize_log_value(event.get("user_role"), max_length=64),
-        "tenant": ctx._sanitize_log_value(tenant_id, max_length=128),
-        "tenant_id": ctx._sanitize_log_value(tenant_id, max_length=128),
-        "org": ctx._sanitize_log_value(org_id, max_length=128),
-        "org_id": ctx._sanitize_log_value(org_id, max_length=128),
-        "ip": ctx._sanitize_log_value(event.get("ip"), max_length=64),
-        "auth_mode": ctx._sanitize_log_value(event.get("auth_mode"), max_length=32),
-        "auth_source": ctx._sanitize_log_value(
-            event.get("auth_source"), max_length=64
-        ),
-        "legal_hold": bool(event.get("legal_hold")),
-        "details": _security_audit_redacted_details(ctx, event.get("details")),
-    }
+    return security_audit_siem_event_payload(event)
 
 
 def _security_audit_load_filtered_events(
@@ -786,33 +830,15 @@ def _filter_security_audit_events(
     since: float | None = None,
     until: float | None = None,
 ) -> list[dict[str, Any]]:
-    normalized_action = str(action or "").strip().lower()
-    normalized_result = str(result or "").strip().lower()
-    normalized_category = str(category or "").strip().lower()
-    normalized_user_id = str(user_id or "").strip()
-
-    filtered: list[dict[str, Any]] = []
-    for item in events:
-        item_action = str(item.get("action") or "").strip()
-        if normalized_action and item_action.lower() != normalized_action:
-            continue
-        item_result = str(item.get("result") or "").strip().lower()
-        if normalized_result and item_result != normalized_result:
-            continue
-        if normalized_category:
-            event_category = ctx._security_audit_category_for_action(item_action)
-            if event_category != normalized_category:
-                continue
-        item_user_id = str(item.get("user_id") or "").strip()
-        if normalized_user_id and item_user_id != normalized_user_id:
-            continue
-        timestamp = _safe_epoch_seconds(item.get("timestamp")) or 0.0
-        if since is not None and timestamp < since:
-            continue
-        if until is not None and timestamp > until:
-            continue
-        filtered.append(item)
-    return filtered
+    return filter_security_audit_events(
+        events,
+        action=action,
+        result=result,
+        category=category,
+        user_id=user_id,
+        since=since,
+        until=until,
+    )
 
 
 def _security_audit_events_payload(
@@ -924,7 +950,7 @@ def _security_audit_summary_payload(
                 for item in ctx._security_audit_events[-normalized_limit:]
             ]
 
-    return ctx._build_security_audit_summary_payload(
+    return build_security_audit_summary_payload(
         events,
         category=category,
         window_limit=normalized_limit,
@@ -943,9 +969,6 @@ def _security_audit_siem_export_payload(
     since: Any = None,
     until: Any = None,
 ) -> dict[str, Any]:
-    normalized_format = str(format or "json").strip().lower()
-    if normalized_format not in {"json", "ndjson"}:
-        normalized_format = "json"
     events, normalized_limit, filters = _security_audit_load_filtered_events(
         ctx,
         limit=limit,
@@ -956,34 +979,12 @@ def _security_audit_siem_export_payload(
         since=since,
         until=until,
     )
-    exported_events = [_security_audit_siem_event_payload(ctx, event) for event in events]
-    content = ""
-    if normalized_format == "ndjson":
-        content = "\n".join(
-            ctx.json.dumps(event, ensure_ascii=False, sort_keys=True)
-            for event in exported_events
-        )
-    return {
-        "format": normalized_format,
-        "content_type": (
-            "application/x-ndjson"
-            if normalized_format == "ndjson"
-            else "application/json"
-        ),
-        "events": exported_events if normalized_format == "json" else [],
-        "content": content,
-        "total": len(exported_events),
-        "limit": normalized_limit,
-        "filters": filters,
-    }
-
-
-def _increment_nested_count(
-    totals: dict[str, dict[str, int]], dimension: str, value: Any, count: int = 1
-) -> None:
-    bucket = totals.setdefault(dimension, {})
-    key = str(value or "unknown").strip() or "unknown"
-    bucket[key] = bucket.get(key, 0) + int(count)
+    return build_security_audit_siem_export_payload(
+        events,
+        format=format,
+        limit=normalized_limit,
+        filters=filters,
+    )
 
 
 def _security_audit_aggregate_report_payload(
@@ -1012,49 +1013,11 @@ def _security_audit_aggregate_report_payload(
         since=since,
         until=until,
     )
-    groups: dict[tuple[str, str, str, str, str, str], int] = {}
-    totals: dict[str, dict[str, int]] = {}
-    for event in events:
-        siem_event = _security_audit_siem_event_payload(ctx, event)
-        key = (
-            str(siem_event["tenant"] or "unknown"),
-            str(siem_event["org"] or "unknown"),
-            str(siem_event["user_id"] or "unknown"),
-            str(siem_event["category"] or "uncategorized"),
-            str(siem_event["action"] or "unknown"),
-            str(siem_event["result"] or "unknown"),
-        )
-        groups[key] = groups.get(key, 0) + 1
-    rows = [
-        {
-            "tenant": tenant,
-            "org": org,
-            "user_id": grouped_user_id,
-            "category": grouped_category,
-            "action": grouped_action,
-            "result": grouped_result,
-            "count": count,
-        }
-        for (
-            tenant,
-            org,
-            grouped_user_id,
-            grouped_category,
-            grouped_action,
-            grouped_result,
-        ), count in sorted(groups.items())
-    ]
-    for row in rows:
-        for dimension in ("tenant", "org", "user_id", "category", "action", "result"):
-            _increment_nested_count(totals, dimension, row[dimension], row["count"])
-    return {
-        "total": len(events),
-        "window_limit": normalized_limit,
-        "group_by": ["tenant", "org", "user_id", "category", "action", "result"],
-        "rows": rows,
-        "totals": {key: dict(sorted(value.items())) for key, value in totals.items()},
-        "filters": filters,
-    }
+    return build_security_audit_aggregate_report_payload(
+        events,
+        limit=normalized_limit,
+        filters=filters,
+    )
 
 
 def _security_audit_archive_policy_payload(
@@ -1070,11 +1033,7 @@ def _security_audit_archive_policy_payload(
         normalized_mode = "preview"
     normalized_retention_days = max(0, int(retention_days or 0))
     normalized_limit = max(1, min(int(limit or 100), int(ctx.SECURITY_AUDIT_HISTORY_LIMIT)))
-    cutoff_timestamp = (
-        ctx.time.time() - float(normalized_retention_days * 86400)
-        if normalized_retention_days > 0
-        else None
-    )
+    current_time = ctx.time.time()
     try:
         stored_events = ctx._get_security_audit_store().list_events(
             limit=int(ctx.SECURITY_AUDIT_HISTORY_LIMIT)
@@ -1083,56 +1042,21 @@ def _security_audit_archive_policy_payload(
         ctx.logger.exception("Failed to load persisted security audit events")
         stored_events = []
     events = [_security_audit_event_to_payload(record) for record in stored_events]
-    legal_hold_count = sum(1 for event in events if bool(event.get("legal_hold")))
-    candidates = [
-        event
-        for event in events
-        if not bool(event.get("legal_hold"))
-        and (
-            cutoff_timestamp is None
-            or float(_safe_epoch_seconds(event.get("timestamp")) or 0.0)
-            <= cutoff_timestamp
-        )
-    ]
-    legal_hold_preserved_count = sum(
-        1
-        for event in events
-        if bool(event.get("legal_hold"))
-        and (
-            cutoff_timestamp is None
-            or float(_safe_epoch_seconds(event.get("timestamp")) or 0.0)
-            <= cutoff_timestamp
-        )
+    return build_security_audit_archive_policy_payload(
+        events,
+        mode=normalized_mode,
+        retention_days=normalized_retention_days,
+        current_time=current_time,
+        limit=normalized_limit,
+        history_limit=int(ctx.SECURITY_AUDIT_HISTORY_LIMIT),
+        legal_hold=legal_hold,
     )
-    export_events = (
-        [_security_audit_siem_event_payload(ctx, event) for event in candidates[:normalized_limit]]
-        if normalized_mode == "export"
-        else []
-    )
-    return {
-        "mode": normalized_mode,
-        "retention_days": normalized_retention_days,
-        "cutoff_timestamp": cutoff_timestamp,
-        "history_limit": int(ctx.SECURITY_AUDIT_HISTORY_LIMIT),
-        "total": len(events),
-        "archive_candidate_count": len(candidates),
-        "export_count": len(export_events),
-        "legal_hold_count": int(legal_hold_count),
-        "legal_hold_preserved_count": int(legal_hold_preserved_count),
-        "cleanup_behavior": {
-            "manual_cleanup_endpoint": "/api/security/audit-events/cleanup",
-            "cleanup_preserves_legal_hold": True,
-            "existing_cleanup_contract": "keep_latest and dry_run parameters are unchanged",
-            "legal_hold_requested": bool(legal_hold),
-        },
-        "events": export_events,
-    }
 
 
 def _security_audit_legal_hold_payload(
     ctx, *, request_id: str, legal_hold: bool = True
 ) -> dict[str, Any]:
-    normalized_request_id = ctx._sanitize_log_value(request_id, max_length=128)
+    normalized_request_id = sanitize_log_value(request_id, max_length=128)
     updated_count = ctx._get_security_audit_store().set_legal_hold(
         normalized_request_id,
         legal_hold=bool(legal_hold),

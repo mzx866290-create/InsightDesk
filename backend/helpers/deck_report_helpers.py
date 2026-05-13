@@ -1,5 +1,6 @@
 """Deck and report helper utilities."""
 
+import json
 from typing import Any, Callable
 
 from backend.deck_service import (
@@ -77,6 +78,113 @@ def _attach_message_metadata(message: Any, metadata: dict[str, Any]) -> Any:
     except Exception:
         pass
     return message
+
+
+def _clean_report_template_id(value: Any) -> str:
+    """Normalize template IDs before embedding them in markdown metadata."""
+
+    return " ".join(str(value or "").split())[:80]
+
+
+def _clean_report_template_options(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key).strip(): option
+        for key, option in value.items()
+        if str(key).strip() and isinstance(option, (str, int, float, bool))
+    }
+
+
+def _is_report_template_metadata_line(line: str) -> bool:
+    key = line.lstrip().split(":", 1)[0].strip()
+    return key in {"template", "template_options_json"}
+
+
+def apply_report_template_metadata(
+    markdown: str,
+    *,
+    template_id: Any = "",
+    template_options: Any = None,
+) -> str:
+    """Attach delivery-template metadata to report markdown frontmatter.
+
+    The report body stays unchanged, so existing previews and exports remain
+    stable while downstream tools can inspect the selected template.
+    """
+
+    clean_template_id = _clean_report_template_id(template_id)
+    clean_options = _clean_report_template_options(template_options)
+    if not clean_template_id and not clean_options:
+        return markdown
+
+    metadata_lines: list[str] = []
+    if clean_template_id:
+        metadata_lines.append(f"template: {clean_template_id}")
+    if clean_options:
+        serialized = json.dumps(clean_options, ensure_ascii=False, sort_keys=True)
+        escaped_options = serialized.replace("'", "''")
+        metadata_lines.append(f"template_options_json: '{escaped_options}'")
+
+    text = str(markdown or "")
+    lines = text.splitlines()
+    trailing_newline = "\n" if text.endswith("\n") else ""
+    if lines and lines[0].strip() == "---":
+        closing_index = next(
+            (
+                index
+                for index, line in enumerate(lines[1:], start=1)
+                if line.strip() == "---"
+            ),
+            None,
+        )
+        if closing_index is None:
+            remaining_lines = [
+                line
+                for line in lines[1:]
+                if not _is_report_template_metadata_line(line)
+            ]
+            return "\n".join([lines[0], *metadata_lines, *remaining_lines]) + trailing_newline
+
+        frontmatter_lines = [
+            line
+            for line in lines[1:closing_index]
+            if not _is_report_template_metadata_line(line)
+        ]
+        return (
+            "\n".join(
+                [
+                    lines[0],
+                    *metadata_lines,
+                    *frontmatter_lines,
+                    *lines[closing_index:],
+                ]
+            )
+            + trailing_newline
+        )
+    return "\n".join(["---", *metadata_lines, "---", "", text]).rstrip() + trailing_newline
+
+
+def apply_deck_template_metadata(
+    deck: Any,
+    *,
+    template_id: Any = "",
+    template_options: Any = None,
+) -> Any:
+    """Persist delivery-template metadata on a DeckSpec without changing slides."""
+
+    meta = getattr(deck, "meta", None)
+    if meta is None:
+        return deck
+
+    clean_template_id = _clean_report_template_id(template_id)
+    clean_options = _clean_report_template_options(template_options)
+    try:
+        setattr(meta, "template_id", clean_template_id)
+        setattr(meta, "template_options", clean_options)
+    except Exception:
+        pass
+    return deck
 
 
 def build_scoped_report_messages(
@@ -170,6 +278,24 @@ def resolve_report_messages(
         panel_id=normalized_panel_id,
         human_message_factory=human_message_factory,
         ai_message_factory=ai_message_factory,
+    )
+
+
+def resolve_langchain_report_messages(
+    history: Any,
+    *,
+    answer_group_id: str | None = None,
+    panel_id: str | None = None,
+) -> list[Any]:
+    """Build report messages using LangChain message classes at the edge."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    return resolve_report_messages(
+        history,
+        answer_group_id=str(answer_group_id or "").strip(),
+        panel_id=str(panel_id or "").strip(),
+        human_message_factory=lambda content: HumanMessage(content=content),
+        ai_message_factory=lambda content: AIMessage(content=content),
     )
 
 
@@ -759,8 +885,11 @@ def report_download_payload(
 
 __all__ = [
     "DeckExportGateError",
+    "apply_report_template_metadata",
+    "apply_deck_template_metadata",
     "build_scoped_report_messages",
     "resolve_report_messages",
+    "resolve_langchain_report_messages",
     "create_share_link_payload",
     "build_create_deck_kwargs",
     "apply_deck_update",

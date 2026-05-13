@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from 'react'
-import { Database, Layers3, Palette } from 'lucide-react'
-import { getConnectionTypeLabel } from '../../api/client'
-import type { ModelConfig } from '../../api/client'
+import React, { useEffect, useMemo, useState } from 'react'
+import { AlertTriangle, Database, Layers3, Palette } from 'lucide-react'
+import { getConnectionTypeLabel, getDeliveryTemplateCatalog } from '../../api/client'
+import type { DeliveryTemplateItem, ModelConfig } from '../../api/client'
 import { Button } from '../ui/Button'
 import { Modal } from '../ui/Modal'
 
@@ -22,6 +22,8 @@ interface DeckGenerationModalProps {
     panel_config: ModelConfig
     target_slide_count: number
     theme: 'default' | 'midnight' | 'sunrise'
+    template_id?: string
+    template_options?: Record<string, unknown>
   }) => Promise<void> | void
 }
 
@@ -46,6 +48,18 @@ const DECK_THEMES = [
   },
 ] as const
 
+type DeckTheme = (typeof DECK_THEMES)[number]['value']
+
+function isDeckTheme(value: unknown): value is DeckTheme {
+  return value === 'default' || value === 'midnight' || value === 'sunrise'
+}
+
+function safeSlideCount(value: unknown, fallback: number): number {
+  const next = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : fallback
+  if (!Number.isFinite(next)) return fallback
+  return Math.max(4, Math.min(10, Math.floor(next)))
+}
+
 export const DeckGenerationModal: React.FC<DeckGenerationModalProps> = ({
   open,
   panels,
@@ -59,6 +73,10 @@ export const DeckGenerationModal: React.FC<DeckGenerationModalProps> = ({
   const [selectedPanelId, setSelectedPanelId] = useState('')
   const [targetSlideCount, setTargetSlideCount] = useState(8)
   const [selectedTheme, setSelectedTheme] = useState<'default' | 'midnight' | 'sunrise'>('default')
+  const [templates, setTemplates] = useState<DeliveryTemplateItem[]>([])
+  const [selectedTemplateId, setSelectedTemplateId] = useState('')
+  const [templateLoading, setTemplateLoading] = useState(false)
+  const [templateError, setTemplateError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
   useEffect(() => {
@@ -66,9 +84,52 @@ export const DeckGenerationModal: React.FC<DeckGenerationModalProps> = ({
     setSelectedPanelId(initialPanelId || panels[0]?.id || '')
     setTargetSlideCount(Math.max(4, Math.min(10, initialSlideCount)))
     setSelectedTheme(initialTheme)
+    setSelectedTemplateId('')
   }, [initialPanelId, initialSlideCount, initialTheme, open, panels])
 
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setTemplateLoading(true)
+    setTemplateError(null)
+    void getDeliveryTemplateCatalog()
+      .then((catalog) => {
+        if (cancelled) return
+        setTemplates(catalog.templates.filter((template) => template.artifact_type === 'deck'))
+      })
+      .catch((error) => {
+        if (cancelled) return
+        setTemplateError((error as Error).message || 'Failed to load delivery templates.')
+        setTemplates([])
+      })
+      .finally(() => {
+        if (!cancelled) setTemplateLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [open])
+
   const selectedPanel = panels.find((panel) => panel.id === selectedPanelId) ?? panels[0] ?? null
+  const selectedTemplate = useMemo(
+    () => templates.find((template) => template.id === selectedTemplateId) ?? null,
+    [selectedTemplateId, templates],
+  )
+
+  const selectTemplate = (template: DeliveryTemplateItem | null) => {
+    setSelectedTemplateId(template?.id ?? '')
+    if (!template) {
+      setTargetSlideCount(Math.max(4, Math.min(10, initialSlideCount)))
+      setSelectedTheme(initialTheme)
+      return
+    }
+    setTargetSlideCount(
+      safeSlideCount(template.suggested_options['target_slide_count'], targetSlideCount),
+    )
+    if (isDeckTheme(template.suggested_options['theme'])) {
+      setSelectedTheme(template.suggested_options['theme'])
+    }
+  }
 
   const handleSubmit = async () => {
     if (!selectedPanel) return
@@ -78,6 +139,8 @@ export const DeckGenerationModal: React.FC<DeckGenerationModalProps> = ({
         panel_config: selectedPanel.modelConfig,
         target_slide_count: targetSlideCount,
         theme: selectedTheme,
+        template_id: selectedTemplate?.id,
+        template_options: selectedTemplate?.suggested_options,
       })
       onClose()
     } finally {
@@ -88,6 +151,76 @@ export const DeckGenerationModal: React.FC<DeckGenerationModalProps> = ({
   return (
     <Modal open={open} onClose={() => !submitting && onClose()} title="生成演示稿" width="max-w-2xl">
       <div className="space-y-5" data-testid="deck-generation-modal">
+        <div className="rounded-2xl border border-bg-border bg-bg-primary/60 p-4">
+          <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
+            <Layers3 size={16} />
+            Delivery template
+          </div>
+          <p className="mt-2 text-sm leading-6 text-text-secondary">
+            选择一个产品化 Deck 模板会自动套用建议页数、主题和生成参数；不选择则沿用工作区默认配置。
+          </p>
+
+          {templateError && (
+            <div className="mt-3 flex items-center gap-2 rounded-xl border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
+              <AlertTriangle size={13} />
+              {templateError}
+            </div>
+          )}
+
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => selectTemplate(null)}
+              data-testid="deck-template-custom"
+              className={`rounded-2xl border px-4 py-3 text-left transition-colors ${
+                !selectedTemplateId
+                  ? 'border-accent-blue/40 bg-accent-blue/10'
+                  : 'border-bg-border bg-bg-secondary hover:border-accent-blue/25 hover:bg-bg-hover'
+              }`}
+            >
+              <div className="text-sm font-medium text-text-primary">Custom defaults</div>
+              <p className="mt-2 text-xs leading-5 text-text-secondary">
+                使用当前工作区的默认主题和页数。
+              </p>
+            </button>
+
+            {templateLoading && (
+              <div className="rounded-2xl border border-bg-border bg-bg-secondary px-4 py-3 text-xs text-text-secondary">
+                Loading templates...
+              </div>
+            )}
+
+            {!templateLoading && templates.map((template) => {
+              const active = template.id === selectedTemplateId
+              return (
+                <button
+                  key={template.id}
+                  type="button"
+                  onClick={() => selectTemplate(template)}
+                  data-testid="deck-template-option"
+                  data-template-id={template.id}
+                  className={`rounded-2xl border px-4 py-3 text-left transition-colors ${
+                    active
+                      ? 'border-accent-blue/40 bg-accent-blue/10'
+                      : 'border-bg-border bg-bg-secondary hover:border-accent-blue/25 hover:bg-bg-hover'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-text-primary">{template.name}</span>
+                    <span className="rounded-full bg-bg-tertiary px-2 py-0.5 text-[10px] text-text-secondary">
+                      {template.target_format}
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs leading-5 text-text-secondary">{template.description}</p>
+                  {template.preview && (
+                    <p className="mt-2 text-[11px] text-text-secondary/80">{template.preview}</p>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
         <div className="rounded-2xl border border-bg-border bg-bg-primary/60 p-4">
           <div className="flex items-center gap-2 text-sm font-medium text-text-primary">
             <Layers3 size={16} />

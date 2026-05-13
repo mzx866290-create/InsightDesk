@@ -1,17 +1,15 @@
 import asyncio
 import json
 import sys
-from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
-BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
-if str(BACKEND_DIR) not in sys.path:
-    sys.path.insert(0, str(BACKEND_DIR))
-
 from backend.agent_mcp_helpers import (
+    MCP_SERVER_METADATA,
+    McpConnectorManifestError,
     add_mcp_approved_connector,
     approve_runtime_mcp_connector,
     build_mcp_connector_marketplace,
@@ -24,6 +22,7 @@ from backend.agent_mcp_helpers import (
     default_mcp_server_names,
     evaluate_mcp_connector_policy,
     get_mcp_runtime_health_history,
+    install_mcp_connector_manifest_payload,
     list_mcp_approved_connectors,
     list_mcp_server_health,
     list_mcp_server_catalog,
@@ -37,7 +36,7 @@ from backend.agent_mcp_helpers import (
     select_mcp_connections,
     summarize_mcp_runtime_health,
 )
-from backend.api_config_store import (
+from backend.stores.config_store import (
     SQLiteAppConfigStore,
     append_mcp_runtime_health_history,
     read_mcp_runtime_health_history,
@@ -79,7 +78,7 @@ def _mcp_config_api_client(clear_calls: list[str]):
     return TestClient(app)
 
 
-def test_default_mcp_connections_discovers_repo_scripts(tmp_path):
+def test_default_mcp_connections_are_empty_without_user_config(tmp_path):
     mcp_dir = tmp_path / "mcp_servers"
     mcp_dir.mkdir()
     (mcp_dir / "knowledge_server.py").write_text("print('knowledge')", encoding="utf-8")
@@ -90,11 +89,33 @@ def test_default_mcp_connections_discovers_repo_scripts(tmp_path):
         python_command="python",
     )
 
-    assert set(connections) == {"knowledge-base", "web-search"}
-    assert connections["knowledge-base"]["args"] == [
-        str((mcp_dir / "knowledge_server.py").resolve())
-    ]
-    assert connections["web-search"]["cwd"] == str(tmp_path)
+    assert connections == {}
+
+
+def test_mcp_config_payload_exposes_installable_templates_without_runtime_defaults(tmp_path):
+    payload = current_mcp_server_config_payload(project_root=tmp_path)
+
+    by_name = {item["name"]: item for item in payload["connectors"]}
+    assert payload["servers"] == {}
+    assert set(by_name) == set(MCP_SERVER_METADATA)
+    assert by_name["fetch"]["source"] == "template"
+    assert by_name["fetch"]["configured"] is False
+    assert by_name["fetch"]["template"] is True
+    assert payload["marketplace"]["summary"]["total"] == len(MCP_SERVER_METADATA)
+    assert payload["total"] == 0
+
+
+def test_mcp_builtin_metadata_excludes_internal_tool_connectors():
+    forbidden = {
+        "knowledge-base",
+        "web-search",
+        "database",
+        "calendar",
+        "notification",
+    }
+
+    assert default_mcp_server_names() == []
+    assert forbidden.isdisjoint(MCP_SERVER_METADATA)
 
 
 def test_load_mcp_connection_config_resolves_relative_paths(tmp_path):
@@ -246,7 +267,9 @@ def test_mcp_server_config_api_hot_update_redacts_and_clears_agent_cache(
     follow_up_payload = follow_up.json()
     assert follow_up_payload["servers"] == payload["servers"]
     assert follow_up_payload["connectors"][0]["name"] == "notification"
-    assert follow_up_payload["marketplace"]["summary"]["total"] == 1
+    assert follow_up_payload["marketplace"]["summary"]["total"] == (
+        len(MCP_SERVER_METADATA) + 1
+    )
     assert follow_up_payload["hot_update"] == {
         "enabled": True,
         "applied": False,
@@ -286,10 +309,158 @@ def test_mcp_config_payload_includes_marketplace_and_hot_update_contract(tmp_pat
         "restart_required": False,
     }
     assert payload["default_enabled"] == default_mcp_server_names()
-    assert payload["connectors"][0]["name"] == "crm-sync"
-    assert payload["marketplace"]["summary"]["total"] == 1
-    assert payload["marketplace"]["summary"]["requires_approval"] == 1
-    assert payload["marketplace"]["categories"][0]["id"] == "crm"
+    by_name = {item["name"]: item for item in payload["connectors"]}
+    assert by_name["crm-sync"]["requires_approval"] is True
+    assert by_name["fetch"]["source"] == "template"
+    assert payload["marketplace"]["summary"]["total"] == len(MCP_SERVER_METADATA) + 1
+    category_ids = {item["id"] for item in payload["marketplace"]["categories"]}
+    assert "crm" in category_ids
+
+
+def test_install_mcp_connector_manifest_persists_connector_without_execution(tmp_path):
+    config_path = tmp_path / "mcp.json"
+
+    payload = install_mcp_connector_manifest_payload(
+        {
+            "name": "github",
+            "version": "1.2.3",
+            "label": "GitHub",
+            "description": "Repository connector",
+            "category": "development",
+            "transport": "stdio",
+            "scopes": ["github:read", "github:write"],
+            "risk_level": "high",
+            "requires_approval": True,
+            "install_command": "npx -y @modelcontextprotocol/server-github",
+            "env": {"GITHUB_TOKEN": "secret-token"},
+        },
+        project_root=tmp_path,
+        config_path=str(config_path),
+    )
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["github"]["command"] == "npx"
+    assert persisted["github"]["args"] == [
+        "-y",
+        "@modelcontextprotocol/server-github",
+    ]
+    assert persisted["github"]["metadata"]["version"] == "1.2.3"
+    assert persisted["github"]["env"]["GITHUB_TOKEN"] == "secret-token"
+    assert payload["installed"]["name"] == "github"
+    assert payload["installed"]["executed_install_command"] is False
+    assert payload["servers"]["github"]["env"]["GITHUB_TOKEN"] == "***redacted***"
+    assert payload["marketplace"]["summary"]["total"] == len(MCP_SERVER_METADATA)
+
+
+def test_install_mcp_connector_manifest_rejects_invalid_name(tmp_path):
+    with pytest.raises(McpConnectorManifestError) as exc_info:
+        install_mcp_connector_manifest_payload(
+            {
+                "name": "../github",
+                "transport": "stdio",
+                "command": "npx",
+            },
+            project_root=tmp_path,
+            config_path=str(tmp_path / "mcp.json"),
+        )
+
+    assert exc_info.value.code == "invalid_name"
+    assert exc_info.value.field == "name"
+
+
+def test_install_mcp_connector_manifest_rejects_invalid_risk_level(tmp_path):
+    with pytest.raises(McpConnectorManifestError) as exc_info:
+        install_mcp_connector_manifest_payload(
+            {
+                "name": "github",
+                "transport": "stdio",
+                "command": "npx",
+                "risk_level": "dangerous",
+            },
+            project_root=tmp_path,
+            config_path=str(tmp_path / "mcp.json"),
+        )
+
+    assert exc_info.value.code == "invalid_risk_level"
+    assert exc_info.value.field == "risk_level"
+
+
+def test_install_mcp_connector_manifest_rejects_missing_transport_target(tmp_path):
+    with pytest.raises(McpConnectorManifestError) as exc_info:
+        install_mcp_connector_manifest_payload(
+            {
+                "name": "fetch",
+                "transport": "sse",
+            },
+            project_root=tmp_path,
+            config_path=str(tmp_path / "mcp.json"),
+        )
+
+    assert exc_info.value.code == "missing_url"
+    assert exc_info.value.field == "url"
+
+
+def test_mcp_marketplace_install_api_redacts_and_clears_agent_cache(
+    monkeypatch,
+    tmp_path,
+):
+    config_path = tmp_path / "mcp.json"
+    monkeypatch.setenv("MCP_SERVER_CONFIG_PATH", str(config_path))
+    clear_calls: list[str] = []
+    client = _mcp_config_api_client(clear_calls)
+
+    response = client.post(
+        "/api/connectors/mcp/marketplace/install",
+        json={
+            "manifest": {
+                "name": "slack",
+                "transport": "stdio",
+                "install_command": ["npx", "-y", "@modelcontextprotocol/server-slack"],
+                "scopes": ["slack:read", "slack:write"],
+                "risk_level": "high",
+                "env": {"SLACK_BOT_TOKEN": "xoxb-secret"},
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["installed"]["name"] == "slack"
+    assert payload["installed"]["executed_install_command"] is False
+    assert payload["servers"]["slack"]["env"]["SLACK_BOT_TOKEN"] == "***redacted***"
+    assert clear_calls == ["cleared"]
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["slack"]["env"]["SLACK_BOT_TOKEN"] == "xoxb-secret"
+
+
+def test_mcp_marketplace_install_api_returns_structured_manifest_error(
+    monkeypatch,
+    tmp_path,
+):
+    config_path = tmp_path / "mcp.json"
+    monkeypatch.setenv("MCP_SERVER_CONFIG_PATH", str(config_path))
+    clear_calls: list[str] = []
+    client = _mcp_config_api_client(clear_calls)
+
+    response = client.post(
+        "/api/connectors/mcp/marketplace/install",
+        json={
+            "manifest": {
+                "name": "bad connector",
+                "transport": "stdio",
+                "command": "npx",
+            }
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == {
+        "code": "invalid_name",
+        "field": "name",
+        "message": "MCP connector manifest name must be 1-64 characters and use only letters, numbers, dots, underscores, or hyphens",
+    }
+    assert clear_calls == []
+    assert not config_path.exists()
 
 
 def test_select_mcp_connections_honors_enablement_and_server_filters(monkeypatch, tmp_path):
@@ -297,8 +468,13 @@ def test_select_mcp_connections_honors_enablement_and_server_filters(monkeypatch
     config_path.write_text(
         json.dumps(
             {
-                "knowledge-base": {"transport": "stdio", "command": "python", "args": ["kb.py"]},
-                "web-search": {"transport": "stdio", "command": "python", "args": ["web.py"]},
+                "fetch": {"transport": "stdio", "command": "python", "args": ["fetch.py"]},
+                "github": {
+                    "transport": "stdio",
+                    "command": "python",
+                    "args": ["github.py"],
+                    "metadata": {"requires_approval": False, "risk_level": "medium"},
+                },
                 "custom": {"transport": "stdio", "command": "python", "args": ["custom.py"]},
             },
             ensure_ascii=False,
@@ -308,7 +484,7 @@ def test_select_mcp_connections_honors_enablement_and_server_filters(monkeypatch
 
     monkeypatch.setenv("ENABLE_MCP_TOOLS", "true")
     monkeypatch.setenv("MCP_SERVER_CONFIG_PATH", str(config_path))
-    monkeypatch.setenv("ENABLED_MCP_SERVERS", "web-search, custom, missing")
+    monkeypatch.setenv("ENABLED_MCP_SERVERS", "fetch, custom, missing")
     monkeypatch.setenv("MCP_APPROVED_CONNECTORS", "custom")
 
     connections = select_mcp_connections(
@@ -317,7 +493,7 @@ def test_select_mcp_connections_honors_enablement_and_server_filters(monkeypatch
         project_root=tmp_path,
     )
 
-    assert set(connections) == {"web-search", "custom"}
+    assert set(connections) == {"fetch", "custom"}
 
 
 def test_select_mcp_connections_supports_explicit_enabled_servers_without_env(monkeypatch, tmp_path):
@@ -325,7 +501,6 @@ def test_select_mcp_connections_supports_explicit_enabled_servers_without_env(mo
     config_path.write_text(
         json.dumps(
             {
-                "knowledge-base": {"transport": "stdio", "command": "python", "args": ["kb.py"]},
                 "custom": {"transport": "stdio", "command": "python", "args": ["custom.py"]},
             },
             ensure_ascii=False,
@@ -348,7 +523,7 @@ def test_select_mcp_connections_supports_explicit_enabled_servers_without_env(mo
     assert set(connections) == {"custom"}
 
 
-def test_list_mcp_server_catalog_includes_default_source_and_metadata(tmp_path):
+def test_list_mcp_server_catalog_has_no_default_builtin_connectors(tmp_path):
     mcp_dir = tmp_path / "mcp_servers"
     mcp_dir.mkdir()
     (mcp_dir / "knowledge_server.py").write_text("print('knowledge')", encoding="utf-8")
@@ -359,63 +534,53 @@ def test_list_mcp_server_catalog_includes_default_source_and_metadata(tmp_path):
         python_command="python",
     )
 
-    assert [item["name"] for item in catalog] == ["knowledge-base", "web-search"]
-    assert all(item["source"] == "default" for item in catalog)
-    assert catalog[0]["label"] == "Knowledge Base"
-    assert catalog[1]["label"] == "Web Search"
-    by_name = {item["name"]: item for item in catalog}
-    assert by_name["knowledge-base"]["capability_scopes"] == [
-        "knowledge:read",
-        "knowledge:diagnostics",
-    ]
-    assert by_name["knowledge-base"]["risk_level"] == "low"
-    assert by_name["knowledge-base"]["requires_approval"] is False
-    assert by_name["knowledge-base"]["config_schema"] == {
-        "transport": "stdio",
-        "required": ["command"],
-        "optional": ["transport", "args", "cwd", "encoding", "env"],
-        "sensitive": ["env"],
-    }
-    assert by_name["web-search"]["capability_scopes"] == ["web:search", "web:fetch"]
-    assert by_name["web-search"]["risk_level"] == "medium"
-    assert by_name["web-search"]["requires_approval"] is False
-    assert all(item["configured"] for item in catalog)
-    assert all(item["status"] == "disabled" for item in catalog)
-    assert all("mcp_tools_disabled" in item["status_reasons"] for item in catalog)
+    assert catalog == []
 
 
-def test_builtin_connector_catalog_includes_database_calendar_notification(tmp_path):
-    mcp_dir = tmp_path / "mcp_servers"
-    mcp_dir.mkdir()
-    for script_name in (
-        "knowledge_server.py",
-        "search_server.py",
-        "database_server.py",
-        "calendar_server.py",
-        "notification_server.py",
-    ):
-        (mcp_dir / script_name).write_text("print('server')", encoding="utf-8")
+def test_external_connector_catalog_uses_template_metadata_from_config(tmp_path):
+    config_path = tmp_path / "mcp.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "filesystem": {
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+                },
+                "github": {
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-github"],
+                },
+                "sqlite-readonly": {
+                    "transport": "stdio",
+                    "command": "python",
+                    "args": ["sqlite_server.py"],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
     catalog = list_mcp_server_catalog(
         project_root=tmp_path,
-        python_command="python",
+        config_path=str(config_path),
     )
 
     by_name = {item["name"]: item for item in catalog}
-    assert set(by_name) == {
-        "calendar",
-        "database",
-        "knowledge-base",
-        "notification",
-        "web-search",
-    }
-    assert by_name["database"]["category"] == "data"
-    assert by_name["database"]["capability_scopes"] == ["database:read"]
-    assert by_name["calendar"]["category"] == "productivity"
-    assert by_name["calendar"]["risk_level"] == "low"
-    assert by_name["notification"]["category"] == "communication"
-    assert by_name["notification"]["config_schema"]["sensitive"] == ["env", "headers"]
-    assert all(by_name[name]["builtin"] is True for name in by_name)
+    assert set(by_name) == {"filesystem", "github", "sqlite-readonly"}
+    assert by_name["filesystem"]["category"] == "files"
+    assert by_name["filesystem"]["capability_scopes"] == [
+        "filesystem:read",
+        "filesystem:write",
+    ]
+    assert by_name["filesystem"]["requires_approval"] is True
+    assert by_name["github"]["category"] == "development"
+    assert by_name["github"]["risk_level"] == "high"
+    assert by_name["sqlite-readonly"]["category"] == "data"
+    assert by_name["sqlite-readonly"]["capability_scopes"] == ["sqlite:read"]
+    assert all(by_name[name]["builtin"] is False for name in by_name)
 
 
 def test_list_mcp_server_catalog_includes_custom_config_metadata(tmp_path):
@@ -500,16 +665,13 @@ def test_list_mcp_server_catalog_includes_custom_config_metadata(tmp_path):
 
 
 def test_evaluate_mcp_connector_policy_allows_low_risk_connector_by_default():
-    policy = evaluate_mcp_connector_policy("knowledge-base")
+    policy = evaluate_mcp_connector_policy("sqlite-readonly")
 
     assert policy["allowed"] is True
     assert policy["requires_approval"] is False
     assert policy["reasons"] == []
-    assert policy["capability_scopes"] == [
-        "knowledge:read",
-        "knowledge:diagnostics",
-    ]
-    assert policy["risk_level"] == "low"
+    assert policy["capability_scopes"] == ["sqlite:read"]
+    assert policy["risk_level"] == "medium"
 
 
 def test_evaluate_mcp_connector_policy_requires_approval_for_high_risk():
@@ -544,14 +706,15 @@ def test_evaluate_mcp_connector_policy_requires_approval_for_high_risk():
 
 def test_evaluate_mcp_connector_policy_denies_missing_scope():
     policy = evaluate_mcp_connector_policy(
-        "web-search",
-        allowed_scopes=["web:search"],
+        "github",
+        allowed_scopes=["github:read"],
     )
 
     assert policy["allowed"] is False
-    assert policy["requires_approval"] is False
-    assert policy["missing_scopes"] == ["web:fetch"]
-    assert policy["reasons"] == ["scope_missing"]
+    assert policy["requires_approval"] is True
+    assert policy["missing_scopes"] == ["github:write"]
+    assert "scope_missing" in policy["reasons"]
+    assert "connector_not_approved" in policy["reasons"]
 
 
 def test_evaluate_mcp_connector_policy_supports_custom_config_connector():
@@ -588,15 +751,15 @@ def test_select_mcp_connections_enforces_scope_policy(monkeypatch, tmp_path):
     config_path.write_text(
         json.dumps(
             {
-                "knowledge-base": {
+                "sqlite-readonly": {
                     "transport": "stdio",
                     "command": "python",
-                    "args": ["kb.py"],
+                    "args": ["sqlite.py"],
                 },
-                "web-search": {
+                "github": {
                     "transport": "stdio",
                     "command": "python",
-                    "args": ["web.py"],
+                    "args": ["github.py"],
                 },
             },
             ensure_ascii=False,
@@ -604,16 +767,16 @@ def test_select_mcp_connections_enforces_scope_policy(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    monkeypatch.setenv("MCP_ALLOWED_SCOPES", "knowledge:*")
+    monkeypatch.setenv("MCP_ALLOWED_SCOPES", "sqlite:*")
 
     selected = select_mcp_connections(
         project_root=tmp_path,
         config_path=str(config_path),
         enable_mcp_tools=True,
-        enabled_server_names=["knowledge-base", "web-search"],
+        enabled_server_names=["sqlite-readonly", "github"],
     )
 
-    assert set(selected) == {"knowledge-base"}
+    assert set(selected) == {"sqlite-readonly"}
 
 
 def test_select_mcp_connections_allows_high_risk_with_env_approval(monkeypatch, tmp_path):
@@ -653,28 +816,28 @@ def test_select_mcp_connections_allows_high_risk_with_env_approval(monkeypatch, 
 
 def test_mcp_approval_list_helpers_normalize_add_remove_and_report_sources():
     assert normalize_mcp_approved_connectors(
-        " knowledge-base, crm-sync,crm-sync, "
-    ) == ["knowledge-base", "crm-sync"]
+        " filesystem, crm-sync,crm-sync, "
+    ) == ["filesystem", "crm-sync"]
 
-    added = add_mcp_approved_connector(["knowledge-base"], " crm-sync ")
-    assert added == ["knowledge-base", "crm-sync"]
+    added = add_mcp_approved_connector(["filesystem"], " crm-sync ")
+    assert added == ["filesystem", "crm-sync"]
     assert add_mcp_approved_connector(added, "crm-sync") == added
-    assert remove_mcp_approved_connector(added, "knowledge-base") == ["crm-sync"]
+    assert remove_mcp_approved_connector(added, "filesystem") == ["crm-sync"]
 
     payload = list_mcp_approved_connectors(
-        "knowledge-base,crm-sync",
+        "filesystem,crm-sync",
         ["crm-sync", "database-admin"],
     )
     assert payload == {
         "approved_connectors": [
-            "knowledge-base",
+            "filesystem",
             "crm-sync",
             "database-admin",
         ],
-        "env_connectors": ["knowledge-base", "crm-sync"],
+        "env_connectors": ["filesystem", "crm-sync"],
         "runtime_connectors": ["crm-sync", "database-admin"],
         "sources": {
-            "knowledge-base": ["env"],
+            "filesystem": ["env"],
             "crm-sync": ["env", "runtime"],
             "database-admin": ["runtime"],
         },
@@ -734,26 +897,39 @@ def test_select_mcp_connections_allows_high_risk_with_runtime_approval(
 
 
 def test_list_mcp_server_catalog_includes_enabled_static_health(tmp_path):
-    mcp_dir = tmp_path / "mcp_servers"
-    mcp_dir.mkdir()
-    (mcp_dir / "knowledge_server.py").write_text("print('knowledge')", encoding="utf-8")
-    (mcp_dir / "search_server.py").write_text("print('search')", encoding="utf-8")
+    (tmp_path / "fetch.py").write_text("print('fetch')", encoding="utf-8")
+    (tmp_path / "sqlite.py").write_text("print('sqlite')", encoding="utf-8")
+    config_path = tmp_path / "mcp.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "fetch": {"transport": "stdio", "command": "python", "args": ["fetch.py"]},
+                "sqlite-readonly": {
+                    "transport": "stdio",
+                    "command": "python",
+                    "args": ["sqlite.py"],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
     catalog = list_mcp_server_catalog(
         project_root=tmp_path,
-        python_command="python",
+        config_path=str(config_path),
         enable_mcp_tools=True,
-        enabled_server_names=["web-search"],
+        enabled_server_names=["fetch"],
     )
 
     by_name = {item["name"]: item for item in catalog}
-    assert by_name["web-search"]["enabled"] is True
-    assert by_name["web-search"]["healthy"] is True
-    assert by_name["web-search"]["status"] == "healthy"
-    assert by_name["knowledge-base"]["enabled"] is False
-    assert by_name["knowledge-base"]["healthy"] is False
-    assert by_name["knowledge-base"]["status"] == "disabled"
-    assert "server_not_selected" in by_name["knowledge-base"]["status_reasons"]
+    assert by_name["fetch"]["enabled"] is True
+    assert by_name["fetch"]["healthy"] is True
+    assert by_name["fetch"]["status"] == "healthy"
+    assert by_name["sqlite-readonly"]["enabled"] is False
+    assert by_name["sqlite-readonly"]["healthy"] is False
+    assert by_name["sqlite-readonly"]["status"] == "disabled"
+    assert "server_not_selected" in by_name["sqlite-readonly"]["status_reasons"]
 
 
 def test_list_mcp_server_health_reports_static_configuration_issues(tmp_path):
@@ -815,7 +991,7 @@ def test_list_mcp_server_runtime_health_pings_selected_connections():
     async def run():
         return await list_mcp_server_runtime_health(
             connections={
-                "web-search": {"transport": "stdio", "command": "python", "args": []},
+                "fetch": {"transport": "stdio", "command": "python", "args": []},
                 "broken": {"transport": "stdio", "command": "python", "args": []},
             },
             client_factory=FakeClient,
@@ -837,8 +1013,8 @@ def test_list_mcp_server_runtime_health_pings_selected_connections():
     assert payload["summary"]["alert_count"] == 1
     assert payload["summary"]["alerts"][0]["code"] == "mcp_runtime_unhealthy"
     by_name = {item["name"]: item for item in payload["servers"]}
-    assert by_name["web-search"]["status"] == "healthy"
-    assert by_name["web-search"]["tools"] == ["knowledge_query", "web_search"]
+    assert by_name["fetch"]["status"] == "healthy"
+    assert by_name["fetch"]["tools"] == ["knowledge_query", "web_search"]
     assert by_name["broken"]["status"] == "unhealthy"
     assert by_name["broken"]["error"] == "handshake failed"
     assert payload["history_limit"] >= 1
@@ -992,12 +1168,12 @@ def test_mcp_marketplace_groups_catalog_for_ui():
     marketplace = build_mcp_connector_marketplace(
         [
             {
-                "name": "knowledge-base",
-                "category": "knowledge",
-                "builtin": True,
+                "name": "filesystem",
+                "category": "files",
+                "builtin": False,
                 "enabled": True,
                 "healthy": True,
-                "requires_approval": False,
+                "requires_approval": True,
             },
             {
                 "name": "crm-sync",
@@ -1012,15 +1188,15 @@ def test_mcp_marketplace_groups_catalog_for_ui():
 
     assert marketplace["summary"] == {
         "total": 2,
-        "builtin": 1,
-        "custom": 1,
+        "builtin": 0,
+        "custom": 2,
         "enabled": 2,
         "healthy": 1,
-        "requires_approval": 1,
+        "requires_approval": 2,
         "categories": 2,
     }
     by_category = {item["id"]: item for item in marketplace["categories"]}
-    assert by_category["knowledge"]["label"] == "Knowledge"
+    assert by_category["files"]["label"] == "Files"
     assert by_category["crm"]["connectors"] == ["crm-sync"]
 
 
@@ -1101,7 +1277,7 @@ def test_load_mcp_tool_overrides_filters_expected_names():
 
     async def run():
         return await load_mcp_tool_overrides(
-            connections={"web-search": {"transport": "stdio", "command": "python", "args": []}},
+            connections={"fetch": {"transport": "stdio", "command": "python", "args": []}},
             expected_tool_names={"web_search"},
             client_factory=FakeClient,
         )

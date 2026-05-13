@@ -7,6 +7,7 @@ from backend.helpers.workspace_session_helpers import (
     fallback_session_payload,
     normalize_workspace_id,
     reorder_sessions_payload,
+    require_workspace_session,
     session_update_requested,
     workspaces_payload,
 )
@@ -139,6 +140,42 @@ def test_create_session_record_returns_fallback_payload_when_session_lookup_is_e
         "title": "新对话",
         "workspace_id": None,
     }
+
+
+def test_require_workspace_session_enforces_workspace_membership(monkeypatch):
+    from backend import chat_store
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(
+        chat_store,
+        "get_session",
+        lambda session_id: {"session_id": session_id, "workspace_id": "ws-1"},
+    )
+    monkeypatch.setattr(
+        chat_store,
+        "get_workspace",
+        lambda workspace_id: {"workspace_id": workspace_id}
+        if workspace_id == "ws-1"
+        else None,
+    )
+
+    assert require_workspace_session("session-1", "ws-1") == {
+        "session_id": "session-1",
+        "workspace_id": "ws-1",
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        require_workspace_session("session-1", "missing")
+    assert exc_info.value.status_code == 400
+
+    monkeypatch.setattr(
+        chat_store,
+        "get_workspace",
+        lambda workspace_id: {"workspace_id": workspace_id},
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        require_workspace_session("session-1", "ws-2")
+    assert exc_info.value.status_code == 404
 
 
 class _FakeConnectionContext:

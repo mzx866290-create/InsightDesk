@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 
+import { fetchWithApiToken } from '../api/auth'
 import { createMultiAgentWorkflowTask, getTask, listTasks } from '../api/client'
 import type {
   CreateMultiAgentWorkflowTaskPayload,
@@ -179,7 +180,7 @@ export async function createAndTrackTask(
     }
   }
 
-  const res = await fetch('/api/tasks', {
+  const res = await fetchWithApiToken('/api/tasks', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ task_type: taskType, params: normalizedParams, session_id: sessionId }),

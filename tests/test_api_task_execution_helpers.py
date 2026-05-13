@@ -12,7 +12,7 @@ from backend.helpers.task_execution_helpers import (
     run_generate_report_task,
     run_placeholder_task,
 )
-from backend.api_task_store import TaskRecord, TaskStatus
+from backend.stores.task_store import TaskRecord, TaskStatus
 
 
 def test_run_analyze_knowledge_base_task_updates_progress_and_result(monkeypatch):
@@ -123,9 +123,70 @@ def test_run_generate_report_task_counts_session_messages(monkeypatch, tmp_path)
     ]
 
 
+def test_run_generate_report_task_applies_delivery_template_metadata(monkeypatch, tmp_path):
+    import backend.chat_store as chat_store
+
+    db_path = tmp_path / "chat_history.db"
+
+    class TestSQLiteChatMessageHistory(chat_store.SQLiteChatMessageHistory):
+        def __init__(self, session_id: str, db_path_arg: str = "./chat_history.db"):
+            super().__init__(session_id=session_id, db_path=str(db_path))
+
+    monkeypatch.setattr(chat_store, "SQLiteChatMessageHistory", TestSQLiteChatMessageHistory)
+
+    history = TestSQLiteChatMessageHistory("report-template-session")
+    history.add_user_message("Risk memo")
+    history.add_ai_message("Risk is elevated.")
+
+    record = TaskRecord(
+        task_id="task-report-template",
+        task_type="generate_report",
+        status=TaskStatus.RUNNING,
+        params={
+            "template_id": "research_brief",
+            "template_options": {
+                "scope": "answer_group",
+                "include_citations": True,
+            },
+        },
+        session_id="report-template-session",
+        created_at=1.0,
+        updated_at=1.0,
+    )
+    saved_artifacts: list[dict[str, object]] = []
+
+    async def run():
+        await run_generate_report_task(
+            record,
+            set_progress=lambda value: _append_progress([], value),
+            resolve_report_messages=lambda history, **kwargs: history.get_all_messages(),
+            ensure_deckable_chat=lambda messages: [("Risk memo", "Risk is elevated.")],
+            build_chat_report_title=lambda messages: "Risk memo",
+            build_report_markdown=lambda messages, title: f"---\ntheme: default\ntitle: {title}\n---\n\n# {title}",
+            build_report_artifact=lambda **kwargs: {
+                "artifact_id": "artifact-report-template",
+                **kwargs,
+            },
+            save_artifact=lambda artifact: saved_artifacts.append(artifact),
+        )
+
+    asyncio.run(run())
+
+    markdown = str(record.params["report_markdown"])
+    assert "template: research_brief" in markdown
+    assert '"include_citations": true' in markdown
+    assert record.params["template_id"] == "research_brief"
+    assert record.params["template_options"]["scope"] == "answer_group"
+    assert saved_artifacts[0]["template_id"] == "research_brief"
+    assert saved_artifacts[0]["template_options"] == {
+        "scope": "answer_group",
+        "include_citations": True,
+    }
+
+
 def test_run_generate_report_task_supports_scoped_report(monkeypatch, tmp_path):
     import backend.chat_store as chat_store
-    from backend.api_deck_report_helpers import resolve_report_messages
+    from backend.helpers.deck_report_helpers import resolve_report_messages
     from langchain_core.messages import AIMessage, HumanMessage
 
     db_path = tmp_path / "chat_history.db"
@@ -199,7 +260,7 @@ def test_run_generate_report_task_supports_scoped_report(monkeypatch, tmp_path):
 
 def test_run_generate_deck_task_supports_scoped_deck(monkeypatch, tmp_path):
     import backend.chat_store as chat_store
-    from backend.api_deck_report_helpers import resolve_report_messages
+    from backend.helpers.deck_report_helpers import resolve_report_messages
     from langchain_core.messages import AIMessage, HumanMessage
     from types import SimpleNamespace
 
@@ -247,6 +308,12 @@ def test_run_generate_deck_task_supports_scoped_deck(monkeypatch, tmp_path):
             "theme": "sunrise",
             "answer_group_id": "group-9",
             "panel_id": "panel-b",
+            "template_id": "board_deck",
+            "template_options": {
+                "theme": "sunrise",
+                "target_slide_count": 6,
+                "nested": {"ignored": True},
+            },
         },
         session_id="scoped-deck-session",
         created_at=1.0,
@@ -291,6 +358,8 @@ def test_run_generate_deck_task_supports_scoped_deck(monkeypatch, tmp_path):
             build_deck_artifact=lambda deck: {
                 "artifact_id": "artifact-deck-1",
                 "deck_id": deck.deck_id,
+                "template_id": getattr(deck.meta, "template_id", ""),
+                "template_options": getattr(deck.meta, "template_options", {}),
             },
             save_artifact=lambda artifact: saved_artifacts.append(artifact),
         )
@@ -299,11 +368,28 @@ def test_run_generate_deck_task_supports_scoped_deck(monkeypatch, tmp_path):
 
     assert progress == [20, 45, 85]
     assert len(saved) == 1
-    assert saved_artifacts == [{"artifact_id": "artifact-deck-1", "deck_id": "deck-task-1"}]
+    assert getattr(saved[0].meta, "template_id", "") == "board_deck"
+    assert getattr(saved[0].meta, "template_options", {}) == {
+        "theme": "sunrise",
+        "target_slide_count": 6,
+    }
+    assert saved_artifacts == [
+        {
+            "artifact_id": "artifact-deck-1",
+            "deck_id": "deck-task-1",
+            "template_id": "board_deck",
+            "template_options": {
+                "theme": "sunrise",
+                "target_slide_count": 6,
+            },
+        }
+    ]
     assert record.params["artifact_id"] == "artifact-deck-1"
     assert record.params["deck_id"] == "deck-task-1"
     assert record.params["deck_title"] == "Trend Scan Deck"
     assert record.params["deck_scope"] == "answer_group"
+    assert record.params["template_id"] == "board_deck"
+    assert record.params["template_options"]["target_slide_count"] == 6
     assert record.params["answer_group_id"] == "group-9"
     assert record.params["panel_id"] == "panel-b"
     assert "Trend Scan Deck" in (record.result or "")

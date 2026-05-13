@@ -8,6 +8,8 @@
 
 本目录用于集中维护项目文档，减少重复的计划说明、阶段总结和功能说明。
 
+项目当前按个人/开源自托管 workbench 收口。桌面打包、完整 SaaS 级租户隔离和托管式告警投递链路属于非阻塞增强，当前边界以 [README.md](../README.md) 和 [DELIVERY_STATUS.md](./DELIVERY_STATUS.md) 为准。
+
 ## 优先阅读
 
 - [README.md](../README.md)

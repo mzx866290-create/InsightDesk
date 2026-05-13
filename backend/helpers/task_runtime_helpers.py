@@ -196,6 +196,49 @@ def list_tasks_payload(
     }
 
 
+async def build_runtime_task_summary_payload(
+    records: list[TaskRecord],
+    *,
+    task_backend: str,
+    arq_queue_health_payload: Callable[[], Awaitable[dict[str, Any]]],
+    arq_runtime_config_for_tasks: Callable[[], dict[str, Any]],
+) -> dict[str, Any]:
+    latest_task_updated_at: float | None = None
+    counts = {
+        TaskStatus.PENDING.value: 0,
+        TaskStatus.RUNNING.value: 0,
+        TaskStatus.COMPLETED.value: 0,
+        TaskStatus.FAILED.value: 0,
+    }
+    for record in records:
+        status = (
+            record.status.value
+            if isinstance(record.status, TaskStatus)
+            else str(record.status or "").strip().lower()
+        )
+        counts[status] = int(counts.get(status, 0)) + 1
+        updated_at = float(getattr(record, "updated_at", 0) or 0)
+        if updated_at > 0 and (
+            latest_task_updated_at is None or updated_at > latest_task_updated_at
+        ):
+            latest_task_updated_at = updated_at
+
+    health = task_stale_health_payload(records)
+    if str(task_backend or "").strip().lower() in {"arq", "redis"}:
+        health["queue"] = await arq_queue_health_payload()
+        health["runtime"] = arq_runtime_config_for_tasks()
+    health["summary"] = task_runtime_health_summary(health)
+    return {
+        "in_memory_total": len(records),
+        "pending": counts[TaskStatus.PENDING.value],
+        "running": counts[TaskStatus.RUNNING.value],
+        "completed": counts[TaskStatus.COMPLETED.value],
+        "failed": counts[TaskStatus.FAILED.value],
+        "latest_task_updated_at": latest_task_updated_at,
+        "health": health,
+    }
+
+
 def task_runtime_health_summary(health: dict[str, Any]) -> dict[str, Any]:
     """Build a single warning summary from stale tasks, queue and worker signals."""
     stale_warnings = list(health.get("warnings") or [])

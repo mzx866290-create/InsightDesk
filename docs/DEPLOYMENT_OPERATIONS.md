@@ -15,6 +15,13 @@
 
 ## 环境变量
 
+### 配置安全基线
+
+- `.env.example` 只作为 UTF-8 模板；真实 `.env`、API token、SSO secret、数据库密码和 `SHARE_LINK_SECRET` 不提交仓库。
+- `SHARE_LINK_SECRET`：本地开发可留空；远程访问/生产必须使用稳定的高熵随机值（建议 32+ 字符）并放入 Secret 管理。值为空、默认值或少于 16 字符时，远程分享会被禁用；轮换该值会使旧分享链接失效。
+- `TASK_BACKEND`：`memory` 仅用于本地开发/单进程调试；预发和生产使用 `arq`，并同时部署 Redis 与 worker，保持 API/worker 的 `ARQ_QUEUE_NAME` 和 Redis URL 一致。
+- `EMBEDDING_DEVICE`：默认 `cpu` 最稳妥；只有在镜像、PyTorch 和节点 GPU/CUDA 已验证时才设为 `cuda`/`cuda:0`。CPU-only 环境会回退 CPU，但容量规划应按实际设备重新评估。
+
 ### API
 
 | 变量 | 默认值 | 说明 |

@@ -8,9 +8,18 @@ from typing import Any, Awaitable, Callable
 
 from backend.agent.agents.researcher import ResearchAgentConfig
 from backend.agent import resume_orchestrator, run_orchestrator
+from backend.delivery_templates import validate_delivery_template_selection
+from backend.helpers.deck_report_helpers import (
+    apply_deck_template_metadata,
+    apply_report_template_metadata,
+)
 from backend.stores.task_store import TaskRecord
 from search_runtime import run_deep_research
-from search_runtime.service import describe_runtime_error, run_web_research
+from search_runtime.service import (
+    describe_runtime_error,
+    rewrite_search_query_with_llm,
+    run_web_research,
+)
 
 WEB_RESEARCH_PLACEHOLDER_TEXT = (
     "已发起联网研究任务，系统会整理实时网页来源，并在任务完成后展示摘要。"
@@ -336,15 +345,31 @@ async def run_generate_report_task(
     await set_progress(55)
     qa_pairs = ensure_deckable_chat(messages)
     title = build_chat_report_title(messages)
-    markdown = build_report_markdown(messages, title)
-    artifact = build_report_artifact(
-        session_id=session_id,
-        title=title,
-        markdown=markdown,
-        qa_pairs=qa_pairs,
-        answer_group_id=answer_group_id,
-        panel_id=panel_id,
+    template_id = str(record.params.get("template_id") or "").strip()
+    template_options = (
+        dict(record.params.get("template_options") or {})
+        if isinstance(record.params.get("template_options"), dict)
+        else {}
     )
+    validate_delivery_template_selection(template_id, artifact_type="report")
+    markdown = apply_report_template_metadata(
+        build_report_markdown(messages, title),
+        template_id=template_id,
+        template_options=template_options,
+    )
+    artifact_kwargs = {
+        "session_id": session_id,
+        "title": title,
+        "markdown": markdown,
+        "qa_pairs": qa_pairs,
+        "answer_group_id": answer_group_id,
+        "panel_id": panel_id,
+    }
+    if template_id:
+        artifact_kwargs["template_id"] = template_id
+    if template_options:
+        artifact_kwargs["template_options"] = template_options
+    artifact = build_report_artifact(**artifact_kwargs)
     save_artifact(artifact)
 
     params = dict(record.params or {})
@@ -352,6 +377,10 @@ async def run_generate_report_task(
     params["report_markdown"] = markdown
     params["artifact_id"] = str(_artifact_value(artifact, "artifact_id", "") or "")
     params["report_scope"] = "answer_group" if answer_group_id else "session"
+    if template_id:
+        params["template_id"] = template_id
+    if template_options:
+        params["template_options"] = template_options
     if answer_group_id:
         params["answer_group_id"] = answer_group_id
     if panel_id:
@@ -388,6 +417,13 @@ async def run_generate_deck_task(
     panel_id = str(record.params.get("panel_id") or "").strip()
     knowledge_base_enabled = bool(record.params.get("knowledge_base_enabled", True))
     theme = str(record.params.get("theme") or "default").strip() or "default"
+    template_id = str(record.params.get("template_id") or "").strip()
+    template_options = (
+        dict(record.params.get("template_options") or {})
+        if isinstance(record.params.get("template_options"), dict)
+        else {}
+    )
+    validate_delivery_template_selection(template_id, artifact_type="deck")
 
     target_slide_count_raw = record.params.get("target_slide_count", 8)
     try:
@@ -426,6 +462,11 @@ async def run_generate_deck_task(
         source_answer_group_id=answer_group_id,
         source_panel_id=panel_id,
     )
+    apply_deck_template_metadata(
+        deck,
+        template_id=template_id,
+        template_options=template_options,
+    )
 
     await set_progress(85)
     save_deck(deck)
@@ -437,6 +478,10 @@ async def run_generate_deck_task(
     params["deck_title"] = getattr(getattr(deck, "meta", None), "title", "")
     params["artifact_id"] = str(_artifact_value(artifact, "artifact_id", "") or "")
     params["deck_scope"] = "answer_group" if answer_group_id else "session"
+    if template_id:
+        params["template_id"] = template_id
+    if template_options:
+        params["template_options"] = template_options
     if answer_group_id:
         params["answer_group_id"] = answer_group_id
     if panel_id:
@@ -782,11 +827,87 @@ async def run_web_research_task(
         max_results_per_query = 4
 
     research_fallback_note = ""
+    search_planning_note = ""
+
+    def build_research_llm(*, required: bool) -> Any | None:
+        raw_panel_config = record.params.get("panel_config")
+        if raw_panel_config is None:
+            if required:
+                raise ValueError("未提供研究模型配置")
+            return None
+
+        panel_config = (
+            normalize_model_config(raw_panel_config)
+            if callable(normalize_model_config)
+            else raw_panel_config
+        )
+        provider_name = (
+            str(
+                _model_config_value(panel_config, "connection_type")
+                or _model_config_value(panel_config, "provider")
+                or "ollama"
+            ).strip()
+            or "ollama"
+        )
+        model_name = str(_model_config_value(panel_config, "model") or "").strip()
+        if not model_name:
+            if required:
+                raise ValueError("研究模型未指定 model")
+            return None
+        base_url = str(_model_config_value(panel_config, "base_url") or "").strip()
+        api_key = str(_model_config_value(panel_config, "api_key") or "").strip()
+        try:
+            temperature = float(_model_config_value(panel_config, "temperature", 0.3) or 0.3)
+        except (TypeError, ValueError):
+            temperature = 0.3
+
+        if callable(create_llm):
+            return create_llm(
+                provider_name,
+                model_name,
+                base_url,
+                api_key,
+                temperature,
+            )
+
+        from backend.services.agent_core import get_llm
+
+        return get_llm(
+            provider_name,
+            model_name,
+            base_url,
+            api_key,
+            temperature,
+        )
+
+    async def plan_quick_search_query() -> str | None:
+        if bool(record.params.get("disable_llm_search_planning", False)):
+            return None
+
+        llm = build_research_llm(required=False)
+        if llm is None:
+            return None
+
+        planned_query = await rewrite_search_query_with_llm(llm, query)
+        if planned_query and planned_query != query:
+            record.params["search_planned_query"] = planned_query
+            return planned_query
+        return None
 
     async def run_quick_research_mode() -> Any:
+        nonlocal search_planning_note
         await set_progress(25)
+        planned_query = None
+        try:
+            planned_query = await plan_quick_search_query()
+        except Exception as exc:
+            search_planning_note = (
+                "LLM search planning was unavailable; used deterministic query planning instead. "
+                f"Reason: {describe_runtime_error(exc)}"
+            )
         return await run_web_research(
             query,
+            planned_query=planned_query,
             max_results=max_results,
             provider=provider,
             providers=providers,
@@ -797,48 +918,7 @@ async def run_web_research_task(
     try:
         if requested_research_mode == "deep":
             try:
-                raw_panel_config = record.params.get("panel_config")
-                if raw_panel_config is None:
-                    raise ValueError("未提供研究模型配置")
-
-                panel_config = (
-                    normalize_model_config(raw_panel_config)
-                    if callable(normalize_model_config)
-                    else raw_panel_config
-                )
-                provider_name = (
-                    str(
-                        _model_config_value(panel_config, "connection_type")
-                        or _model_config_value(panel_config, "provider")
-                        or "ollama"
-                    ).strip()
-                    or "ollama"
-                )
-                model_name = str(_model_config_value(panel_config, "model") or "").strip()
-                if not model_name:
-                    raise ValueError("研究模型未指定 model")
-                base_url = str(_model_config_value(panel_config, "base_url") or "").strip()
-                api_key = str(_model_config_value(panel_config, "api_key") or "").strip()
-                temperature = float(_model_config_value(panel_config, "temperature", 0.3) or 0.3)
-
-                if callable(create_llm):
-                    llm = create_llm(
-                        provider_name,
-                        model_name,
-                        base_url,
-                        api_key,
-                        temperature,
-                    )
-                else:
-                    from backend.services.agent_core import get_llm
-
-                    llm = get_llm(
-                        provider_name,
-                        model_name,
-                        base_url,
-                        api_key,
-                        temperature,
-                    )
+                llm = build_research_llm(required=True)
 
                 knowledge_search = None
                 if bool(record.params.get("use_kb_context", False)):
@@ -869,6 +949,8 @@ async def run_web_research_task(
     except Exception as exc:
         raise ValueError(describe_runtime_error(exc)) from exc
 
+    if search_planning_note:
+        research.caveats = [*list(research.caveats or []), search_planning_note]
     if research_fallback_note:
         research.caveats = [*list(research.caveats or []), research_fallback_note]
 

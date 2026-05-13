@@ -63,6 +63,8 @@ def _build_delivery_action_items(
     primary_source_count: int,
     unique_source_family_count: int,
     caveat_count: int,
+    context_source_count: int,
+    rejected_source_count: int,
 ) -> list[dict[str, object]]:
     """Create deterministic follow-up actions for improving deliverable quality."""
     action_items: list[dict[str, object]] = []
@@ -133,6 +135,22 @@ def _build_delivery_action_items(
                 "description": "Review provider and research caveats before final delivery.",
             }
         )
+    if context_source_count > 0:
+        action_items.append(
+            {
+                "id": "review_context_only_sources",
+                "priority": "low",
+                "description": "Review context-only sources before using them in a deliverable.",
+            }
+        )
+    if rejected_source_count > 0:
+        action_items.append(
+            {
+                "id": "replace_rejected_sources",
+                "priority": "medium",
+                "description": "Replace rejected low-heat sources with fresher primary or secondary evidence.",
+            }
+        )
 
     return action_items
 
@@ -190,10 +208,19 @@ def _build_delivery_quality_summary(
         [source.freshness_band for source in evaluated_sources],
         ("7d", "30d", "90d", "stale", "unknown"),
     )
+    heat_level_counts = _count_values(
+        [source.heat_level for source in evaluated_sources],
+        ("hot", "warm", "cold"),
+    )
+    adoption_role_counts = _count_values(
+        [source.adoption_role for source in evaluated_sources],
+        ("evidence", "context", "rejected"),
+    )
 
     source_count = len(evaluated_sources)
     primary_source_count = source_tier_counts.get("primary", 0)
     caveat_count = len(caveats) + len(provider_caveats)
+    heat_scores = [float(source.heat_score or 0.0) for source in evaluated_sources]
 
     return {
         "coverage": {
@@ -213,6 +240,9 @@ def _build_delivery_quality_summary(
             "source_count": source_count,
             "source_tier_counts": source_tier_counts,
             "freshness_band_counts": freshness_band_counts,
+            "heat_level_counts": heat_level_counts,
+            "adoption_role_counts": adoption_role_counts,
+            "average_heat_score": round(sum(heat_scores) / len(heat_scores), 4) if heat_scores else 0.0,
             "primary_source_count": primary_source_count,
             "unique_source_family_count": len(source_families),
             "source_families": source_families,
@@ -228,6 +258,8 @@ def _build_delivery_quality_summary(
             primary_source_count=primary_source_count,
             unique_source_family_count=len(source_families),
             caveat_count=caveat_count,
+            context_source_count=adoption_role_counts.get("context", 0),
+            rejected_source_count=adoption_role_counts.get("rejected", 0),
         ),
     }
 

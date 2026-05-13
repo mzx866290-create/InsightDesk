@@ -233,7 +233,7 @@ def _shared_source_mode_label(value: Any) -> str:
 
 def message_payload(record: dict[str, Any]) -> dict[str, Any]:
     role = "user" if record.get("type") == "human" else "assistant"
-    return {
+    payload = {
         "id": record.get("id"),
         "role": role,
         "content": record.get("content", ""),
@@ -249,6 +249,10 @@ def message_payload(record: dict[str, Any]) -> dict[str, Any]:
         "feedback_value": record.get("feedback_value", 0),
         "timestamp": float(record.get("timestamp") or 0),
     }
+    token_usage = dict(record.get("token_usage") or {})
+    if token_usage:
+        payload["token_usage"] = token_usage
+    return payload
 
 
 AnswerGroupReviewer = Callable[[dict[str, Any]], dict[str, Any] | None]

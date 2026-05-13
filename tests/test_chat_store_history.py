@@ -48,6 +48,12 @@ def test_get_session_uses_direct_lookup_and_preserves_summary_fields(monkeypatch
         "Primary launch response",
         panel_id="panel-main",
         answer_group_id="grp-1",
+        token_usage={
+            "prompt_tokens": 12,
+            "completion_tokens": 8,
+            "total_tokens": 20,
+            "estimated": False,
+        },
     )
     history.add_ai_message(
         "Secondary launch response",
@@ -69,6 +75,8 @@ def test_get_session_uses_direct_lookup_and_preserves_summary_fields(monkeypatch
     assert stored["tags"] == ["launch", "priority"]
     assert stored["workspace_id"] == chat_store.DEFAULT_WORKSPACE_ID
     assert stored["message_count"] == 2
+    records = history.get_all_message_records(panel_id="panel-main")
+    assert records[-1]["token_usage"]["total_tokens"] == 20
 
 
 def test_get_workspace_uses_direct_lookup_and_counts_sessions(monkeypatch, tmp_path):

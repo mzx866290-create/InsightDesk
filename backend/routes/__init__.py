@@ -1,8 +1,10 @@
 """Backend route modules."""
 
 from backend.routes.access_routes import build_access_router
+from backend.routes.agent_catalog_routes import build_agent_catalog_router
 from backend.routes.chat_routes import build_chat_router
 from backend.routes.content_routes import build_content_router
+from backend.routes.delivery_template_routes import build_delivery_template_router
 from backend.routes.identity_routes import build_identity_router
 from backend.routes.kb_routes import (
     TestRetrievalRequest,
@@ -17,6 +19,8 @@ from backend.routes.operations_routes import (
     UpsertCloudModelApiKeyRequest,
     build_operations_router,
 )
+from backend.routes.provider_routes import build_provider_router
+from backend.routes.assistant_preset_routes import build_assistant_preset_router
 from backend.routes.prompt_routes import (
     CreatePromptRequest,
     UpdatePromptRequest,
@@ -37,11 +41,15 @@ __all__ = [
     "UpsertIntegratorConnectorsRequest",
     "UpsertIntegratorSchedulesRequest",
     "build_access_router",
+    "build_agent_catalog_router",
+    "build_assistant_preset_router",
     "build_chat_router",
     "build_content_router",
+    "build_delivery_template_router",
     "build_identity_router",
     "build_kb_router",
     "build_operations_router",
+    "build_provider_router",
     "build_prompt_router",
     "build_security_router",
     "build_session_router",

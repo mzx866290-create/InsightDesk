@@ -33,11 +33,16 @@ import backend.api_chat_stream_helpers as legacy_chat_stream_helpers
 import backend.api_config_store as legacy_config_store
 import backend.api_deck_report_helpers as legacy_deck_report_helpers
 import backend.api_document_helpers as legacy_document_helpers
+import backend.api_artifact_helpers as legacy_artifact_helpers
+import backend.api_env_config_helpers as legacy_env_config_helpers
 import backend.api_content_routes as legacy_content_routes
+import backend.api_http_runtime_helpers as legacy_http_runtime_helpers
+import backend.api_misc_helpers as legacy_misc_helpers
 import backend.api_kb_helpers as legacy_kb_helpers
 import backend.api_kb_chunk_route_helpers as legacy_kb_chunk_route_helpers
 import backend.api_kb_delete_helpers as legacy_kb_delete_helpers
 import backend.api_kb_management_helpers as legacy_kb_management_helpers
+import backend.api_model_config_helpers as legacy_model_config_helpers
 import backend.api_kb_routes as legacy_kb_routes
 import backend.api_operations_routes as legacy_operations_routes
 import backend.api_prompt_routes as legacy_prompt_routes
@@ -77,9 +82,14 @@ from backend.helpers import (
     delete_kb_directory,
     deck_report_helpers,
     document_helpers,
+    artifact_helpers,
+    env_config_helpers,
+    http_runtime_helpers,
+    misc_helpers,
     kb_helpers,
     kb_chunk_route_helpers,
     kb_management_helpers,
+    model_config_helpers,
     security_helpers,
     share_helpers,
     session_helpers,
@@ -417,6 +427,18 @@ def test_split_agent_dashboard_payload_re_export_behavior_matches_payload_module
 def test_legacy_config_store_module_re_exports_new_store_symbols():
     assert legacy_config_store.SQLiteAppConfigStore is config_store.SQLiteAppConfigStore
     assert legacy_config_store.StoredConfigValue is config_store.StoredConfigValue
+    assert (
+        legacy_config_store.append_mcp_runtime_health_history
+        is config_store.append_mcp_runtime_health_history
+    )
+    assert (
+        legacy_config_store.read_mcp_runtime_health_history
+        is config_store.read_mcp_runtime_health_history
+    )
+    assert (
+        legacy_config_store.sanitize_mcp_runtime_health_history_item
+        is config_store.sanitize_mcp_runtime_health_history_item
+    )
     assert SQLiteAppConfigStore is config_store.SQLiteAppConfigStore
     assert StoredConfigValue is config_store.StoredConfigValue
 
@@ -797,6 +819,22 @@ def test_legacy_task_helpers_re_export_new_helper_symbols():
 
 
 def test_legacy_kb_management_helpers_re_export_new_helper_symbols():
+    assert (
+        legacy_kb_management_helpers.resolve_project_subdir
+        is kb_management_helpers.resolve_project_subdir
+    )
+    assert (
+        legacy_kb_management_helpers.faiss_safe_store_path
+        is kb_management_helpers.faiss_safe_store_path
+    )
+    assert (
+        legacy_kb_management_helpers.resolve_deletable_knowledge_base
+        is kb_management_helpers.resolve_deletable_knowledge_base
+    )
+    assert (
+        legacy_kb_management_helpers.effective_vector_store_path
+        is kb_management_helpers.effective_vector_store_path
+    )
     assert legacy_kb_management_helpers.kb_health_payload is kb_management_helpers.kb_health_payload
     assert (
         legacy_kb_management_helpers.knowledge_bases_payload
@@ -804,7 +842,146 @@ def test_legacy_kb_management_helpers_re_export_new_helper_symbols():
     )
 
 
+def test_legacy_env_config_helpers_re_export_new_helper_symbols():
+    assert legacy_env_config_helpers.env_flag is env_config_helpers.env_flag
+    assert legacy_env_config_helpers.env_int is env_config_helpers.env_int
+    assert legacy_env_config_helpers.env_int_setting is env_config_helpers.env_int_setting
+    assert legacy_env_config_helpers.env_bool_setting is env_config_helpers.env_bool_setting
+    assert legacy_env_config_helpers.cors_settings is env_config_helpers.cors_settings
+    assert (
+        legacy_env_config_helpers.is_loopback_host
+        is env_config_helpers.is_loopback_host
+    )
+    assert (
+        legacy_env_config_helpers.integrator_scheduler_config_from_env
+        is env_config_helpers.integrator_scheduler_config_from_env
+    )
+
+
+def test_legacy_artifact_helpers_re_export_new_helper_symbols():
+    assert legacy_artifact_helpers.artifact_payload is artifact_helpers.artifact_payload
+
+
+def test_legacy_misc_helpers_re_export_new_helper_symbols():
+    assert legacy_misc_helpers.request_field_set is misc_helpers.request_field_set
+    assert (
+        legacy_misc_helpers.dashboard_feature_enabled
+        is misc_helpers.dashboard_feature_enabled
+    )
+    assert (
+        legacy_misc_helpers.is_max_iterations_output
+        is misc_helpers.is_max_iterations_output
+    )
+
+
+def test_legacy_http_runtime_helpers_re_export_new_helper_symbols():
+    assert (
+        legacy_http_runtime_helpers.build_download_content_disposition
+        is http_runtime_helpers.build_download_content_disposition
+    )
+    assert (
+        legacy_http_runtime_helpers.classify_runtime_error
+        is http_runtime_helpers.classify_runtime_error
+    )
+
+
+def test_legacy_model_config_helpers_re_export_new_helper_symbols():
+    assert (
+        legacy_model_config_helpers.model_config_payload
+        is model_config_helpers.model_config_payload
+    )
+    assert (
+        legacy_model_config_helpers.base_model_payload
+        is model_config_helpers.base_model_payload
+    )
+    assert (
+        legacy_model_config_helpers.normalize_model_config
+        is model_config_helpers.normalize_model_config
+    )
+
+
 def test_legacy_security_helpers_re_export_new_helper_symbols():
+    assert legacy_security_helpers.hash_secret is security_helpers.hash_secret
+    assert (
+        legacy_security_helpers.token_fingerprint
+        is security_helpers.token_fingerprint
+    )
+    assert legacy_security_helpers.token_preview is security_helpers.token_preview
+    assert (
+        legacy_security_helpers.auth_token_preview
+        is security_helpers.auth_token_preview
+    )
+    assert (
+        legacy_security_helpers.normalize_auth_role
+        is security_helpers.normalize_auth_role
+    )
+    assert legacy_security_helpers.role_rank is security_helpers.role_rank
+    assert (
+        legacy_security_helpers.safe_epoch_seconds
+        is security_helpers.safe_epoch_seconds
+    )
+    assert (
+        legacy_security_helpers.sanitize_log_value
+        is security_helpers.sanitize_log_value
+    )
+    assert (
+        legacy_security_helpers.sanitize_request_path
+        is security_helpers.sanitize_request_path
+    )
+    assert (
+        legacy_security_helpers.security_audit_detail_value
+        is security_helpers.security_audit_detail_value
+    )
+    assert (
+        legacy_security_helpers.security_audit_event_org
+        is security_helpers.security_audit_event_org
+    )
+    assert (
+        legacy_security_helpers.security_audit_event_tenant
+        is security_helpers.security_audit_event_tenant
+    )
+    assert (
+        legacy_security_helpers.security_audit_event_to_payload
+        is security_helpers.security_audit_event_to_payload
+    )
+    assert (
+        legacy_security_helpers.security_audit_redacted_details
+        is security_helpers.security_audit_redacted_details
+    )
+    assert (
+        legacy_security_helpers.security_audit_siem_event_payload
+        is security_helpers.security_audit_siem_event_payload
+    )
+    assert (
+        legacy_security_helpers.build_security_audit_siem_export_payload
+        is security_helpers.build_security_audit_siem_export_payload
+    )
+    assert (
+        legacy_security_helpers.build_security_audit_aggregate_report_payload
+        is security_helpers.build_security_audit_aggregate_report_payload
+    )
+    assert (
+        backend_helpers.build_security_audit_archive_policy_payload
+        is security_helpers.build_security_audit_archive_policy_payload
+    )
+    assert (
+        legacy_security_helpers.build_security_audit_archive_policy_payload
+        is security_helpers.build_security_audit_archive_policy_payload
+    )
+    assert (
+        legacy_security_helpers.filter_security_audit_events
+        is security_helpers.filter_security_audit_events
+    )
+    assert (
+        legacy_security_helpers.share_link_audit_payload
+        is security_helpers.share_link_audit_payload
+    )
+    assert (
+        legacy_security_helpers.auth_token_is_weak
+        is security_helpers.auth_token_is_weak
+    )
+    assert legacy_security_helpers.ceil_seconds is security_helpers.ceil_seconds
+    assert legacy_security_helpers.content_hash is security_helpers.content_hash
     assert (
         legacy_security_helpers.auth_capabilities_for_role
         is security_helpers.auth_capabilities_for_role
@@ -820,6 +997,22 @@ def test_legacy_security_helpers_re_export_new_helper_symbols():
     assert (
         legacy_security_helpers.build_auth_token_catalog_payload
         is security_helpers.build_auth_token_catalog_payload
+    )
+    assert (
+        legacy_security_helpers.normalize_sso_config_update
+        is security_helpers.normalize_sso_config_update
+    )
+    assert (
+        legacy_security_helpers.sso_callback_url_for_mode
+        is security_helpers.sso_callback_url_for_mode
+    )
+    assert (
+        legacy_security_helpers.pkce_code_challenge
+        is security_helpers.pkce_code_challenge
+    )
+    assert (
+        legacy_security_helpers.sso_session_token_hash
+        is security_helpers.sso_session_token_hash
     )
 
 

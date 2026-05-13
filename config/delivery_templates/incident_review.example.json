@@ -1,0 +1,21 @@
+{
+  "enabled": false,
+  "id": "incident_review",
+  "version": "0.1.0",
+  "name": "Incident Review",
+  "description": "Example report template for incident timelines, impact, root cause, and follow-up actions.",
+  "artifact_type": "report",
+  "category": "operations",
+  "tags": ["incident", "postmortem", "ops"],
+  "target_format": "markdown",
+  "preview": "Timeline → Impact → Root cause → Action items",
+  "suggested_options": {
+    "scope": "session",
+    "tone": "operational",
+    "include_sources": true
+  },
+  "metadata": {
+    "owner": "example",
+    "risk_level": "low"
+  }
+}

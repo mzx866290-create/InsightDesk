@@ -38,6 +38,7 @@ import {
 import type { ChatFile } from '../../api/client'
 import { AttachmentPreviewModal } from './AttachmentPreviewModal'
 import { ReportPreviewModal } from '../reports/ReportPreviewModal'
+import { ReportGenerationModal } from '../reports/ReportGenerationModal'
 
 /*
 interface MessageBubbleProps {
@@ -97,6 +98,19 @@ const formatMessageTimestamp = (timestamp?: number): string => {
   return formatter.format(date)
 }
 
+const tokenCountFormatter = new Intl.NumberFormat('zh-CN')
+
+const formatTokenUsage = (usage?: PanelMessage['tokenUsage']): string => {
+  if (!usage) return 'Tokens: unavailable'
+  const total = Number.isFinite(usage.total_tokens) ? usage.total_tokens : 0
+  const prompt = Number.isFinite(usage.prompt_tokens) ? usage.prompt_tokens : 0
+  const completion = Number.isFinite(usage.completion_tokens)
+    ? usage.completion_tokens
+    : 0
+  const suffix = usage.estimated ? ' est.' : ''
+  return `Tokens: ${tokenCountFormatter.format(total)}${suffix} (in ${tokenCountFormatter.format(prompt)} / out ${tokenCountFormatter.format(completion)})`
+}
+
 export const MessageBubble: React.FC<MessageBubbleProps> = ({
   message,
   panelId,
@@ -128,6 +142,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   const [previewFile, setPreviewFile] = React.useState<ChatFile | null>(null)
   const [reportState, setReportState] = React.useState<'idle' | 'loading' | 'error'>('idle')
   const [reportError, setReportError] = React.useState<string | null>(null)
+  const [reportConfigOpen, setReportConfigOpen] = React.useState(false)
   const [reportTaskId, setReportTaskId] = React.useState<string | null>(null)
   const [handledReportTaskId, setHandledReportTaskId] = React.useState<string | null>(null)
   const [reportPreview, setReportPreview] = React.useState<{
@@ -183,6 +198,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   })
   const isBookmarked = Boolean(bookmarkEntry)
   const messageTimeLabel = formatMessageTimestamp(message.timestamp)
+  const tokenUsageLabel = !isUser && !isError ? formatTokenUsage(message.tokenUsage) : ''
 
   const handleClearContext = async () => {
     if (currentSessionId) {
@@ -542,7 +558,10 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
     }
   }
 
-  const handleGenerateReport = async () => {
+  const handleGenerateReport = async (payload?: {
+    template_id?: string
+    template_options?: Record<string, unknown>
+  }) => {
     if (!currentSessionId || !canGenerateReport) return
     setReportState('loading')
     setReportError(null)
@@ -552,6 +571,8 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
         {
           answer_group_id: message.answerGroupId,
           panel_id: effectivePanelId,
+          template_id: payload?.template_id,
+          template_options: payload?.template_options,
         },
         currentSessionId,
       )
@@ -763,7 +784,15 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
           />
         )}
         {!message.streaming && messageBody.trim() && (
-          <div className="mt-1.5 flex items-center gap-1">
+          <div className="mt-1.5 flex flex-wrap items-center gap-1">
+            {tokenUsageLabel && (
+              <span
+                className="inline-flex items-center rounded-md border border-bg-border px-2 py-1 text-[10px] text-text-secondary/60"
+                title="Token usage for this answer"
+              >
+                {tokenUsageLabel}
+              </span>
+            )}
             {canGiveFeedback && (
               <>
                 <button
@@ -825,9 +854,9 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
               <button
                 type="button"
                 onClick={() => {
-                  void handleGenerateReport()
+                  setReportConfigOpen(true)
                 }}
-                disabled={reportState === 'loading' || isReportTaskActive}
+                disabled={reportState === 'loading' || isReportTaskActive || reportConfigOpen}
                 data-testid="message-generate-report"
                 className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[10px] text-text-secondary/50 transition-colors hover:bg-bg-hover hover:text-text-secondary disabled:opacity-40"
                 title={reportError ?? '基于当前会话生成报告预览'}
@@ -905,6 +934,11 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
           panelId={reportPreview.panelId}
         />
       )}
+      <ReportGenerationModal
+        open={reportConfigOpen}
+        onClose={() => setReportConfigOpen(false)}
+        onSubmit={handleGenerateReport}
+      />
     </div>
   )
 }

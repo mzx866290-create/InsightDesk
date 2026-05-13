@@ -81,6 +81,33 @@ NEWS_INTENT_KEYWORDS = (
     "快讯",
     "发布",
 )
+WEATHER_INTENT_KEYWORDS = (
+    "weather",
+    "forecast",
+    "temperature",
+    "rain",
+    "aqi",
+    "天气",
+    "天气预报",
+    "预报",
+    "气温",
+    "温度",
+    "降雨",
+    "下雨",
+    "空气质量",
+    "台风",
+)
+ZH_WEATHER_SEARCH_HINTS = (
+    "中国天气网",
+    "中央气象台",
+    "weather.com.cn",
+)
+WEATHER_SOURCE_DOMAINS = (
+    "weather.com.cn",
+    "weather.cma.cn",
+    "weather.com",
+    "cma.cn",
+)
 LOW_SIGNAL_DOMAINS = (
     "facebook.com",
     "instagram.com",
@@ -192,6 +219,7 @@ class SearchQueryPlan:
     is_time_sensitive: bool
     prefer_docs: bool
     prefer_official: bool
+    prefer_weather: bool
 
 
 def _provider_caveats_for_plan(
@@ -489,6 +517,119 @@ def _dedupe_query_candidates(candidates: Sequence[str]) -> tuple[str, ...]:
     return tuple(deduped)
 
 
+def _response_text(response: object) -> str:
+    content = getattr(response, "content", response)
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("content")
+                if text:
+                    parts.append(str(text))
+            elif item is not None:
+                parts.append(str(item))
+        return "\n".join(parts).strip()
+    return str(content or "").strip()
+
+
+def _extract_json_payload(text: str) -> object | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", raw, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        raw = fenced.group(1).strip()
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(raw[start : end + 1])
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
+def _extract_planned_query(text: str) -> str:
+    payload = _extract_json_payload(text)
+    if isinstance(payload, dict):
+        for key in ("query", "search_query", "optimized_query", "primary_query"):
+            value = str(payload.get(key) or "").strip()
+            if value:
+                return value
+        raw_queries = payload.get("queries")
+        if isinstance(raw_queries, list):
+            for item in raw_queries:
+                value = str(item.get("query") if isinstance(item, dict) else item).strip()
+                if value:
+                    return value
+
+    cleaned = str(text or "").strip()
+    cleaned = re.sub(r"^```(?:json)?|```$", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = cleaned.strip("\"'` \n\r\t")
+    for prefix in ("query:", "search query:", "optimized query:", "primary query:"):
+        if cleaned.lower().startswith(prefix):
+            cleaned = cleaned[len(prefix) :].strip()
+            break
+    return re.split(r"[\r\n]+", cleaned, maxsplit=1)[0].strip()
+
+
+async def rewrite_search_query_with_llm(
+    llm: object | None,
+    user_query: str,
+    *,
+    chat_history: str = "",
+    timeout_seconds: int | None = None,
+) -> str:
+    """Let the model choose the best web-search query, with deterministic fallback."""
+    fallback_query = rewrite_search_query_for_web(user_query)
+    if llm is None:
+        return fallback_query
+
+    normalized_query = str(user_query or "").strip()
+    if not normalized_query:
+        return fallback_query
+
+    context_block = f"\nConversation context:\n{chat_history.strip()}\n" if chat_history.strip() else ""
+    prompt = f"""You are a web search strategy planner.
+Return JSON only:
+{{
+  "query": "one best search-engine query"
+}}
+
+Rules:
+- Decide the best query from the user's information need; do not rely on backend hard-coded local rules.
+- Keep exact dates, locations, organization names, product names, and domain constraints from the user.
+- Add official/public-source wording only when it helps the intent, for example announcements, policy, documentation, recruitment, filings, or datasets.
+- Do not invent specific websites, domains, cities, or agencies that the user did not mention.
+- Prefer concise search terms over full conversational questions.
+
+User query: {normalized_query}
+{context_block}"""
+
+    try:
+        if timeout_seconds is not None:
+            import asyncio
+
+            response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=timeout_seconds)
+        else:
+            response = await llm.ainvoke(prompt)
+        planned_query = _extract_planned_query(_response_text(response))
+        normalized = rewrite_search_query_for_web(planned_query or normalized_query)
+        return normalized or fallback_query
+    except Exception:
+        logger.exception("LLM search query planning failed")
+        return fallback_query
+
+
 def _apply_query_preferences(
     query: str,
     *,
@@ -514,6 +655,7 @@ def _build_query_candidates(
     prefer_official: bool,
     prefer_news: bool,
     include_domains: Sequence[str],
+    prefer_weather: bool = False,
 ) -> tuple[str, tuple[str, ...]]:
     normalized_base_query = _strip_conversational_prefixes(base_query) or str(base_query or "").strip()
     effective_query = _apply_query_preferences(
@@ -522,6 +664,8 @@ def _build_query_candidates(
         prefer_news=prefer_news,
         include_domains=include_domains,
     )
+    if prefer_weather and _contains_cjk(normalized_base_query):
+        effective_query = _append_search_hints(effective_query, ZH_WEATHER_SEARCH_HINTS)
     keyword_focus_query = _build_keyword_focus_query(normalized_base_query)
     keyword_effective_query = _apply_query_preferences(
         keyword_focus_query,
@@ -529,6 +673,11 @@ def _build_query_candidates(
         prefer_news=prefer_news,
         include_domains=include_domains,
     )
+    if prefer_weather and _contains_cjk(normalized_base_query):
+        keyword_effective_query = _append_search_hints(
+            keyword_effective_query,
+            ZH_WEATHER_SEARCH_HINTS,
+        )
     return effective_query, _dedupe_query_candidates(
         (
             effective_query,
@@ -635,9 +784,12 @@ def _build_query_plan(
     normalized_base_query = _strip_conversational_prefixes(base_query) or base_query
 
     is_time_sensitive = _contains_any(normalized_base_query, TIME_SENSITIVE_KEYWORDS)
+    prefer_weather = _contains_any(normalized_base_query, WEATHER_INTENT_KEYWORDS)
     prefer_docs = _contains_any(normalized_base_query, DOC_INTENT_KEYWORDS)
     prefer_official = prefer_docs or _contains_any(normalized_base_query, OFFICIAL_INTENT_KEYWORDS)
-    prefer_news = _contains_any(normalized_base_query, NEWS_INTENT_KEYWORDS) or is_time_sensitive
+    prefer_news = (
+        _contains_any(normalized_base_query, NEWS_INTENT_KEYWORDS) or is_time_sensitive
+    ) and not prefer_weather
 
     effective_query, query_candidates = _build_query_candidates(
         original_query=original_query,
@@ -645,6 +797,7 @@ def _build_query_plan(
         prefer_official=prefer_official,
         prefer_news=prefer_news,
         include_domains=include_domains,
+        prefer_weather=prefer_weather,
     )
     if False and prefer_official and not include_domains:
         hints = ("official documentation", "release notes") if not _contains_cjk(base_query) else ("官网", "官方文档")
@@ -658,7 +811,9 @@ def _build_query_plan(
         resolved_topic = "news"
 
     resolved_time_range = str(time_range or "").strip().lower() or None
-    if resolved_time_range is None:
+    if prefer_weather:
+        resolved_time_range = None
+    elif resolved_time_range is None:
         resolved_time_range = _infer_time_range(normalized_base_query)
 
     resolved_search_depth = str(search_depth or "basic").strip().lower() or "basic"
@@ -678,6 +833,7 @@ def _build_query_plan(
         is_time_sensitive=is_time_sensitive,
         prefer_docs=prefer_docs,
         prefer_official=prefer_official,
+        prefer_weather=prefer_weather,
     )
 
 
@@ -714,6 +870,8 @@ def _compute_domain_trust(domain: str | None, plan: SearchQueryPlan) -> float:
         return 0.4
     if normalized.endswith((".gov", ".edu", ".ac.uk")):
         return 0.95
+    if plan.prefer_weather and _domain_matches(normalized, WEATHER_SOURCE_DOMAINS):
+        return 0.94
     if plan.prefer_official and _is_doc_like_domain(normalized):
         return 0.92
     if _is_doc_like_domain(normalized):
@@ -845,6 +1003,15 @@ def _score_document(
     )
 
 
+def _is_weather_relevant_document(document: SearchDocument) -> bool:
+    domain = _normalize_domain(document.domain or urlparse(document.url).netloc)
+    if _domain_matches(domain, WEATHER_SOURCE_DOMAINS):
+        return True
+
+    text = _normalize_title(f"{document.title} {document.snippet} {document.raw_text}")
+    return any(keyword.lower() in text for keyword in WEATHER_INTENT_KEYWORDS)
+
+
 def _prepare_search_documents(
     documents: Sequence[SearchDocument],
     *,
@@ -860,6 +1027,8 @@ def _prepare_search_documents(
         if plan.exclude_domains and _domain_matches(normalized_domain, plan.exclude_domains):
             continue
         scored = _score_document(document, query_terms=query_terms, plan=plan)
+        if plan.prefer_weather and not _is_weather_relevant_document(scored):
+            continue
         text_payload = (scored.raw_text or scored.snippet or scored.title).strip()
         if "binary_excerpt" in scored.evidence_tags:
             continue
@@ -1008,7 +1177,13 @@ async def search_web(
                 for document in candidate_response.results:
                     document.retrieval_query = candidate_query
                 response = candidate_response
-                if candidate_response.results or index == len(query_candidates) - 1:
+                has_usable_results = bool(
+                    _prepare_search_documents(candidate_response.results, plan=plan)
+                )
+                if (
+                    (candidate_response.results and (has_usable_results or not plan.prefer_weather))
+                    or index == len(query_candidates) - 1
+                ):
                     if candidate_query != plan.effective_query and candidate_response.results:
                         fallback_note = (
                             f"{provider_name} retried the search with a simplified query variant."
@@ -1018,6 +1193,15 @@ async def search_web(
                     break
 
             if response is None:
+                continue
+            if (
+                plan.prefer_weather
+                and response.results
+                and not _prepare_search_documents(response.results, plan=plan)
+            ):
+                provider_caveats.append(
+                    f"{provider_name} returned results without weather signals; trying another provider."
+                )
                 continue
         except SearchRuntimeError as exc:
             logger.warning("search_web runtime issue provider=%s error=%s", provider_name, exc)
@@ -1135,7 +1319,7 @@ async def search_web_text(
     provider: str | None = None,
     search_depth: str = "basic",
 ) -> str:
-    provider_name = normalize_provider_name(provider)
+    provider_name = normalize_provider_name(provider) if provider else None
 
     try:
         response = await search_web(
@@ -1151,7 +1335,7 @@ async def search_web_text(
             config_message="未配置可用的联网搜索 provider，无法使用联网搜索功能。",
         )
     except Exception as exc:
-        logger.exception("search_web_text failed provider=%s", provider_name)
+        logger.exception("search_web_text failed provider=%s", provider_name or "default")
         return _describe_search_error(
             exc,
             config_message="未配置可用的联网搜索 provider，无法使用联网搜索功能。",
@@ -1172,7 +1356,7 @@ async def quick_answer_text(
     max_results: int = 3,
     search_depth: str = "basic",
 ) -> str:
-    provider_name = normalize_provider_name(provider)
+    provider_name = normalize_provider_name(provider) if provider else None
 
     try:
         response = await search_web(
@@ -1188,7 +1372,7 @@ async def quick_answer_text(
             config_message="未配置可用的联网搜索 provider。",
         )
     except Exception as exc:
-        logger.exception("quick_answer_text failed provider=%s", provider_name)
+        logger.exception("quick_answer_text failed provider=%s", provider_name or "default")
         return _describe_search_error(
             exc,
             config_message="未配置可用的联网搜索 provider。",
@@ -1197,7 +1381,9 @@ async def quick_answer_text(
     if response.answer:
         top_sources = [item.title for item in response.results[:2] if item.title]
         source_line = f"\n来源: {'；'.join(top_sources)}" if top_sources else ""
-        return f"【网络搜索答案】\n{response.answer}{source_line}"
+        return _append_sources_marker(f"【网络搜索答案】\n{response.answer}{source_line}", response.results)
+    if response.results:
+        return format_search_results(user_question, response)
     return "未能生成答案，请使用 web_search 查看详细搜索结果。"
 
 
@@ -1261,6 +1447,7 @@ async def fetch_webpage_text(url: str, *, max_chars: int = 8000) -> str:
 async def run_web_research(
     query: str,
     *,
+    planned_query: str | None = None,
     max_results: int = 8,
     provider: str | None = None,
     providers: Sequence[str] | None = None,
@@ -1269,8 +1456,9 @@ async def run_web_research(
     time_range: str | None = None,
 ) -> WebResearchResult:
     provider_names = providers if providers is not None else provider
+    search_query = str(planned_query or "").strip() or query
     response = await search_web(
-        query,
+        search_query,
         max_results=max_results,
         providers=provider_names if isinstance(provider_names, Sequence) and not isinstance(provider_names, str) else None,
         provider=provider if isinstance(provider_names, str) or provider_names is None else None,
@@ -1293,7 +1481,7 @@ async def run_web_research(
         provider_summary=response.provider or normalize_provider_name(provider),
         answer=response.answer,
         summary=summary,
-        rewritten_query=response.rewritten_query,
+        rewritten_query=response.rewritten_query or search_query,
         sources=response.results,
         highlights=highlights,
         provider_capabilities=response.provider_capabilities,

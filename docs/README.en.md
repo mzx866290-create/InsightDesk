@@ -10,6 +10,11 @@ This directory contains the consolidated project documentation. It keeps
 planning notes, implementation summaries, feature guides, operations material,
 and delivery status in a small set of living documents.
 
+The project is currently scoped as a personal/open-source self-hosted workbench.
+Desktop packaging, full SaaS-grade tenant isolation, and managed alert delivery
+are non-blocking enhancements. Use [README.md](../README.md) and
+[DELIVERY_STATUS.md](./DELIVERY_STATUS.md) as the current boundary references.
+
 ## Read First
 
 - [README.md](../README.md)
@@ -38,6 +43,9 @@ and delivery status in a small set of living documents.
   Agent modes, LangGraph integration, workflow visualization, and implementation
   notes.
 
+- [AGENT_PLUGIN_MANIFESTS.md](./AGENT_PLUGIN_MANIFESTS.md)
+  Declarative Agent plugin manifest schema, examples, and validation feedback.
+
 - [RESEARCH_LOGIC_V2.md](./RESEARCH_LOGIC_V2.md)
   Research pipeline v2 design, evidence model, provider caveats, and phased
   implementation plan.
@@ -49,6 +57,9 @@ and delivery status in a small set of living documents.
 - [DECK_DELIVERY_PLAN.md](./DECK_DELIVERY_PLAN.md)
   Report/PPT delivery redesign direction, Deck architecture, and phased
   evolution plan.
+
+- [DELIVERY_TEMPLATE_MANIFESTS.md](./DELIVERY_TEMPLATE_MANIFESTS.md)
+  Report and Deck/PPT template catalog manifest schema and diagnostics.
 
 - [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md)
   Four-phase implementation plan for architecture governance, multi-agent

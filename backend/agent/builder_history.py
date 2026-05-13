@@ -12,7 +12,12 @@ def _load_chat_history(
     session_id: str,
     panel_id: str = "",
     exclude_ai_answer_group_id: str = "",
+    omit_history: bool = False,
 ) -> list[BaseMessage]:
+    if omit_history:
+        # Clear-context mode: skip both persisted messages and session memory for this call only.
+        return []
+
     history = runtime_support.create_chat_message_history(session_id=session_id)
     session_memory = runtime_support.list_session_memory(
         session_id,
@@ -55,6 +60,7 @@ def _persist_panel_history(
     workflow_nodes: Optional[list[dict[str, Any]]] = None,
     task_id: str = "",
     task_type: str = "",
+    token_usage: Optional[dict[str, Any]] = None,
 ) -> None:
     history = runtime_support.create_chat_message_history(session_id=session_id)
     summarized_input = runtime_support._summarize_user_input_for_history(user_input)
@@ -85,6 +91,7 @@ def _persist_panel_history(
             workflow_nodes=workflow_nodes or [],
             task_id=task_id,
             task_type=task_type,
+            token_usage=token_usage or {},
         )
 
 
@@ -97,6 +104,7 @@ def _persist_output_history(
     workflow_nodes: Optional[list[dict[str, Any]]] = None,
     task_id: str = "",
     task_type: str = "",
+    token_usage: Optional[dict[str, Any]] = None,
 ) -> None:
     if not invocation.should_persist_history:
         return
@@ -117,6 +125,7 @@ def _persist_output_history(
         workflow_nodes=workflow_nodes or [],
         task_id=task_id or invocation.task_id,
         task_type=task_type or invocation.task_type,
+        token_usage=token_usage or {},
     )
 
 
@@ -133,4 +142,5 @@ def _persist_agent_result_history(
         workflow_nodes=result.get("workflow_nodes", []),
         task_id=str(result.get("task_id", "") or ""),
         task_type=str(result.get("task_type", "") or ""),
+        token_usage=dict(result.get("token_usage") or {}),
     )

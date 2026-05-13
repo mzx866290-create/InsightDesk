@@ -41,6 +41,7 @@ def build_agent_config_payload(
     raw_user_message: str,
     raw_images: list[dict[str, Any]],
     raw_files: list[dict[str, Any]],
+    omit_history: bool = False,
     task_id: str = "",
     task_type: str = "",
 ) -> dict[str, dict[str, Any]]:
@@ -57,6 +58,7 @@ def build_agent_config_payload(
         "raw_user_message": raw_user_message,
         "raw_images": raw_images,
         "raw_files": raw_files,
+        "omit_history": omit_history,
     }
     if task_id:
         configurable["task_id"] = task_id

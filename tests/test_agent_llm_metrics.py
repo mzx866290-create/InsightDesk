@@ -9,6 +9,7 @@ from backend.core.runtime_metrics import (
     reset_runtime_llm_metrics,
     runtime_llm_metrics_payload,
 )
+from backend.core.tracing import get_recent_trace_events, reset_trace_events
 
 
 class FakeLLM:
@@ -62,6 +63,24 @@ def test_ainvoke_llm_with_timeout_records_success_metrics():
     assert payload["by_model"][0]["model"] == "test-model"
 
 
+def test_ainvoke_llm_with_timeout_records_trace_span():
+    reset_runtime_llm_metrics()
+    reset_trace_events()
+
+    response = asyncio.run(_ainvoke_llm_with_timeout(FakeLLM(), "payload", timeout_seconds=1))
+    events = [
+        event
+        for event in get_recent_trace_events()
+        if event["name"] == "llm.invoke"
+    ]
+
+    assert response.content == "ok:payload"
+    assert [event["event"] for event in events] == ["start", "end"]
+    assert events[-1]["attributes"]["llm.status"] == "success"
+    assert events[-1]["attributes"]["llm.model"] == "test-model"
+    assert events[-1]["attributes"]["llm.total_tokens"] == 5
+
+
 def test_astream_llm_with_timeout_records_stream_metrics():
     reset_runtime_llm_metrics()
 
@@ -82,6 +101,34 @@ def test_astream_llm_with_timeout_records_stream_metrics():
     assert payload["total_calls"] == 1
     assert payload["total_errors"] == 0
     assert payload["by_model"][0]["model"] == "stream-model"
+
+
+def test_astream_llm_with_timeout_records_trace_span():
+    reset_runtime_llm_metrics()
+    reset_trace_events()
+
+    async def collect():
+        return [
+            chunk
+            async for chunk in _astream_llm_with_timeout(
+                FakeStreamingLLM(),
+                "stream",
+                timeout_seconds=1,
+            )
+        ]
+
+    chunks = asyncio.run(collect())
+    events = [
+        event
+        for event in get_recent_trace_events()
+        if event["name"] == "llm.stream"
+    ]
+
+    assert chunks == ["hello", " stream"]
+    assert [event["event"] for event in events] == ["start", "end"]
+    assert events[-1]["attributes"]["llm.status"] == "success"
+    assert events[-1]["attributes"]["llm.model"] == "stream-model"
+    assert events[-1]["attributes"]["llm.usage_estimated"] is True
 
 
 def test_ainvoke_llm_with_timeout_records_timeout_metrics():
