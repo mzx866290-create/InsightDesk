@@ -1336,6 +1336,7 @@ describe('chatStoreModel', () => {
         webSearchEnabled: true,
         knowledgeBaseEnabled: false,
         researchMode: 'quick',
+        researchSourceStrategy: 'community_first',
         enabledMcpServers: [' web-search ', '', 'web-search', 'knowledge-base'],
         theme: 'unsupported',
         language: 'en-US',
@@ -1393,6 +1394,7 @@ describe('chatStoreModel', () => {
       webSearchEnabled: true,
       knowledgeBaseEnabled: false,
       researchMode: 'quick',
+      researchSourceStrategy: 'community_first',
       enabledMcpServers: ['web-search', 'knowledge-base'],
       theme: 'system',
       language: 'en-US',
@@ -1435,6 +1437,7 @@ describe('chatStoreModel', () => {
       webSearchEnabled: true,
       knowledgeBaseEnabled: true,
       researchMode: 'deep',
+      researchSourceStrategy: 'evidence_strict',
       enabledMcpServers: ['knowledge-base'],
       welcomeGuideDismissed: true,
       activePromptId: 'prompt-1',
@@ -1479,6 +1482,7 @@ describe('chatStoreModel', () => {
     })
 
     expect(partialized.memoryWorkspaceOpen).toBe(false)
+    expect(partialized.researchSourceStrategy).toBe('evidence_strict')
     expect(partialized.modelPresets[0].modelConfig.api_key).toBe('')
     expect(partialized.cloudModelProfiles[0].modelConfig.api_key).toBe('')
     expect(partialized.panels[0].modelConfig.api_key).toBe('')

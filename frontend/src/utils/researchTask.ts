@@ -12,8 +12,16 @@ export interface ResearchTaskMeta {
   providerSummary: string
   summary: string
   sourceCount: number
+  sourceStrategy: string
   facets: string[]
   caveats: string[]
+  strategyIntent: string
+  strategyRegion: string
+  strategyFreshness: string
+  strategySourceTypes: string[]
+  strategyQueryVariants: string[]
+  strategyRankingPolicy: string
+  relatedQuestions: string[]
   findingCount: number
   contradictionCount: number
   roundCount: number
@@ -52,6 +60,7 @@ export function getResearchTaskMeta(task?: TaskRecord | null): ResearchTaskMeta 
 
   const params = asRecord(task.params) ?? {}
   const researchPlan = asRecord(params.research_plan)
+  const searchStrategyPlan = asRecord(params.search_strategy_plan)
 
   const query = asString(params.query)
   const rewrittenQuery = asString(params.research_rewritten_query)
@@ -67,8 +76,22 @@ export function getResearchTaskMeta(task?: TaskRecord | null): ResearchTaskMeta 
       requestedMode.toLowerCase() !== effectiveMode.toLowerCase(),
   )
   const sourceCount = asCount(params.research_sources)
+  const sourceStrategy = asString(params.research_source_strategy)
+    || asString(researchPlan?.source_strategy)
+    || 'web_only'
   const caveats = asStringArray(params.research_caveats)
   const facets = asStringArray(researchPlan?.facets)
+  const strategyIntent = asString(searchStrategyPlan?.intent)
+  const strategyRegion = asString(searchStrategyPlan?.region)
+  const strategyFreshness = asString(searchStrategyPlan?.freshness)
+  const strategySourceTypes = asStringArray(searchStrategyPlan?.source_types)
+  const primaryStrategyQuery = asString(searchStrategyPlan?.primary_query)
+  const strategyQueryVariants = [
+    primaryStrategyQuery,
+    ...asStringArray(searchStrategyPlan?.query_variants),
+  ].filter((item, index, items) => item && items.indexOf(item) === index)
+  const strategyRankingPolicy = asString(searchStrategyPlan?.ranking_policy)
+  const relatedQuestions = asStringArray(params.research_related_questions)
   const findingCount = asCount(params.research_findings)
   const contradictionCount = asCount(params.research_contradictions)
   const roundCount = asCount(params.research_rounds)
@@ -85,8 +108,16 @@ export function getResearchTaskMeta(task?: TaskRecord | null): ResearchTaskMeta 
     providerSummary,
     summary,
     sourceCount,
+    sourceStrategy,
     facets,
     caveats,
+    strategyIntent,
+    strategyRegion,
+    strategyFreshness,
+    strategySourceTypes,
+    strategyQueryVariants,
+    strategyRankingPolicy,
+    relatedQuestions,
     findingCount,
     contradictionCount,
     roundCount,

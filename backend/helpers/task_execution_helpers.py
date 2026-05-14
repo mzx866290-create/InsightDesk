@@ -17,7 +17,8 @@ from backend.stores.task_store import TaskRecord
 from search_runtime import run_deep_research
 from search_runtime.service import (
     describe_runtime_error,
-    rewrite_search_query_with_llm,
+    plan_search_strategy_with_llm,
+    rewrite_search_query_for_web,
     run_web_research,
 )
 
@@ -685,6 +686,17 @@ async def run_multi_agent_workflow_task(
         if isinstance(raw_providers, list)
         else None
     )
+    research_source_strategy = (
+        str(
+            record.params.get("research_source_strategy")
+            or record.params.get("source_strategy")
+            or "web_only"
+        )
+        .strip()
+        .lower()
+        .replace("-", "_")
+        or "web_only"
+    )
     research_config = ResearchAgentConfig(
         mode=(
             "quick"
@@ -696,6 +708,7 @@ async def run_multi_agent_workflow_task(
         max_results_per_query=max(1, int(record.params.get("max_results_per_query", 4) or 4)),
         max_fetch_pages=max(1, int(record.params.get("max_fetch_pages", 3) or 3)),
         time_range=str(record.params.get("time_range") or "").strip() or None,
+        source_strategy=research_source_strategy,
         allow_quick_fallback=bool(record.params.get("allow_quick_fallback", True)),
         metadata={"task_id": record.task_id},
     )
@@ -799,6 +812,17 @@ async def run_web_research_task(
         str(record.params.get("research_mode") or "").strip().lower() or "quick"
     )
     effective_research_mode = requested_research_mode
+    research_source_strategy = (
+        str(
+            record.params.get("research_source_strategy")
+            or record.params.get("source_strategy")
+            or "web_only"
+        )
+        .strip()
+        .lower()
+        .replace("-", "_")
+        or "web_only"
+    )
     provider = str(record.params.get("provider") or "").strip() or None
     raw_providers = record.params.get("providers")
     providers = (
@@ -880,7 +904,7 @@ async def run_web_research_task(
             temperature,
         )
 
-    async def plan_quick_search_query() -> str | None:
+    async def plan_quick_search_strategy() -> Any | None:
         if bool(record.params.get("disable_llm_search_planning", False)):
             return None
 
@@ -888,32 +912,43 @@ async def run_web_research_task(
         if llm is None:
             return None
 
-        planned_query = await rewrite_search_query_with_llm(llm, query)
+        strategy = await plan_search_strategy_with_llm(llm, query)
+        planned_query = rewrite_search_query_for_web(strategy.primary_query)
         if planned_query and planned_query != query:
             record.params["search_planned_query"] = planned_query
-            return planned_query
+        if strategy.query_variants:
+            record.params["search_strategy_plan"] = strategy.to_payload()
+            return strategy
         return None
 
     async def run_quick_research_mode() -> Any:
         nonlocal search_planning_note
         await set_progress(25)
+        search_strategy = None
         planned_query = None
         try:
-            planned_query = await plan_quick_search_query()
+            search_strategy = await plan_quick_search_strategy()
+            planned_query = (
+                rewrite_search_query_for_web(search_strategy.primary_query)
+                if search_strategy is not None
+                else None
+            )
         except Exception as exc:
             search_planning_note = (
                 "LLM search planning was unavailable; used deterministic query planning instead. "
                 f"Reason: {describe_runtime_error(exc)}"
             )
-        return await run_web_research(
-            query,
-            planned_query=planned_query,
-            max_results=max_results,
-            provider=provider,
-            providers=providers,
-            search_depth=search_depth,
-            time_range=time_range,
-        )
+        kwargs: dict[str, Any] = {
+            "planned_query": planned_query,
+            "max_results": max_results,
+            "provider": provider,
+            "providers": providers,
+            "search_depth": search_depth,
+            "time_range": time_range,
+        }
+        if search_strategy is not None:
+            kwargs["search_strategy"] = search_strategy
+        return await run_web_research(query, **kwargs)
 
     try:
         if requested_research_mode == "deep":
@@ -934,6 +969,7 @@ async def run_web_research_task(
                     max_rounds=max_rounds,
                     max_results_per_query=max_results_per_query,
                     time_range=time_range,
+                    source_strategy=research_source_strategy,
                     knowledge_search=knowledge_search,
                 )
                 await set_progress(55)
@@ -968,6 +1004,7 @@ async def run_web_research_task(
         record.params["research_requested_mode"] = requested_research_mode
         record.params["research_fallback_note"] = research_fallback_note
     record.params["research_mode"] = effective_research_mode
+    record.params["research_source_strategy"] = research_source_strategy
     record.params["research_sources"] = source_items
     record.params["research_provider"] = research.provider
     record.params["research_provider_summary"] = research.provider_summary or research.provider
@@ -977,6 +1014,9 @@ async def run_web_research_task(
     record.params["research_contradictions"] = [asdict(item) for item in research.contradictions]
     record.params["research_rounds"] = [asdict(item) for item in research.rounds]
     record.params["research_caveats"] = list(research.caveats or [])
+    record.params["research_related_questions"] = list(research.related_questions or [])
+    if research.search_strategy is not None:
+        record.params["search_strategy_plan"] = research.search_strategy.to_payload()
     if research.research_intent is not None:
         record.params["research_intent"] = asdict(research.research_intent)
     if research.research_plan is not None:

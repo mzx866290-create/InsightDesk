@@ -79,6 +79,7 @@ Thumbs.db
 *.tmp
 temp/
 tmp/
+artifacts/
 tmp_export_test.pptx
 
 # Frontend build/dependency artifacts

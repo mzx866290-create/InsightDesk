@@ -5,6 +5,7 @@ from __future__ import annotations
 from search_runtime.research_service import (
     _default_budget,
     _generic_facets_for_intent,
+    _normalize_source_strategy,
     _parse_plan_payload,
     _resolve_domain_template,
 )
@@ -19,6 +20,7 @@ def build_fallback_research_plan(
     time_range: str | None = None,
     max_rounds: int = 2,
     max_fetch_pages: int = 3,
+    source_strategy: str | None = "web_only",
 ) -> ResearchPlan:
     """Build the deterministic plan used when an LLM planner cannot provide JSON."""
     intent = classify_research_intent(query, time_range=time_range)
@@ -33,14 +35,17 @@ def build_fallback_research_plan(
             if str(item).strip()
         ]
 
+    resolved_source_strategy = _normalize_source_strategy(source_strategy)
+
     return _parse_plan_payload(
         None,
         query=query,
         template_id=template_id,
         template_facets=template_facets,
-        generic_facets=_generic_facets_for_intent(intent),
+        generic_facets=_generic_facets_for_intent(intent, resolved_source_strategy),
         intent=intent,
         budget=_default_budget(max_rounds=max_rounds, max_fetch_pages=max_fetch_pages),
+        source_strategy=resolved_source_strategy,
     )
 
 

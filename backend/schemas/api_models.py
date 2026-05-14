@@ -827,6 +827,12 @@ class CreateMultiAgentWorkflowTaskRequest(BaseModel):
     plan: list[dict[str, Any]] = Field(default_factory=list)
     panel_config: ModelConfig | dict[str, Any] | None = None
     research_mode: Literal["quick", "deep"] = "deep"
+    research_source_strategy: Literal[
+        "web_only",
+        "web_and_community",
+        "community_first",
+        "evidence_strict",
+    ] = "web_only"
     providers: list[str] = Field(default_factory=list)
     max_rounds: int = 2
     max_results_per_query: int = 4

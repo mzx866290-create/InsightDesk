@@ -76,6 +76,11 @@ export type {
 } from './chatMessageModel'
 
 export type ResearchMode = 'quick' | 'deep'
+export type ResearchSourceStrategy =
+  | 'web_only'
+  | 'web_and_community'
+  | 'community_first'
+  | 'evidence_strict'
 export type ThemeMode = 'dark' | 'light' | 'system'
 export type AppLanguage = 'zh-CN' | 'en-US'
 export type BookmarkedMessage = Bookmark
@@ -125,6 +130,7 @@ export interface ChatStorePersistedState {
   webSearchEnabled: boolean
   knowledgeBaseEnabled: boolean
   researchMode: ResearchMode
+  researchSourceStrategy: ResearchSourceStrategy
   enabledMcpServers: string[]
   welcomeGuideDismissed: boolean
   activePromptId: string | null

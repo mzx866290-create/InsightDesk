@@ -4,6 +4,14 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 
+ResearchSourceStrategy = Literal[
+    "web_only",
+    "web_and_community",
+    "community_first",
+    "evidence_strict",
+]
+
+
 class SearchRuntimeError(Exception):
     """Base error for search runtime failures."""
 
@@ -74,9 +82,49 @@ class ResearchPlan:
     queries: list[ResearchQuery] = field(default_factory=list)
     template_id: str | None = None
     resolution_strategy: str = "generic_fallback"
+    source_strategy: ResearchSourceStrategy = "web_only"
     source_policy: dict[str, object] = field(default_factory=dict)
     evidence_policy: dict[str, object] = field(default_factory=dict)
     caveats: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SearchStrategyPlan:
+    """LLM-generated web search strategy executed by the backend runtime."""
+
+    intent: str = "general"
+    query_variants: tuple[str, ...] = field(default_factory=tuple)
+    source_types: tuple[str, ...] = field(default_factory=tuple)
+    freshness: str | None = None
+    region: str | None = None
+    topic: str | None = None
+    time_range: str | None = None
+    ranking_policy: str = ""
+    include_domains: tuple[str, ...] = field(default_factory=tuple)
+    exclude_domains: tuple[str, ...] = field(default_factory=tuple)
+    search_depth: str | None = None
+    caveats: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def primary_query(self) -> str:
+        return self.query_variants[0] if self.query_variants else ""
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "intent": self.intent,
+            "primary_query": self.primary_query,
+            "query_variants": list(self.query_variants),
+            "source_types": list(self.source_types),
+            "freshness": self.freshness,
+            "region": self.region,
+            "topic": self.topic,
+            "time_range": self.time_range,
+            "ranking_policy": self.ranking_policy,
+            "include_domains": list(self.include_domains),
+            "exclude_domains": list(self.exclude_domains),
+            "search_depth": self.search_depth,
+            "caveats": list(self.caveats),
+        }
 
 
 @dataclass
@@ -105,6 +153,7 @@ class SearchDocument:
     def to_source_item(self, index: int) -> dict[str, object]:
         source: dict[str, object] = {
             "type": "web",
+            "source_type": self.source_type,
             "title": self.title or "无标题",
             "url": self.url,
             "snippet": (self.raw_text or self.snippet)[:200],
@@ -265,8 +314,10 @@ class WebResearchResult:
     provider_summary: str = ""
     provider_capabilities: list[SearchProviderCapabilities] = field(default_factory=list)
     caveats: list[str] = field(default_factory=list)
+    search_strategy: SearchStrategyPlan | None = None
     research_intent: ResearchIntent | None = None
     research_plan: ResearchPlan | None = None
+    related_questions: list[str] = field(default_factory=list)
 
     def to_text(self, *, max_sources: int = 5) -> str:
         lines = [
@@ -314,6 +365,14 @@ class WebResearchResult:
             lines.append("研究说明：")
             for index, caveat in enumerate(self.caveats, 1):
                 cleaned = str(caveat or "").strip()
+                if cleaned:
+                    lines.append(f"{index}. {cleaned}")
+
+        if self.related_questions:
+            lines.append("")
+            lines.append("Continue exploring:")
+            for index, question in enumerate(self.related_questions[:5], 1):
+                cleaned = str(question or "").strip()
                 if cleaned:
                     lines.append(f"{index}. {cleaned}")
 

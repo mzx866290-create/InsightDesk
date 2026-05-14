@@ -57,6 +57,7 @@ import type {
   Panel,
   PanelMessage,
   ResearchMode,
+  ResearchSourceStrategy,
   ThemeMode,
 } from './chatStoreModel'
 
@@ -71,6 +72,7 @@ export type {
   Panel,
   PanelMessage,
   ResearchMode,
+  ResearchSourceStrategy,
   ThemeMode,
 }
 
@@ -102,6 +104,7 @@ interface ChatState extends BookmarkActionSlice, MessageActionSlice {
   webSearchEnabled: boolean
   knowledgeBaseEnabled: boolean
   researchMode: ResearchMode
+  researchSourceStrategy: ResearchSourceStrategy
   enabledMcpServers: string[]
   attachmentWorkspaceOpen: boolean
   memoryWorkspaceOpen: boolean
@@ -157,6 +160,7 @@ interface ChatState extends BookmarkActionSlice, MessageActionSlice {
   setWebSearchEnabled: (enabled: boolean) => void
   setKnowledgeBaseEnabled: (enabled: boolean) => void
   setResearchMode: (mode: ResearchMode) => void
+  setResearchSourceStrategy: (strategy: ResearchSourceStrategy) => void
   setEnabledMcpServers: (servers: string[]) => void
   toggleAttachmentWorkspace: () => void
   setAttachmentWorkspaceOpen: (open: boolean) => void
@@ -194,6 +198,7 @@ export const useChatStore = create<ChatState>()(
       webSearchEnabled: false,
       knowledgeBaseEnabled: true,
       researchMode: 'deep',
+      researchSourceStrategy: 'web_only',
       enabledMcpServers: defaultEnabledMcpServers(),
       attachmentWorkspaceOpen: false,
       memoryWorkspaceOpen: false,
@@ -293,6 +298,7 @@ export const useChatStore = create<ChatState>()(
       setWebSearchEnabled: (enabled) => set({ webSearchEnabled: enabled }),
       setKnowledgeBaseEnabled: (enabled) => set({ knowledgeBaseEnabled: enabled }),
       setResearchMode: (mode) => set({ researchMode: mode }),
+      setResearchSourceStrategy: (strategy) => set({ researchSourceStrategy: strategy }),
       setEnabledMcpServers: (servers) =>
         set({
           enabledMcpServers: normalizeEnabledMcpServers(servers),

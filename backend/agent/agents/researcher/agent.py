@@ -272,6 +272,7 @@ class ResearchAgentConfig:
     max_results_per_query: int = 4
     max_fetch_pages: int = 3
     time_range: str | None = None
+    source_strategy: str = "web_only"
     allow_quick_fallback: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -281,7 +282,14 @@ class DeepResearchAgent:
 
     name = "research"
     description = "Research Agent for search, evidence collection, and deep research reports."
-    capabilities = ["research", "deep_research", "web_search", "topic_research", "industry_research"]
+    capabilities = [
+        "research",
+        "deep_research",
+        "web_search",
+        "topic_research",
+        "industry_research",
+        "social_intel_research",
+    ]
 
     def __init__(
         self,
@@ -313,6 +321,7 @@ class DeepResearchAgent:
         mode = self._resolve_mode(metadata)
         providers = self._resolve_providers(metadata)
         time_range = str(metadata.get("time_range") or self.config.time_range or "").strip() or None
+        source_strategy = self._resolve_source_strategy(metadata)
         max_rounds = self._resolve_int(metadata, "max_rounds", self.config.max_rounds)
         max_results = self._resolve_int(
             metadata,
@@ -345,6 +354,7 @@ class DeepResearchAgent:
                         max_rounds=max_rounds,
                         max_results_per_query=max_results,
                         time_range=time_range,
+                        source_strategy=source_strategy,
                         max_fetch_pages=max_fetch_pages,
                     )
             else:
@@ -362,6 +372,7 @@ class DeepResearchAgent:
             result,
             mode=mode,
             providers=providers,
+            source_strategy=source_strategy,
             context=context,
         )
 
@@ -378,6 +389,15 @@ class DeepResearchAgent:
             values = [str(item).strip() for item in raw_providers if str(item).strip()]
             return values or None
         return None
+
+    def _resolve_source_strategy(self, metadata: dict[str, Any]) -> str:
+        raw_value = (
+            metadata.get("research_source_strategy")
+            or metadata.get("source_strategy")
+            or self.config.source_strategy
+            or "web_only"
+        )
+        return str(raw_value).strip().lower().replace("-", "_") or "web_only"
 
     @staticmethod
     def _resolve_int(metadata: dict[str, Any], key: str, default: int) -> int:
@@ -415,6 +435,7 @@ class DeepResearchAgent:
         *,
         mode: ResearchMode,
         providers: Sequence[str] | None,
+        source_strategy: str,
         context: dict[str, Any],
     ) -> AgentResult:
         evaluated_sources = evaluate_research_sources(
@@ -473,6 +494,7 @@ class DeepResearchAgent:
             "metadata": {
                 **self.config.metadata,
                 "research_mode": mode,
+                "research_source_strategy": source_strategy,
                 "providers": list(providers or []),
                 "provider_summary": result.provider_summary,
                 "rewritten_query": result.rewritten_query,

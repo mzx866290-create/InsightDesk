@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Send, Globe, Square, Database, ImagePlus, Paperclip, Sparkles, Loader2, X, Eraser } from 'lucide-react'
 import { useChatStore } from '../../stores/chatStore'
-import type { ResearchMode } from '../../stores/chatStore'
+import type { ResearchMode, ResearchSourceStrategy } from '../../stores/chatStore'
 import {
   streamChat,
   createSession as apiCreateSession,
@@ -191,6 +191,7 @@ const buildDataWorkflowPlan = (query: string): Array<Record<string, unknown>> =>
 const buildDeepResearchWorkflowPlan = (
   query: string,
   requestConfig: ResearchRequestConfig,
+  sourceStrategy: ResearchSourceStrategy,
 ): Array<Record<string, unknown>> => [
   {
     id: 'step-1',
@@ -202,6 +203,7 @@ const buildDeepResearchWorkflowPlan = (
     requires_approval: false,
     metadata: {
       research_mode: 'deep',
+      research_source_strategy: sourceStrategy,
       max_rounds: requestConfig.maxRounds,
       max_results_per_query: requestConfig.maxResultsPerQuery,
     },
@@ -313,6 +315,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     setKnowledgeBaseEnabled,
     researchMode,
     setResearchMode,
+    researchSourceStrategy,
+    setResearchSourceStrategy,
     enabledMcpServers,
     addUserMessage,
     appendChunk,
@@ -334,7 +338,38 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   } = useChatStore()
   const tasksMap = useTaskStore((state) => state.tasks)
 
-  const researchModeLabel = researchMode === 'quick' ? 'Quick' : 'Deep'
+  const researchSourceStrategyOptions: Array<{
+    value: ResearchSourceStrategy
+    label: string
+    title: string
+  }> = [
+    {
+      value: 'web_only',
+      label: 'Web',
+      title: 'Standard web-first deep research',
+    },
+    {
+      value: 'community_first',
+      label: 'Community',
+      title: 'Community-first deep research using search-indexed social/forum leads plus independent verification',
+    },
+    {
+      value: 'evidence_strict',
+      label: 'Strict',
+      title: 'Strict evidence mode; social and community pages stay contextual unless independently verified',
+    },
+  ]
+  const effectiveComposerResearchMode =
+    researchSourceStrategy === 'web_only' ? researchMode : 'deep'
+  const researchModeLabel = effectiveComposerResearchMode === 'quick' ? 'Quick' : 'Deep'
+  const researchSourceStrategyLabel =
+    researchSourceStrategy === 'community_first'
+      ? 'Community'
+      : researchSourceStrategy === 'evidence_strict'
+        ? 'Strict'
+        : researchSourceStrategy === 'web_and_community'
+          ? 'Web+Community'
+          : 'Web'
   const researchRequestConfig: Record<ResearchMode, ResearchRequestConfig> = {
     quick: {
       searchDepth: 'basic',
@@ -765,12 +800,14 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
   const handleStartResearch = async () => {
     const query = input.trim()
-    const requestConfig = researchRequestConfig[researchMode]
+    const effectiveResearchMode = effectiveComposerResearchMode
+    const requestConfig = researchRequestConfig[effectiveResearchMode]
     const pendingImages = [...images]
     const pendingFiles = [...files]
     const pendingDataFiles = pendingFiles.filter(isWorkflowDataFile)
     const hasWorkflowDataFiles = pendingDataFiles.length > 0 && pendingDataFiles.length === pendingFiles.length
-    const shouldUseWorkflow = researchMode === 'deep' || hasWorkflowDataFiles
+    const shouldUseWorkflow =
+      effectiveResearchMode === 'deep' || hasWorkflowDataFiles
     if (
       query.length === 0 ||
       pendingImages.length > 0 ||
@@ -807,7 +844,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               answer_group_id: answerGroupId,
               model_id: researchModelId,
               panel_config: panels[0]?.modelConfig,
-              research_mode: 'deep',
+              research_mode: effectiveResearchMode,
+              research_source_strategy: researchSourceStrategy,
               max_rounds: requestConfig.maxRounds,
               max_results_per_query: requestConfig.maxResultsPerQuery,
               context: hasWorkflowDataFiles
@@ -819,13 +857,14 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               data_files: hasWorkflowDataFiles ? pendingDataFiles : undefined,
               plan: hasWorkflowDataFiles
                 ? buildDataWorkflowPlan(query)
-                : buildDeepResearchWorkflowPlan(query, requestConfig),
+                : buildDeepResearchWorkflowPlan(query, requestConfig, researchSourceStrategy),
             })
           : await createAndTrackTask(
               'web_research',
               {
                 query,
-                research_mode: researchMode,
+                research_mode: effectiveResearchMode,
+                research_source_strategy: researchSourceStrategy,
                 search_depth: requestConfig.searchDepth,
                 max_results: requestConfig.maxResults,
                 max_results_per_query: requestConfig.maxResultsPerQuery,
@@ -851,6 +890,14 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           `已发起联网研究任务（${researchModeLabel}），系统会整理实时网页来源并在任务完成后显示摘要。`,
           false,
         )
+        if (researchSourceStrategy !== 'web_only') {
+          setAssistantMessage(
+            primaryPanelId,
+            assistantMessageId,
+            `已启用 ${researchSourceStrategyLabel} 情报模式，系统会优先收集社区线索并要求独立来源复核。`,
+            false,
+          )
+        }
         if (hasWorkflowDataFiles) {
           setAssistantMessage(
             primaryPanelId,
@@ -1120,13 +1167,17 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     !pendingEditAnswerGroupId &&
     !composerBusy &&
     !composerLocked
-  const researchButtonLabel = hasOnlyComposerDataFiles ? '分析' : '研究'
+  const researchButtonLabel = hasOnlyComposerDataFiles
+    ? '分析'
+    : researchSourceStrategy === 'web_only'
+      ? '研究'
+      : researchSourceStrategyLabel
   const researchButtonTitle =
     pendingEditAnswerGroupId
       ? '编辑重发模式下暂不支持联网研究'
       : images.length > 0 || files.length > 0
         ? '联网研究暂不支持图片或文件附件'
-        : researchMode === 'deep'
+        : effectiveComposerResearchMode === 'deep'
           ? '以 Deep 模式发起联网研究；若研究模型不可用会自动回退 Quick'
           : '以 Quick 模式发起联网研究；更快返回网页摘要与来源'
   const effectiveResearchButtonTitle = hasOnlyComposerDataFiles
@@ -1306,7 +1357,12 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                     <button
                       key={mode}
                       type="button"
-                      onClick={() => setResearchMode(mode)}
+                      onClick={() => {
+                        setResearchMode(mode)
+                        if (mode === 'quick') {
+                          setResearchSourceStrategy('web_only')
+                        }
+                      }}
                       disabled={composerBusy || composerLocked}
                       data-testid={`composer-research-mode-${mode}`}
                       className={`rounded-md px-2 py-1 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
@@ -1323,6 +1379,43 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                       }
                     >
                       {label}
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div
+                className="inline-flex items-center rounded-lg border border-bg-border bg-bg-primary/50 p-0.5"
+                title="Research source strategy"
+              >
+                {researchSourceStrategyOptions.map((option) => {
+                  const active = researchSourceStrategy === option.value
+                  const isCommunity = option.value === 'community_first'
+                  const isStrict = option.value === 'evidence_strict'
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => {
+                        setResearchSourceStrategy(option.value)
+                        if (option.value !== 'web_only') {
+                          setResearchMode('deep')
+                        }
+                      }}
+                      disabled={composerBusy || composerLocked}
+                      data-testid={`composer-research-source-${option.value}`}
+                      className={`rounded-md px-2 py-1 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                        active
+                          ? isCommunity
+                            ? 'bg-accent-green/20 text-accent-green'
+                            : isStrict
+                              ? 'bg-amber-400/20 text-amber-200'
+                              : 'bg-accent-blue/20 text-accent-blue'
+                          : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+                      }`}
+                      title={option.title}
+                    >
+                      {option.label}
                     </button>
                   )
                 })}
@@ -1404,7 +1497,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 data-testid="composer-research"
                 className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                   canResearch
-                    ? researchMode === 'deep' || hasOnlyComposerDataFiles
+                    ? effectiveComposerResearchMode === 'deep' || hasOnlyComposerDataFiles
                       ? 'bg-amber-400/15 text-amber-300 hover:bg-amber-400/20'
                       : 'bg-accent-blue/15 text-accent-blue hover:bg-accent-blue/20'
                     : 'text-text-secondary'

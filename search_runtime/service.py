@@ -23,6 +23,7 @@ from .types import (
     SearchProviderHTTPError,
     SearchResponse,
     SearchRuntimeError,
+    SearchStrategyPlan,
     SearchTimeoutError,
     UnsupportedSearchProviderError,
     WebResearchResult,
@@ -120,6 +121,107 @@ LOW_TRUST_DOMAINS = (
     "zhihu.com",
     "weibo.com",
 )
+GOVERNMENT_DOMAIN_SUFFIXES = (
+    ".gov",
+    ".gov.cn",
+    ".gov.uk",
+    ".gov.au",
+    ".gc.ca",
+)
+OFFICIAL_SOURCE_TYPES = {
+    "official",
+    "government",
+    "local_government",
+    "public_sector",
+    "regulator",
+    "policy",
+    "filing",
+}
+DOC_SOURCE_TYPES = {
+    "documentation",
+    "developer_docs",
+    "api_reference",
+    "manual",
+}
+NEWS_SOURCE_TYPES = {
+    "news",
+    "press",
+    "announcement",
+}
+RECRUITMENT_SOURCE_TYPES = {
+    "recruitment",
+    "recruitment_platform",
+    "job_search",
+    "jobs",
+    "careers",
+    "employment",
+}
+RECRUITMENT_DOMAIN_HINTS = (
+    "jobs.",
+    "job.",
+    "career",
+    "careers",
+    "recruit",
+    "employment",
+    "linkedin.com",
+    "indeed.com",
+    "glassdoor.com",
+    "zhaopin.com",
+    "51job.com",
+    "liepin.com",
+    "lagou.com",
+    "bosszhipin.com",
+)
+RECRUITMENT_TEXT_HINTS = (
+    "job",
+    "jobs",
+    "career",
+    "careers",
+    "hiring",
+    "recruitment",
+    "vacancy",
+    "employment",
+    "\u62db\u8058",
+    "\u96c7\u5458",
+    "\u5c97\u4f4d",
+    "\u804c\u4f4d",
+    "\u62a5\u540d",
+    "\u4e8b\u4e1a\u5355\u4f4d",
+)
+NEWS_TEXT_HINTS = (
+    "news",
+    "press",
+    "announcement",
+    "release",
+    "\u65b0\u95fb",
+    "\u516c\u544a",
+    "\u53d1\u5e03",
+)
+DOC_TEXT_HINTS = (
+    "documentation",
+    "reference",
+    "guide",
+    "manual",
+    "api",
+    "\u6587\u6863",
+    "\u624b\u518c",
+    "\u6307\u5357",
+    "\u63a5\u53e3",
+)
+FRESHNESS_TO_TIME_RANGE = {
+    "realtime": "day",
+    "today": "day",
+    "day": "day",
+    "recent": "week",
+    "week": "week",
+    "this_week": "week",
+    "month": "month",
+    "this_month": "month",
+    "year": "year",
+}
+VALID_SEARCH_DEPTHS = {"basic", "advanced"}
+VALID_TOPICS = {"news", "academic", "general", "web"}
+VALID_TIME_RANGES = {"day", "week", "month", "year"}
 CONVERSATIONAL_PREFIX_PATTERNS = (
     re.compile(
         r"^(?:please\s+)?(?:can|could|would)\s+you\s+(?:please\s+)?"
@@ -220,6 +322,11 @@ class SearchQueryPlan:
     prefer_docs: bool
     prefer_official: bool
     prefer_weather: bool
+    source_types: tuple[str, ...] = ()
+    freshness: str | None = None
+    ranking_policy: str = ""
+    strategy_intent: str = "general"
+    strategy_query_count: int = 0
 
 
 def _provider_caveats_for_plan(
@@ -517,6 +624,86 @@ def _dedupe_query_candidates(candidates: Sequence[str]) -> tuple[str, ...]:
     return tuple(deduped)
 
 
+def _format_related_question_topic(query: str) -> str:
+    focused = _build_keyword_focus_query(query)
+    return focused or re.sub(r"\s+", " ", str(query or "")).strip()
+
+
+def build_related_questions(
+    query: str,
+    sources: Sequence[SearchDocument] | Sequence[object],
+    *,
+    search_strategy: SearchStrategyPlan | None = None,
+    max_questions: int = 5,
+) -> list[str]:
+    normalized_query = _format_related_question_topic(query)
+    if not normalized_query:
+        return []
+
+    cjk = _contains_cjk(normalized_query)
+    topic = normalized_query[:64]
+    source_titles: list[str] = []
+    source_domains: list[str] = []
+    for item in sources[:3]:
+        title = str(getattr(item, "title", "") or "").strip()
+        domain = str(getattr(item, "domain", "") or "").strip()
+        if title and title not in source_titles:
+            source_titles.append(title)
+        if domain and domain not in source_domains:
+            source_domains.append(domain)
+
+    intent = (search_strategy.intent if search_strategy is not None else "").strip().lower()
+    freshness = (search_strategy.freshness if search_strategy is not None else "").strip().lower()
+    source_hint = source_titles[0] if source_titles else (source_domains[0] if source_domains else "")
+
+    questions: list[str] = []
+    if cjk:
+        questions.extend(
+            [
+                f"这个问题的最新官方进展是什么？",
+                f"围绕“{topic}”还有哪些关键细节需要继续核验？",
+                f"除了当前来源，还有哪些更权威的参考可以对照？",
+            ]
+        )
+        if source_hint:
+            questions.append(f"“{source_hint}”这条来源还提示了哪些后续信息？")
+        if intent:
+            if intent == "job_search":
+                questions.append("报名条件、截止时间和官方发布渠道分别是什么？")
+            elif intent in {"policy", "docs"}:
+                questions.append("这条信息是否有更近的官方公告或原始文档？")
+            elif intent == "news":
+                questions.append("最近一天到一周内还有哪些相关更新？")
+        if freshness in {"today", "recent"}:
+            questions.append("最新变化和前一版相比有什么不同？")
+    else:
+        questions.extend(
+            [
+                f"What is the latest official update on {topic}?",
+                f"Which details about {topic} still need verification?",
+                f"What sources should be compared against the current results?",
+            ]
+        )
+        if source_hint:
+            questions.append(f"What follow-up does “{source_hint}” suggest checking next?")
+        if intent:
+            if intent == "job_search":
+                questions.append("What are the application requirements, deadlines, and official channels?")
+            elif intent in {"policy", "docs"}:
+                questions.append("Is there a more recent official notice or primary document?")
+            elif intent == "news":
+                questions.append("What changed in the last day or week?")
+        if freshness in {"today", "recent"}:
+            questions.append(f"What changed most recently about {topic}?")
+
+    deduped: list[str] = []
+    for item in questions:
+        cleaned = re.sub(r"\s+", " ", str(item or "")).strip()
+        if cleaned and cleaned not in deduped:
+            deduped.append(cleaned)
+    return deduped[:max_questions]
+
+
 def _response_text(response: object) -> str:
     content = getattr(response, "content", response)
     if isinstance(content, str):
@@ -582,35 +769,188 @@ def _extract_planned_query(text: str) -> str:
     return re.split(r"[\r\n]+", cleaned, maxsplit=1)[0].strip()
 
 
-async def rewrite_search_query_with_llm(
+def _normalize_plan_token(value: object, *, max_chars: int = 80) -> str:
+    cleaned = _sanitize_text(str(value or ""), max_chars=max_chars).lower()
+    cleaned = re.sub(r"[\s/-]+", "_", cleaned)
+    cleaned = re.sub(r"[^a-z0-9_\u4e00-\u9fff]+", "", cleaned)
+    return cleaned.strip("_")
+
+
+def _coerce_plan_strings(value: object, *, max_items: int, max_chars: int = 160) -> tuple[str, ...]:
+    if value is None:
+        return ()
+
+    raw_items: list[object]
+    if isinstance(value, str):
+        raw_items = [part for part in re.split(r"[,;\n]+", value) if part.strip()]
+    elif isinstance(value, dict):
+        raw_items = [value]
+    elif isinstance(value, Sequence):
+        raw_items = list(value)
+    else:
+        raw_items = [value]
+
+    deduped: list[str] = []
+    for item in raw_items:
+        if isinstance(item, dict):
+            raw = item.get("query") or item.get("search_query") or item.get("text") or item.get("value")
+        else:
+            raw = item
+        cleaned = _sanitize_text(str(raw or ""), max_chars=max_chars)
+        if cleaned and cleaned not in deduped:
+            deduped.append(cleaned)
+        if len(deduped) >= max_items:
+            break
+    return tuple(deduped)
+
+
+def _normalize_plan_list(value: object, *, max_items: int, max_chars: int = 80) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for item in _coerce_plan_strings(value, max_items=max_items, max_chars=max_chars):
+        token = _normalize_plan_token(item, max_chars=max_chars)
+        if token and token not in normalized:
+            normalized.append(token)
+    return tuple(normalized)
+
+
+def _normalize_plan_domains(value: object, *, max_items: int = 8) -> tuple[str, ...]:
+    domains: list[str] = []
+    for item in _coerce_plan_strings(value, max_items=max_items, max_chars=120):
+        domain = _normalize_domain(item)
+        if not domain or " " in domain or "." not in domain:
+            continue
+        if domain not in domains:
+            domains.append(domain)
+    return tuple(domains)
+
+
+def _normalize_plan_time_range(value: object) -> str | None:
+    token = _normalize_plan_token(value, max_chars=40)
+    if token in VALID_TIME_RANGES:
+        return token
+    return FRESHNESS_TO_TIME_RANGE.get(token)
+
+
+def _normalize_plan_topic(value: object) -> str | None:
+    token = _normalize_plan_token(value, max_chars=40)
+    if token in {"web", "general"}:
+        return None
+    return token if token in VALID_TOPICS else None
+
+
+def _normalize_plan_search_depth(value: object) -> str | None:
+    token = _normalize_plan_token(value, max_chars=40)
+    return token if token in VALID_SEARCH_DEPTHS else None
+
+
+def _extract_strategy_query_variants(payload: dict[str, object], user_query: str) -> tuple[str, ...]:
+    raw_queries: list[object] = []
+    for key in ("primary_query", "optimized_query", "search_query", "query"):
+        value = payload.get(key)
+        if value:
+            raw_queries.append(value)
+    for key in ("query_variants", "queries", "search_queries"):
+        value = payload.get(key)
+        if value:
+            raw_queries.extend(_coerce_plan_strings(value, max_items=6, max_chars=180))
+
+    normalized: list[str] = []
+    for raw in raw_queries:
+        candidate = _strip_conversational_prefixes(str(raw or "")) or str(raw or "").strip()
+        candidate = re.sub(r"\s+", " ", candidate).strip()
+        if candidate and candidate not in normalized:
+            normalized.append(candidate)
+        if len(normalized) >= 4:
+            break
+
+    if not normalized:
+        fallback = rewrite_search_query_for_web(user_query)
+        if fallback:
+            normalized.append(fallback)
+    return tuple(normalized)
+
+
+def _extract_search_strategy_plan(text: str, user_query: str) -> SearchStrategyPlan:
+    payload = _extract_json_payload(text)
+    if not isinstance(payload, dict):
+        fallback_query = rewrite_search_query_for_web(_extract_planned_query(text) or user_query)
+        return SearchStrategyPlan(
+            query_variants=(fallback_query,) if fallback_query else (),
+            caveats=("LLM returned a non-JSON search plan; used a best-query fallback.",),
+        )
+
+    query_variants = _extract_strategy_query_variants(payload, user_query)
+    source_types = _normalize_plan_list(
+        payload.get("source_types") or payload.get("source_type") or payload.get("preferred_sources"),
+        max_items=8,
+    )
+    freshness = _normalize_plan_token(payload.get("freshness") or payload.get("time_window"), max_chars=40) or None
+    time_range = _normalize_plan_time_range(payload.get("time_range")) or _normalize_plan_time_range(freshness)
+    topic = _normalize_plan_topic(payload.get("topic"))
+    search_depth = _normalize_plan_search_depth(payload.get("search_depth"))
+    if search_depth is None and (len(query_variants) > 1 or source_types or time_range):
+        search_depth = "advanced"
+
+    return SearchStrategyPlan(
+        intent=_normalize_plan_token(payload.get("intent"), max_chars=80) or "general",
+        query_variants=query_variants,
+        source_types=source_types,
+        freshness=freshness,
+        region=_sanitize_text(str(payload.get("region") or ""), max_chars=80) or None,
+        topic=topic,
+        time_range=time_range,
+        ranking_policy=_sanitize_text(str(payload.get("ranking_policy") or ""), max_chars=240),
+        include_domains=_normalize_plan_domains(payload.get("include_domains") or payload.get("domains")),
+        exclude_domains=_normalize_plan_domains(payload.get("exclude_domains")),
+        search_depth=search_depth,
+        caveats=_coerce_plan_strings(payload.get("caveats"), max_items=6, max_chars=180),
+    )
+
+
+async def plan_search_strategy_with_llm(
     llm: object | None,
     user_query: str,
     *,
     chat_history: str = "",
     timeout_seconds: int | None = None,
-) -> str:
-    """Let the model choose the best web-search query, with deterministic fallback."""
+) -> SearchStrategyPlan:
+    """Let the model plan search strategy; deterministic query planning remains the fallback."""
     fallback_query = rewrite_search_query_for_web(user_query)
+    fallback_strategy = SearchStrategyPlan(query_variants=(fallback_query,) if fallback_query else ())
     if llm is None:
-        return fallback_query
+        return fallback_strategy
 
     normalized_query = str(user_query or "").strip()
     if not normalized_query:
-        return fallback_query
+        return fallback_strategy
 
     context_block = f"\nConversation context:\n{chat_history.strip()}\n" if chat_history.strip() else ""
+    current_date = datetime.now(UTC).date().isoformat()
     prompt = f"""You are a web search strategy planner.
 Return JSON only:
 {{
-  "query": "one best search-engine query"
+  "intent": "short intent label, e.g. job_search, policy, docs, news, price_check",
+  "region": "location if relevant, otherwise null",
+  "freshness": "today | recent | evergreen | null",
+  "source_types": ["official", "recruitment_platform", "local_government", "news"],
+  "query_variants": ["2-4 concise search-engine queries"],
+  "topic": "news | academic | web | null",
+  "time_range": "day | week | month | year | null",
+  "ranking_policy": "brief source and freshness preference",
+  "include_domains": [],
+  "exclude_domains": [],
+  "search_depth": "basic | advanced",
+  "caveats": []
 }}
 
 Rules:
-- Decide the best query from the user's information need; do not rely on backend hard-coded local rules.
+- Decide the best search strategy from the user's information need; do not rely on backend hard-coded local rules.
+- Source types are categories for ranking/filtering, not hard-coded websites.
 - Keep exact dates, locations, organization names, product names, and domain constraints from the user.
 - Add official/public-source wording only when it helps the intent, for example announcements, policy, documentation, recruitment, filings, or datasets.
 - Do not invent specific websites, domains, cities, or agencies that the user did not mention.
 - Prefer concise search terms over full conversational questions.
+- If the request is time-sensitive, use exact dates when useful. Current date: {current_date}.
 
 User query: {normalized_query}
 {context_block}"""
@@ -622,8 +962,30 @@ User query: {normalized_query}
             response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=timeout_seconds)
         else:
             response = await llm.ainvoke(prompt)
-        planned_query = _extract_planned_query(_response_text(response))
-        normalized = rewrite_search_query_for_web(planned_query or normalized_query)
+        strategy = _extract_search_strategy_plan(_response_text(response), normalized_query)
+        return strategy if strategy.query_variants else fallback_strategy
+    except Exception:
+        logger.exception("LLM search strategy planning failed")
+        return fallback_strategy
+
+
+async def rewrite_search_query_with_llm(
+    llm: object | None,
+    user_query: str,
+    *,
+    chat_history: str = "",
+    timeout_seconds: int | None = None,
+) -> str:
+    """Let the model choose the best web-search query, with deterministic fallback."""
+    fallback_query = rewrite_search_query_for_web(user_query)
+    try:
+        strategy = await plan_search_strategy_with_llm(
+            llm,
+            user_query,
+            chat_history=chat_history,
+            timeout_seconds=timeout_seconds,
+        )
+        normalized = rewrite_search_query_for_web(strategy.primary_query)
         return normalized or fallback_query
     except Exception:
         logger.exception("LLM search query planning failed")
@@ -755,7 +1117,52 @@ def _parse_datetime(value: str | None) -> datetime | None:
 
 def _is_doc_like_domain(domain: str) -> bool:
     lowered = _normalize_domain(domain)
-    return any(hint in lowered for hint in DOC_HOST_HINTS) or lowered.endswith((".gov", ".edu", ".ac.uk"))
+    return any(hint in lowered for hint in DOC_HOST_HINTS) or lowered.endswith(
+        (".gov", ".gov.cn", ".edu", ".ac.uk")
+    )
+
+
+def _is_government_domain(domain: str | None) -> bool:
+    normalized = _normalize_domain(domain)
+    return bool(normalized and (normalized.endswith(GOVERNMENT_DOMAIN_SUFFIXES) or ".gov." in normalized))
+
+
+def _source_type_signal_tags(
+    source_types: Sequence[str],
+    *,
+    domain: str,
+    source_type: str,
+    text_blob: str,
+) -> list[str]:
+    tags: list[str] = []
+    normalized_types = {_normalize_plan_token(item) for item in source_types if item}
+    if not normalized_types:
+        return tags
+
+    if normalized_types & OFFICIAL_SOURCE_TYPES and (
+        _is_government_domain(domain) or _is_doc_like_domain(domain)
+    ):
+        tags.append("source_type_official")
+
+    if normalized_types & DOC_SOURCE_TYPES and (
+        _is_doc_like_domain(domain) or any(hint in text_blob for hint in DOC_TEXT_HINTS)
+    ):
+        tags.append("source_type_documentation")
+
+    if normalized_types & NEWS_SOURCE_TYPES and (
+        source_type == "news"
+        or "news." in domain
+        or any(hint in text_blob for hint in NEWS_TEXT_HINTS)
+    ):
+        tags.append("source_type_news")
+
+    if normalized_types & RECRUITMENT_SOURCE_TYPES and (
+        any(hint in domain for hint in RECRUITMENT_DOMAIN_HINTS)
+        or any(hint in text_blob for hint in RECRUITMENT_TEXT_HINTS)
+    ):
+        tags.append("source_type_recruitment")
+
+    return list(dict.fromkeys(tags))
 
 
 def _domain_matches(domain: str | None, patterns: Sequence[str]) -> bool:
@@ -777,28 +1184,81 @@ def _build_query_plan(
     search_depth: str = "basic",
     topic: str | None = None,
     time_range: str | None = None,
+    search_strategy: SearchStrategyPlan | None = None,
 ) -> SearchQueryPlan:
     original_query = str(query or "").strip()
+    strategy = search_strategy
     include_domains, stripped_query = _extract_domain_filters(original_query)
-    base_query = stripped_query or original_query
+    if strategy is not None:
+        for domain in strategy.include_domains:
+            if domain not in include_domains:
+                include_domains.append(domain)
+
+    strategy_queries = tuple(strategy.query_variants) if strategy is not None else ()
+    base_query = (strategy.primary_query if strategy is not None and strategy.primary_query else stripped_query) or original_query
     normalized_base_query = _strip_conversational_prefixes(base_query) or base_query
 
-    is_time_sensitive = _contains_any(normalized_base_query, TIME_SENSITIVE_KEYWORDS)
+    source_types = tuple(strategy.source_types) if strategy is not None else ()
+    ranking_policy = strategy.ranking_policy if strategy is not None else ""
+    strategy_freshness = strategy.freshness if strategy is not None else None
+    strategy_intent = strategy.intent if strategy is not None else "general"
+    strategy_time_sensitive = bool(
+        strategy is not None
+        and (
+            (strategy.time_range in VALID_TIME_RANGES)
+            or (strategy.freshness in FRESHNESS_TO_TIME_RANGE)
+            or _contains_any(strategy.ranking_policy, ("fresh", "recent", "latest", "today", "最新", "今天"))
+        )
+    )
+    is_time_sensitive = _contains_any(normalized_base_query, TIME_SENSITIVE_KEYWORDS) or strategy_time_sensitive
     prefer_weather = _contains_any(normalized_base_query, WEATHER_INTENT_KEYWORDS)
-    prefer_docs = _contains_any(normalized_base_query, DOC_INTENT_KEYWORDS)
-    prefer_official = prefer_docs or _contains_any(normalized_base_query, OFFICIAL_INTENT_KEYWORDS)
+    prefer_docs = _contains_any(normalized_base_query, DOC_INTENT_KEYWORDS) or bool(set(source_types) & DOC_SOURCE_TYPES)
+    prefer_official = (
+        prefer_docs
+        or _contains_any(normalized_base_query, OFFICIAL_INTENT_KEYWORDS)
+        or bool(set(source_types) & OFFICIAL_SOURCE_TYPES)
+        or "official" in ranking_policy.lower()
+    )
     prefer_news = (
-        _contains_any(normalized_base_query, NEWS_INTENT_KEYWORDS) or is_time_sensitive
+        _contains_any(normalized_base_query, NEWS_INTENT_KEYWORDS)
+        or bool(set(source_types) & NEWS_SOURCE_TYPES)
+        or (is_time_sensitive and "job_search" not in strategy_intent)
     ) and not prefer_weather
 
-    effective_query, query_candidates = _build_query_candidates(
-        original_query=original_query,
-        base_query=base_query,
-        prefer_official=prefer_official,
-        prefer_news=prefer_news,
-        include_domains=include_domains,
-        prefer_weather=prefer_weather,
-    )
+    strategy_query_count = 0
+    if strategy_queries:
+        strategy_candidates: list[str] = []
+        for variant in strategy_queries[:4]:
+            variant_effective, _variant_candidates = _build_query_candidates(
+                original_query=original_query,
+                base_query=variant,
+                prefer_official=prefer_official,
+                prefer_news=prefer_news,
+                include_domains=include_domains,
+                prefer_weather=prefer_weather,
+            )
+            if variant_effective and variant_effective not in strategy_candidates:
+                strategy_candidates.append(variant_effective)
+        effective_query = strategy_candidates[0] if strategy_candidates else normalized_base_query
+        strategy_query_count = len(strategy_candidates)
+        _fallback_effective, fallback_candidates = _build_query_candidates(
+            original_query=original_query,
+            base_query=base_query,
+            prefer_official=prefer_official,
+            prefer_news=prefer_news,
+            include_domains=include_domains,
+            prefer_weather=prefer_weather,
+        )
+        query_candidates = _dedupe_query_candidates((*strategy_candidates, *fallback_candidates))
+    else:
+        effective_query, query_candidates = _build_query_candidates(
+            original_query=original_query,
+            base_query=base_query,
+            prefer_official=prefer_official,
+            prefer_news=prefer_news,
+            include_domains=include_domains,
+            prefer_weather=prefer_weather,
+        )
     if False and prefer_official and not include_domains:
         hints = ("official documentation", "release notes") if not _contains_cjk(base_query) else ("官网", "官方文档")
         effective_query = _append_search_hints(effective_query, hints)
@@ -807,20 +1267,34 @@ def _build_query_plan(
         effective_query = _append_search_hints(effective_query, hints)
 
     resolved_topic = str(topic or "").strip().lower() or None
+    if resolved_topic is None and strategy is not None:
+        resolved_topic = strategy.topic
     if resolved_topic is None and prefer_news:
         resolved_topic = "news"
 
     resolved_time_range = str(time_range or "").strip().lower() or None
     if prefer_weather:
         resolved_time_range = None
+    elif resolved_time_range is None and strategy is not None:
+        resolved_time_range = strategy.time_range
     elif resolved_time_range is None:
         resolved_time_range = _infer_time_range(normalized_base_query)
 
     resolved_search_depth = str(search_depth or "basic").strip().lower() or "basic"
+    if strategy is not None and strategy.search_depth in VALID_SEARCH_DEPTHS:
+        resolved_search_depth = strategy.search_depth
     if resolved_search_depth == "basic" and (is_time_sensitive or prefer_docs or include_domains):
         resolved_search_depth = "advanced"
 
-    exclude_domains = tuple(domain for domain in LOW_SIGNAL_DOMAINS if domain not in include_domains)
+    strategy_excludes = tuple(strategy.exclude_domains) if strategy is not None else ()
+    exclude_domains = tuple(
+        dict.fromkeys(
+            [
+                *(domain for domain in LOW_SIGNAL_DOMAINS if domain not in include_domains),
+                *(domain for domain in strategy_excludes if domain not in include_domains),
+            ]
+        )
+    )
     return SearchQueryPlan(
         original_query=original_query,
         effective_query=effective_query,
@@ -834,6 +1308,11 @@ def _build_query_plan(
         prefer_docs=prefer_docs,
         prefer_official=prefer_official,
         prefer_weather=prefer_weather,
+        source_types=source_types,
+        freshness=strategy_freshness,
+        ranking_policy=ranking_policy,
+        strategy_intent=strategy_intent,
+        strategy_query_count=strategy_query_count,
     )
 
 
@@ -868,6 +1347,8 @@ def _compute_domain_trust(domain: str | None, plan: SearchQueryPlan) -> float:
         return 0.1
     if _domain_matches(normalized, LOW_TRUST_DOMAINS):
         return 0.4
+    if set(plan.source_types) & OFFICIAL_SOURCE_TYPES and _is_government_domain(normalized):
+        return 0.97
     if normalized.endswith((".gov", ".edu", ".ac.uk")):
         return 0.95
     if plan.prefer_weather and _domain_matches(normalized, WEATHER_SOURCE_DOMAINS):
@@ -910,6 +1391,12 @@ def _score_document(
     normalized_domain = _normalize_domain(document.domain or urlparse(document.url).netloc)
     title_blob = _normalize_title(sanitized_title)
     snippet_blob = _normalize_title(sanitized_raw_text or sanitized_snippet)
+    source_type_tags = _source_type_signal_tags(
+        plan.source_types,
+        domain=normalized_domain,
+        source_type=document.source_type,
+        text_blob=f"{title_blob} {snippet_blob}",
+    )
 
     matched_terms: list[str] = []
     title_hits = 0
@@ -941,6 +1428,8 @@ def _score_document(
     )
     if _domain_matches(normalized_domain, plan.include_domains):
         confidence = min(1.0, confidence + 0.08)
+    if source_type_tags:
+        confidence = min(1.0, confidence + min(0.12, 0.05 * len(source_type_tags)))
     if readability_score >= 0.8:
         confidence = min(1.0, confidence + 0.05)
     elif readability_score < 0.45:
@@ -955,6 +1444,7 @@ def _score_document(
         evidence_tags.append("explicit_domain_match")
     if plan.prefer_official and _is_doc_like_domain(normalized_domain):
         evidence_tags.append("official_domain")
+    evidence_tags.extend(source_type_tags)
     if download_like:
         evidence_tags.append("download_url")
     if freshness_score >= 0.9:
@@ -997,7 +1487,7 @@ def _score_document(
         trust_score=round(trust_score, 4),
         freshness_score=round(freshness_score, 4),
         source_quality=source_quality,
-        retrieval_query=plan.effective_query,
+        retrieval_query=document.retrieval_query or plan.effective_query,
         matched_terms=list(dict.fromkeys(matched_terms)),
         evidence_tags=list(dict.fromkeys([*document.evidence_tags, *evidence_tags])),
     )
@@ -1017,7 +1507,9 @@ def _prepare_search_documents(
     *,
     plan: SearchQueryPlan,
 ) -> list[SearchDocument]:
-    query_terms = _extract_query_terms(plan.original_query)
+    query_terms = _extract_query_terms(
+        " ".join([plan.original_query, *plan.query_candidates[: max(1, plan.strategy_query_count)], *plan.source_types])
+    )
     prepared: list[SearchDocument] = []
 
     for document in documents:
@@ -1133,12 +1625,14 @@ async def search_web(
     time_range: str | None = None,
     include_answer: bool = True,
     include_raw_content: bool = False,
+    search_strategy: SearchStrategyPlan | None = None,
 ) -> SearchResponse:
     plan = _build_query_plan(
         query,
         search_depth=search_depth,
         topic=topic,
         time_range=time_range,
+        search_strategy=search_strategy,
     )
     explicit_provider_list = providers is not None
     provider_names = normalize_provider_list(providers if explicit_provider_list else provider)
@@ -1157,6 +1651,10 @@ async def search_web(
             )
             response = None
             query_candidates = plan.query_candidates or (plan.effective_query,)
+            collect_planned_variants = plan.strategy_query_count > 1
+            planned_variant_limit = min(plan.strategy_query_count, len(query_candidates))
+            collected_results: list[SearchDocument] = []
+            collected_answer = ""
             for index, candidate_query in enumerate(query_candidates):
                 try:
                     candidate_response = await provider_instance.search(
@@ -1176,10 +1674,39 @@ async def search_web(
                 candidate_response.rewritten_query = candidate_query
                 for document in candidate_response.results:
                     document.retrieval_query = candidate_query
-                response = candidate_response
                 has_usable_results = bool(
                     _prepare_search_documents(candidate_response.results, plan=plan)
                 )
+                if collect_planned_variants and index < planned_variant_limit:
+                    if candidate_response.answer and not collected_answer:
+                        collected_answer = candidate_response.answer
+                    if candidate_response.results and (has_usable_results or not plan.prefer_weather):
+                        collected_results.extend(candidate_response.results)
+                    if index == planned_variant_limit - 1:
+                        if collected_results:
+                            response = SearchResponse(
+                                query=query,
+                                provider=candidate_response.provider,
+                                results=collected_results,
+                                answer=collected_answer,
+                                search_depth=plan.search_depth,
+                                rewritten_query=" | ".join(query_candidates[:planned_variant_limit]),
+                                topic=plan.topic,
+                                time_range=plan.time_range,
+                            )
+                            expanded_note = (
+                                f"{provider_name} expanded the search with "
+                                f"{planned_variant_limit} model-planned query variants."
+                            )
+                            if expanded_note not in provider_caveats:
+                                provider_caveats.append(expanded_note)
+                            break
+                        if index == len(query_candidates) - 1:
+                            response = candidate_response
+                            break
+                    continue
+
+                response = candidate_response
                 if (
                     (candidate_response.results and (has_usable_results or not plan.prefer_weather))
                     or index == len(query_candidates) - 1
@@ -1448,6 +1975,7 @@ async def run_web_research(
     query: str,
     *,
     planned_query: str | None = None,
+    search_strategy: SearchStrategyPlan | None = None,
     max_results: int = 8,
     provider: str | None = None,
     providers: Sequence[str] | None = None,
@@ -1466,6 +1994,7 @@ async def run_web_research(
         topic=topic,
         time_range=time_range,
         include_answer=True,
+        search_strategy=search_strategy,
     )
 
     highlights: list[str] = []
@@ -1475,6 +2004,12 @@ async def run_web_research(
             highlights.append(snippet if len(snippet) <= 160 else f"{snippet[:157]}...")
 
     summary = (response.answer or "").strip()
+    related_questions = build_related_questions(
+        query,
+        response.results,
+        search_strategy=search_strategy,
+        max_questions=5,
+    )
     return WebResearchResult(
         query=query,
         provider=response.provider or normalize_provider_name(provider),
@@ -1485,7 +2020,12 @@ async def run_web_research(
         sources=response.results,
         highlights=highlights,
         provider_capabilities=response.provider_capabilities,
-        caveats=list(response.provider_caveats),
+        caveats=[
+            *list(search_strategy.caveats if search_strategy is not None else ()),
+            *list(response.provider_caveats),
+        ],
+        search_strategy=search_strategy,
+        related_questions=related_questions,
     )
 
 

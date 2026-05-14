@@ -216,6 +216,12 @@ export function migrateChatStoreState(
     webSearchEnabled: state.webSearchEnabled ?? false,
     knowledgeBaseEnabled: state.knowledgeBaseEnabled ?? true,
     researchMode: state.researchMode === 'quick' ? 'quick' : 'deep',
+    researchSourceStrategy:
+      state.researchSourceStrategy === 'web_and_community' ||
+      state.researchSourceStrategy === 'community_first' ||
+      state.researchSourceStrategy === 'evidence_strict'
+        ? state.researchSourceStrategy
+        : 'web_only',
     enabledMcpServers,
     welcomeGuideDismissed: state.welcomeGuideDismissed ?? false,
     activePromptId: state.activePromptId ?? null,
@@ -240,6 +246,7 @@ export function partializeChatStoreState(state: ChatStorePersistedState): ChatSt
     webSearchEnabled: state.webSearchEnabled,
     knowledgeBaseEnabled: state.knowledgeBaseEnabled,
     researchMode: state.researchMode,
+    researchSourceStrategy: state.researchSourceStrategy,
     enabledMcpServers: state.enabledMcpServers,
     welcomeGuideDismissed: state.welcomeGuideDismissed,
     activePromptId: state.activePromptId,

@@ -19,6 +19,7 @@ from search_runtime.types import (
     SearchProviderCapabilities,
     SearchResponse,
     SearchRuntimeError,
+    SearchStrategyPlan,
     WebResearchResult,
 )
 import httpx
@@ -108,6 +109,43 @@ def test_quick_answer_text_preserves_structured_sources(monkeypatch):
     assert "__SOURCES__:" in result
     assert '"type": "web"' in result
     assert '"url": "https://weather.example.com/zhongshan"' in result
+
+
+def test_run_web_research_generates_related_questions(monkeypatch):
+    class FakeProvider:
+        async def search(
+            self,
+            query,
+            *,
+            max_results=5,
+            search_depth="basic",
+            include_answer=True,
+            topic=None,
+            time_range=None,
+            include_raw_content=False,
+        ):
+            return SearchResponse(
+                query=query,
+                provider="fake",
+                answer="AI agents are being productized.",
+                results=[
+                    SearchDocument(
+                        doc_id="agents-1",
+                        provider="fake",
+                        title="AI Agents Product Update",
+                        url="https://example.com/agents",
+                        snippet="AI agents are entering more products.",
+                    )
+                ],
+            )
+
+    monkeypatch.setattr(search_service, "get_search_provider", lambda provider=None: FakeProvider())
+
+    result = asyncio.run(search_service.run_web_research("OpenAI agents latest", max_results=3))
+
+    assert result.related_questions
+    assert any("OpenAI" in question or "official" in question for question in result.related_questions)
+    assert "Continue exploring:" in result.to_text()
 
 
 def test_search_web_weather_continues_after_irrelevant_provider_results(monkeypatch):
@@ -387,6 +425,116 @@ def test_llm_search_query_planner_rewrites_without_hardcoded_domain_rules():
     assert planned == "Guangdong public institution employee recruitment announcements May 2026 latest news"
 
 
+def test_llm_search_strategy_planner_returns_structured_plan_without_fixed_sites():
+    class FakeLLM:
+        async def ainvoke(self, prompt):
+            assert "Source types are categories" in prompt
+            assert "do not rely on backend hard-coded local rules" in prompt
+            assert "Do not invent specific websites" in prompt
+            return SimpleNamespace(
+                content=(
+                    '{"intent":"job_search","region":"广东","freshness":"recent",'
+                    '"source_types":["official","recruitment_platform","local_government"],'
+                    '"query_variants":["广东 雇员 招聘 公告","广东 事业单位 雇员 招聘","广东 人社 招聘"],'
+                    '"ranking_policy":"prefer recent official and recruiting sources",'
+                    '"include_domains":[],"exclude_domains":[],"search_depth":"advanced"}'
+                )
+            )
+
+    strategy = asyncio.run(
+        search_service.plan_search_strategy_with_llm(
+            FakeLLM(),
+            "今天广东哪里有雇员招聘？",
+        )
+    )
+
+    assert strategy.intent == "job_search"
+    assert strategy.region == "广东"
+    assert strategy.freshness == "recent"
+    assert strategy.time_range == "week"
+    assert strategy.source_types == ("official", "recruitment_platform", "local_government")
+    assert strategy.query_variants[:2] == ("广东 雇员 招聘 公告", "广东 事业单位 雇员 招聘")
+    assert strategy.include_domains == ()
+
+
+def test_search_web_executes_model_planned_variants_and_ranks_official_sources(monkeypatch):
+    class StrategyProvider:
+        def __init__(self):
+            self.calls = []
+
+        def get_capabilities(self):
+            return SearchProviderCapabilities(name="searxng", supports_time_range=True)
+
+        async def search(
+            self,
+            query,
+            *,
+            max_results=5,
+            search_depth="basic",
+            include_answer=True,
+            topic=None,
+            time_range=None,
+            include_raw_content=False,
+        ):
+            self.calls.append(query)
+            if "雇员 招聘 公告" in query:
+                results = [
+                    SearchDocument(
+                        doc_id="official-1",
+                        provider="searxng",
+                        title="广东省机关事业单位雇员招聘公告",
+                        url="https://hrss.gd.gov.cn/zpxx/notice",
+                        snippet="广东 雇员 招聘 公告 报名时间 本周发布",
+                        published_at="2026-05-13",
+                        score=0.6,
+                    )
+                ]
+            elif "事业单位" in query:
+                results = [
+                    SearchDocument(
+                        doc_id="platform-1",
+                        provider="searxng",
+                        title="广东事业单位雇员招聘信息汇总",
+                        url="https://jobs.example.com/guangdong",
+                        snippet="广东 事业单位 雇员 招聘 信息 汇总",
+                        published_at="2026-05-12",
+                        score=0.7,
+                    )
+                ]
+            else:
+                results = []
+            return SearchResponse(query=query, provider="searxng", results=results)
+
+    provider = StrategyProvider()
+    monkeypatch.setattr(search_service, "get_search_provider", lambda provider_name=None: provider)
+    strategy = SearchStrategyPlan(
+        intent="job_search",
+        region="广东",
+        freshness="recent",
+        source_types=("official", "recruitment_platform", "local_government"),
+        query_variants=("广东 雇员 招聘 公告", "广东 事业单位 雇员 招聘"),
+        ranking_policy="prefer_recent_official_sources",
+        time_range="week",
+        search_depth="advanced",
+    )
+
+    response = asyncio.run(
+        search_service.search_web(
+            "今天广东哪里有雇员招聘？",
+            provider="searxng",
+            max_results=5,
+            search_strategy=strategy,
+        )
+    )
+
+    assert len(provider.calls) == 2
+    assert all("site:" not in query.lower() for query in provider.calls)
+    assert response.results[0].domain == "hrss.gd.gov.cn"
+    assert "source_type_official" in response.results[0].evidence_tags
+    assert "source_type_recruitment" in response.results[0].evidence_tags
+    assert "model-planned query variants" in " ".join(response.provider_caveats)
+
+
 def test_quick_web_research_uses_llm_planned_query_when_model_config_is_available(monkeypatch):
     captured: dict[str, object] = {}
 
@@ -454,6 +602,17 @@ def test_quick_web_research_uses_llm_planned_query_when_model_config_is_availabl
         record.params["search_planned_query"]
         == "Guangdong public institution employee recruitment announcements May 2026 latest news"
     )
+    assert record.params["search_strategy_plan"]["query_variants"] == [
+        "Guangdong public institution employee recruitment announcements May 2026"
+    ]
+    assert (
+        record.params["search_strategy_plan"]["primary_query"]
+        == "Guangdong public institution employee recruitment announcements May 2026"
+    )
+    assert captured["search_strategy"].primary_query == (
+        "Guangdong public institution employee recruitment announcements May 2026"
+    )
+
 
 
 def test_registry_exposes_provider_capabilities():
@@ -910,7 +1069,7 @@ def test_run_deep_research_builds_rounds_findings_and_workflow(monkeypatch):
         [
             '{"queries":["OpenAI agents latest", "OpenAI agents benchmarks", "OpenAI agents enterprise"]}',
             '{"sufficient": false, "follow_up_queries": ["OpenAI agents pricing", "OpenAI agents adoption"], "findings": [{"claim":"Agents are getting productized","status":"verified","note":"Seen across launch posts","evidence":["source-1"]}], "contradictions": [{"topic":"Pricing","details":"Different pages mention different plans","sources":["source-2"]}]}',
-            '{"summary":"OpenAI agents research summary","highlights":["productization is visible","enterprise adoption is growing"],"findings":[{"claim":"OpenAI agents are moving into products","status":"verified","note":"Seen across multiple sources","evidence":["source-1","source-3"]}],"contradictions":[{"topic":"Pricing","details":"Different pages mention different plans","sources":["source-2"]}]}',
+            '{"summary":"OpenAI agents research summary","highlights":["productization is visible","enterprise adoption is growing"],"findings":[{"claim":"OpenAI agents are moving into products","status":"verified","note":"Seen across multiple sources","evidence":["source-1","source-3"]}],"contradictions":[{"topic":"Pricing","details":"Different pages mention different plans","sources":["source-2"]}],"related_questions":["What changed in the last week?","Which official sources should be checked next?"]}',
         ]
     )
 
@@ -965,6 +1124,10 @@ def test_run_deep_research_builds_rounds_findings_and_workflow(monkeypatch):
     assert result.findings[0].evidence[0].startswith("[1] ")
     assert result.contradictions[0].topic == "Pricing"
     assert result.contradictions[0].sources
+    assert result.related_questions == [
+        "What changed in the last week?",
+        "Which official sources should be checked next?",
+    ]
     assert len(result.workflow_nodes) == 6
     assert result.workflow_nodes[-1]["id"] == "synthesize_report"
     assert len(result.sources) >= 2
@@ -1177,6 +1340,83 @@ def test_run_deep_research_uses_generic_fallback_when_no_template_matches(monkey
     assert any("deterministic query templates" in item for item in result.caveats)
 
 
+def test_run_deep_research_community_first_uses_social_leads_without_x_api(monkeypatch):
+    responses = iter(
+        [
+            '{"topic":"AI coding agents sentiment","facets":[],"query_groups":[]}',
+            '{"sufficient": true, "follow_up_queries": [], "findings": [], "contradictions": []}',
+            '{"summary":"Community signals need verification.","highlights":["X-indexed posts are leads"],"findings":[],"contradictions":[]}',
+        ]
+    )
+    searched_queries: list[str] = []
+    fetched_urls: list[str] = []
+
+    class FakeLLM:
+        async def ainvoke(self, prompt: str):
+            if "research planner" in prompt:
+                assert "Do not assume direct X API access" in prompt
+            return type("Resp", (), {"content": next(responses)})()
+
+    async def fake_search_web(query, **kwargs):
+        searched_queries.append(query)
+        if "site:x.com" in query:
+            results = [
+                SearchDocument(
+                    doc_id="x-1",
+                    provider="searxng",
+                    title="X discussion about AI coding agents",
+                    url="https://x.com/example/status/1",
+                    snippet="Developers discuss AI coding agents.",
+                    domain="x.com",
+                )
+            ]
+        else:
+            results = [
+                SearchDocument(
+                    doc_id=f"{query}-1",
+                    provider="searxng",
+                    title="Independent verification source",
+                    url="https://example.com/ai-coding-agents",
+                    snippet="Durable source for verification.",
+                    domain="example.com",
+                )
+            ]
+        return SearchResponse(query=query, provider="searxng", results=results)
+
+    async def fake_fetch_webpage_document(url, *, max_chars=8000):
+        fetched_urls.append(url)
+        return SearchDocument(
+            doc_id=f"fetch:{url}",
+            provider="fetch",
+            title=url,
+            url=url,
+            snippet="Fetched snippet",
+            raw_text="Fetched body",
+        )
+
+    monkeypatch.setattr("search_runtime.research_service.search_web", fake_search_web)
+    monkeypatch.setattr("search_runtime.research_service.fetch_webpage_document", fake_fetch_webpage_document)
+
+    result = asyncio.run(
+        run_deep_research(
+            "AI coding agents sentiment",
+            llm=FakeLLM(),
+            providers=["searxng"],
+            max_rounds=1,
+            max_results_per_query=2,
+            source_strategy="community_first",
+        )
+    )
+
+    assert result.research_plan is not None
+    assert result.research_plan.source_strategy == "community_first"
+    assert result.research_plan.source_policy["direct_x_api_required"] is False
+    assert any("site:x.com" in query for query in searched_queries)
+    assert any(source.source_type == "social" for source in result.sources)
+    assert all("x.com" not in url for url in fetched_urls)
+    assert any("does not use the X API" in item for item in result.caveats)
+
+
 def test_run_deep_research_normalizes_string_caveats(monkeypatch):
     responses = iter(
         [
@@ -1303,6 +1543,7 @@ def test_run_web_research_task_builds_summary(monkeypatch):
             query=query,
             provider="tavily",
             answer="research answer ready",
+            related_questions=["What should be checked next?"],
             sources=[
                 SearchDocument(
                     doc_id="src-1",
@@ -1338,6 +1579,7 @@ def test_run_web_research_task_builds_summary(monkeypatch):
     assert record.result is not None
     assert "OpenAI agents" in record.result
     assert "OpenAI News" in record.result
+    assert record.params["research_related_questions"] == ["What should be checked next?"]
     assert isinstance(record.params.get("research_sources"), list)
     assert record.params["research_sources"][0]["title"] == "OpenAI News"
 
@@ -1351,12 +1593,14 @@ def test_run_web_research_task_supports_deep_mode(monkeypatch):
         max_rounds=2,
         max_results_per_query=4,
         time_range=None,
+        source_strategy=None,
         knowledge_search=None,
     ):
         assert query == "OpenAI agents"
         assert providers == ["tavily"]
         assert max_rounds == 2
         assert max_results_per_query == 4
+        assert source_strategy == "community_first"
         return WebResearchResult(
             query=query,
             provider="tavily",
@@ -1397,6 +1641,7 @@ def test_run_web_research_task_supports_deep_mode(monkeypatch):
             "query": "OpenAI agents",
             "providers": ["tavily"],
             "research_mode": "deep",
+            "research_source_strategy": "community_first",
             "panel_config": {
                 "panel_id": "panel-main",
                 "provider": "ollama",
@@ -1430,6 +1675,7 @@ def test_run_web_research_task_supports_deep_mode(monkeypatch):
     assert progress_updates == [15, 55, 85]
     assert llm_calls == [("ollama", "qwen3.5-2B:latest")]
     assert record.params["research_mode"] == "deep"
+    assert record.params["research_source_strategy"] == "community_first"
     assert record.params["research_summary"] == "deep research complete"
     assert record.params["research_workflow_nodes"][0]["id"] == "plan_research"
     assert "deep research complete" in (record.result or "")
@@ -1510,12 +1756,14 @@ def test_run_web_research_task_deep_mode_allows_default_provider_selection(monke
         max_rounds=2,
         max_results_per_query=4,
         time_range=None,
+        source_strategy=None,
         knowledge_search=None,
     ):
         assert query == "OpenAI agents"
         assert providers is None
         assert max_rounds == 2
         assert max_results_per_query == 4
+        assert source_strategy == "web_only"
         return WebResearchResult(
             query=query,
             provider="searxng",

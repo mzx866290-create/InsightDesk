@@ -97,6 +97,17 @@ V1 does not model these decisions explicitly.
 5. Make each finding traceable to source-level evidence.
 6. Keep compatibility with the current `quick` and `deep` task model.
 
+## Source Strategies
+
+Deep research supports a `research_source_strategy` switch:
+
+- `web_only`: standard web-first research.
+- `web_and_community`: adds community/forum sources as extra leads.
+- `community_first`: prioritizes search-engine-indexed social/community leads, including user-provided social links, then verifies claims against durable web, news, docs, GitHub, or official sources.
+- `evidence_strict`: keeps social/community pages as context unless independent sources support the claim.
+
+`community_first` deliberately does not require the X API and must not promise complete real-time X coverage. X/social pages are treated as discovery signals, not final evidence, unless independently verified.
+
 ## Non-goals
 
 1. Do not build a crawler or general indexing system.

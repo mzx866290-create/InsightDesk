@@ -1044,6 +1044,7 @@ export interface ModelConfig {
 
 export interface SourceItem {
   type: 'doc' | 'web' | 'attachment'
+  source_type?: string
   title: string
   url?: string
   snippet: string
@@ -1209,6 +1210,7 @@ export interface CreateMultiAgentWorkflowTaskPayload {
   plan?: Array<Record<string, unknown>>
   panel_config?: ModelConfig | Record<string, unknown>
   research_mode?: 'quick' | 'deep'
+  research_source_strategy?: 'web_only' | 'web_and_community' | 'community_first' | 'evidence_strict'
   providers?: string[]
   max_rounds?: number
   max_results_per_query?: number

@@ -32,10 +32,14 @@ SECONDARY_DOMAIN_HINTS = (
     "yicai.com",
 )
 LOW_TRUST_DOMAIN_HINTS = (
+    "x.com",
+    "twitter.com",
     "reddit.com",
     "quora.com",
     "zhihu.com",
     "weibo.com",
+    "bsky.app",
+    "threads.net",
 )
 QUALITY_FLAG_LOW_TRUST = "low_trust_domain"
 QUALITY_FLAG_LOW_CONFIDENCE = "low_confidence"

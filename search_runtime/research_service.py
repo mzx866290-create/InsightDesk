@@ -6,8 +6,9 @@ import re
 import time
 from collections.abc import Callable, Sequence
 from typing import Any
+from urllib.parse import urlparse
 
-from .service import dedupe_search_documents, fetch_webpage_document, search_web
+from .service import build_related_questions, dedupe_search_documents, fetch_webpage_document, search_web
 from .types import (
     ResearchBudget,
     ResearchContradiction,
@@ -16,6 +17,7 @@ from .types import (
     ResearchPlan,
     ResearchQuery,
     ResearchRound,
+    ResearchSourceStrategy,
     SearchDocument,
     SearchProviderCapabilities,
     SearchResponse,
@@ -79,6 +81,45 @@ GENERIC_FACETS = [
     "corporate_activity",
     "risks_controversies",
 ]
+COMMUNITY_FACETS = [
+    "social_signals",
+    "community_discussion",
+    "key_accounts",
+    "verification_sources",
+    "risks_controversies",
+]
+VALID_SOURCE_STRATEGIES = {
+    "web_only",
+    "web_and_community",
+    "community_first",
+    "evidence_strict",
+}
+COMMUNITY_FIRST_CAVEAT = (
+    "Community-first research uses search-engine-indexed social/community pages and "
+    "user-provided social links; it does not use the X API or promise complete real-time X coverage."
+)
+SOCIAL_DOMAINS = (
+    "x.com",
+    "twitter.com",
+    "bsky.app",
+    "mastodon.social",
+    "threads.net",
+    "weibo.com",
+)
+FORUM_DOMAINS = (
+    "reddit.com",
+    "news.ycombinator.com",
+    "lobste.rs",
+    "v2ex.com",
+    "zhihu.com",
+    "quora.com",
+    "stackoverflow.com",
+)
+CODE_DOMAINS = (
+    "github.com",
+    "gitlab.com",
+    "bitbucket.org",
+)
 DEFAULT_SOURCE_POLICY: dict[str, object] = {
     "primary_required": True,
     "max_low_trust_ratio": 0.2,
@@ -170,6 +211,160 @@ def _contains_cjk(text: str) -> bool:
     return bool(re.search(r"[\u4e00-\u9fff]", str(text or "")))
 
 
+def _normalize_source_strategy(value: str | None) -> ResearchSourceStrategy:
+    normalized = str(value or "web_only").strip().lower().replace("-", "_")
+    if normalized in {"community", "social", "social_intel", "social_intelligence"}:
+        return "community_first"
+    if normalized in VALID_SOURCE_STRATEGIES:
+        return normalized  # type: ignore[return-value]
+    return "web_only"
+
+
+def _is_community_strategy(source_strategy: ResearchSourceStrategy) -> bool:
+    return source_strategy in {"web_and_community", "community_first"}
+
+
+def _domain_from_document(document: SearchDocument) -> str:
+    raw_domain = str(document.domain or "").strip().lower()
+    if not raw_domain and document.url:
+        raw_domain = urlparse(document.url).netloc.lower()
+    return raw_domain.removeprefix("www.")
+
+
+def _domain_matches_any(domain: str, patterns: Sequence[str]) -> bool:
+    normalized = domain.removeprefix("www.")
+    return any(normalized == pattern or normalized.endswith(f".{pattern}") for pattern in patterns)
+
+
+def _community_source_type(document: SearchDocument) -> str:
+    domain = _domain_from_document(document)
+    if _domain_matches_any(domain, SOCIAL_DOMAINS):
+        return "social"
+    if _domain_matches_any(domain, FORUM_DOMAINS):
+        return "forum"
+    if _domain_matches_any(domain, CODE_DOMAINS):
+        return "code"
+    return document.source_type
+
+
+def _tag_documents_for_source_strategy(
+    documents: Sequence[SearchDocument],
+    *,
+    source_strategy: ResearchSourceStrategy,
+) -> list[SearchDocument]:
+    if source_strategy == "web_only":
+        return list(documents)
+
+    tagged: list[SearchDocument] = []
+    for document in documents:
+        source_type = _community_source_type(document)
+        tags = list(document.evidence_tags or [])
+        if source_type in {"social", "forum", "code"}:
+            tags.append("community_signal")
+        if source_type == "social":
+            tags.append("social_lead")
+        if source_strategy == "evidence_strict":
+            tags.append("evidence_strict")
+
+        tagged.append(
+            SearchDocument(
+                doc_id=document.doc_id,
+                provider=document.provider,
+                source_type=source_type,  # type: ignore[arg-type]
+                title=document.title,
+                url=document.url,
+                snippet=document.snippet,
+                raw_text=document.raw_text,
+                published_at=document.published_at,
+                fetched_at=document.fetched_at,
+                domain=document.domain,
+                author=document.author,
+                score=document.score,
+                provider_score=document.provider_score,
+                confidence=document.confidence,
+                trust_score=document.trust_score,
+                freshness_score=document.freshness_score,
+                source_quality=document.source_quality,
+                retrieval_query=document.retrieval_query,
+                matched_terms=list(document.matched_terms or []),
+                evidence_tags=list(dict.fromkeys(tags)),
+            )
+        )
+    return tagged
+
+
+def _tag_response_for_source_strategy(
+    response: SearchResponse,
+    *,
+    source_strategy: ResearchSourceStrategy,
+) -> SearchResponse:
+    response.results = _tag_documents_for_source_strategy(
+        response.results,
+        source_strategy=source_strategy,
+    )
+    return response
+
+
+def _should_fetch_source(
+    source: SearchDocument,
+    *,
+    source_strategy: ResearchSourceStrategy,
+) -> bool:
+    if source_strategy == "web_only":
+        return True
+    if source.source_type == "social":
+        return False
+    return True
+
+
+def _source_strategy_source_policy(source_strategy: ResearchSourceStrategy) -> dict[str, object]:
+    policy = dict(DEFAULT_SOURCE_POLICY)
+    policy["strategy"] = source_strategy
+    if source_strategy == "community_first":
+        policy.update(
+            {
+                "primary_required": False,
+                "prefer_official": False,
+                "max_low_trust_ratio": 0.0,
+                "treat_social_as_leads": True,
+                "allow_search_engine_indexed_social": True,
+                "direct_x_api_required": False,
+            }
+        )
+    elif source_strategy == "web_and_community":
+        policy.update(
+            {
+                "treat_social_as_leads": True,
+                "allow_search_engine_indexed_social": True,
+                "direct_x_api_required": False,
+            }
+        )
+    elif source_strategy == "evidence_strict":
+        policy.update(
+            {
+                "primary_required": True,
+                "max_low_trust_ratio": 0.0,
+                "treat_social_as_leads": True,
+            }
+        )
+    return policy
+
+
+def _source_strategy_evidence_policy(source_strategy: ResearchSourceStrategy) -> dict[str, object]:
+    policy = dict(DEFAULT_EVIDENCE_POLICY)
+    if _is_community_strategy(source_strategy):
+        policy.update(
+            {
+                "community_claims_require_independent_verification": True,
+                "social_links_are_context_by_default": True,
+            }
+        )
+    if source_strategy == "evidence_strict":
+        policy["min_independent_families_per_claim"] = 2
+        policy["social_links_are_context_by_default"] = True
+    return policy
+
+
 def _dedupe_strings(items: Sequence[str]) -> list[str]:
     deduped: list[str] = []
     for item in items:
@@ -241,7 +436,12 @@ def _resolve_domain_template(query: str) -> dict[str, object] | None:
     return best_match
 
 
-def _generic_facets_for_intent(intent: ResearchIntent) -> list[str]:
+def _generic_facets_for_intent(
+    intent: ResearchIntent,
+    source_strategy: ResearchSourceStrategy = "web_only",
+) -> list[str]:
+    if _is_community_strategy(source_strategy):
+        return list(COMMUNITY_FACETS)
     if intent.intent == "industry_research":
         return list(GENERIC_FACETS)
     return ["overview", "facts", "updates", "metrics", "risks"]
@@ -530,6 +730,7 @@ def _fallback_query_matrix(
     facets: Sequence[str],
     intent: ResearchIntent,
     budget: ResearchBudget,
+    source_strategy: ResearchSourceStrategy = "web_only",
 ) -> list[ResearchQuery]:
     is_cjk = _contains_cjk(query)
     queries: list[ResearchQuery] = []
@@ -554,7 +755,57 @@ def _fallback_query_matrix(
     first_facet = _format_facet_label(facets[0]) if facets else ""
     second_facet = _format_facet_label(facets[1]) if len(facets) > 1 else first_facet
 
-    if intent.time_sensitive:
+    if source_strategy == "community_first":
+        add_query(
+            f"{query} site:x.com OR site:twitter.com",
+            first_facet or "social_signals",
+            "social",
+            "tertiary",
+        )
+        add_query(
+            f"{query} Reddit Hacker News GitHub discussion",
+            second_facet or "community_discussion",
+            "forum",
+            "tertiary",
+        )
+        add_query(
+            f"{query} community feedback user discussion",
+            second_facet or "community_discussion",
+            "forum",
+            "tertiary",
+        )
+        add_query(
+            f"{query} official announcement latest news",
+            "verification_sources",
+            "news",
+            "secondary",
+        )
+    elif source_strategy == "web_and_community":
+        add_query(
+            f"{query} latest discussion Reddit Hacker News",
+            second_facet or "community_discussion",
+            "forum",
+            "tertiary",
+        )
+        add_query(
+            f"{query} official announcement latest news",
+            first_facet or "verification_sources",
+            "news",
+            "secondary",
+        )
+        add_query(
+            f"{query} {first_facet} overview".strip(),
+            first_facet or "overview",
+            "reports",
+            "secondary",
+        )
+        add_query(
+            f"{query} {second_facet} data".strip(),
+            second_facet or "data_metrics",
+            "data",
+            "secondary",
+        )
+    elif intent.time_sensitive:
         add_query(
             f"{query} 官方 政策" if is_cjk else f"{query} official policy",
             first_facet or "overview",
@@ -605,6 +856,7 @@ def _parse_plan_payload(
     generic_facets: Sequence[str],
     intent: ResearchIntent,
     budget: ResearchBudget,
+    source_strategy: ResearchSourceStrategy = "web_only",
 ) -> ResearchPlan:
     topic = str(query or "").strip()
     facets: list[str] = []
@@ -653,8 +905,23 @@ def _parse_plan_payload(
             )
 
     if not queries:
-        queries = _fallback_query_matrix(query, facets=facets, intent=intent, budget=budget)
+        queries = _fallback_query_matrix(
+            query,
+            facets=facets,
+            intent=intent,
+            budget=budget,
+            source_strategy=source_strategy,
+        )
         caveats.append("Query planning fell back to deterministic query templates.")
+
+    if source_strategy == "community_first":
+        caveats.append(COMMUNITY_FIRST_CAVEAT)
+    elif source_strategy == "web_and_community":
+        caveats.append(
+            "Community sources are used as additional leads and should be verified against independent sources."
+        )
+    elif source_strategy == "evidence_strict":
+        caveats.append("Evidence-strict research treats social/community sources as context unless independently verified.")
 
     return ResearchPlan(
         topic=topic,
@@ -662,8 +929,9 @@ def _parse_plan_payload(
         queries=queries[: budget.max_round_one_queries],
         template_id=template_id,
         resolution_strategy=resolution_strategy,
-        source_policy=dict(DEFAULT_SOURCE_POLICY),
-        evidence_policy=dict(DEFAULT_EVIDENCE_POLICY),
+        source_strategy=source_strategy,
+        source_policy=_source_strategy_source_policy(source_strategy),
+        evidence_policy=_source_strategy_evidence_policy(source_strategy),
         caveats=_dedupe_strings(caveats),
     )
 
@@ -685,6 +953,7 @@ async def run_deep_research(
     max_rounds: int = 2,
     max_results_per_query: int = 4,
     time_range: str | None = None,
+    source_strategy: str | None = "web_only",
     knowledge_search: Callable[[str], Sequence[SearchDocument]] | None = None,
     max_fetch_pages: int = 3,
 ) -> WebResearchResult:
@@ -696,6 +965,7 @@ async def run_deep_research(
     caveats: list[str] = []
     budget = _default_budget(max_rounds=max_rounds, max_fetch_pages=max_fetch_pages)
     intent = _infer_research_intent(query, time_range)
+    resolved_source_strategy = _normalize_source_strategy(source_strategy)
     template_match = _resolve_domain_template(query)
     template_id = None
     template_facets: list[str] = []
@@ -704,7 +974,7 @@ async def run_deep_research(
         template_id = str(template_match.get("template_id") or "").strip() or None
         template_facets = _dedupe_strings(str(item) for item in template_match.get("facets", []))
         template_prompt_hint = str(template_match.get("prompt_hint") or "").strip()
-    generic_facets = _generic_facets_for_intent(intent)
+    generic_facets = _generic_facets_for_intent(intent, resolved_source_strategy)
 
     async def invoke_json_prompt(prompt: str) -> tuple[str, Any | None]:
         response = await llm.ainvoke(prompt)
@@ -721,7 +991,9 @@ Return JSON only:
   "query_groups": [
     {{"query": "search query", "facet": "facet_1", "bucket": "official", "expected_source_tier": "primary"}}
   ],
-  "caveats": ["optional caveat"]
+  "source_strategy": "{resolved_source_strategy}",
+  "caveats": ["optional caveat"],
+  "related_questions": ["concise user-facing follow-up question"]
 }}
 
 Rules:
@@ -730,9 +1002,13 @@ Rules:
 - Keep facets short and stable.
 - Treat any matched template as an optional hint, not a required structure.
 - Generate facets from the user query first. Only borrow template facets when they clearly fit.
+- Source strategy is {resolved_source_strategy}.
+- If source strategy is community_first, discover community/forum/social leads through search-engine indexed pages and user-provided links only. Do not assume direct X API access, scraping, or complete real-time X coverage.
+- If using social/community sources, plan at least one independent verification query from news, official pages, docs, GitHub, or other durable web sources.
 
 User query: {query}
 Research intent: {json.dumps(intent.__dict__, ensure_ascii=False)}
+Source strategy: {resolved_source_strategy}
 Suggested template id: {template_id or "none"}
 Suggested template hint: {template_prompt_hint or "none"}
 Suggested template facets: {json.dumps(template_facets, ensure_ascii=False)}
@@ -747,6 +1023,7 @@ Generic fallback facets: {json.dumps(generic_facets, ensure_ascii=False)}
         generic_facets=generic_facets,
         intent=intent,
         budget=budget,
+        source_strategy=resolved_source_strategy,
     )
     caveats.extend(research_plan.caveats)
     round_one_queries = [item.query for item in research_plan.queries[: budget.max_round_one_queries]] or [query]
@@ -764,6 +1041,7 @@ Generic fallback facets: {json.dumps(generic_facets, ensure_ascii=False)}
                 "time_window": intent.time_window,
                 "template_id": research_plan.template_id or "",
                 "resolution_strategy": research_plan.resolution_strategy,
+                "source_strategy": research_plan.source_strategy,
                 "facets": research_plan.facets,
                 "budget": _format_budget_summary(budget),
             },
@@ -774,26 +1052,34 @@ Generic fallback facets: {json.dumps(generic_facets, ensure_ascii=False)}
     round_one_started = int(time.time() * 1000)
     round_one_responses: list[SearchResponse] = []
     for item in research_plan.queries[: budget.max_round_one_queries]:
+        response = await search_web(
+            item.query,
+            max_results=max_results_per_query,
+            providers=providers,
+            search_depth="advanced",
+            topic=item.bucket if item.bucket == "news" else None,
+            time_range=time_range,
+            include_answer=True,
+        )
         round_one_responses.append(
-            await search_web(
-                item.query,
-                max_results=max_results_per_query,
-                providers=providers,
-                search_depth="advanced",
-                topic=item.bucket if item.bucket == "news" else None,
-                time_range=time_range,
-                include_answer=True,
+            _tag_response_for_source_strategy(
+                response,
+                source_strategy=resolved_source_strategy,
             )
         )
     if not round_one_responses:
+        response = await search_web(
+            query,
+            max_results=max_results_per_query,
+            providers=providers,
+            search_depth="advanced",
+            time_range=time_range,
+            include_answer=True,
+        )
         round_one_responses.append(
-            await search_web(
-                query,
-                max_results=max_results_per_query,
-                providers=providers,
-                search_depth="advanced",
-                time_range=time_range,
-                include_answer=True,
+            _tag_response_for_source_strategy(
+                response,
+                source_strategy=resolved_source_strategy,
             )
         )
     round_results.extend(round_one_responses)
@@ -813,6 +1099,7 @@ Generic fallback facets: {json.dumps(generic_facets, ensure_ascii=False)}
             tool_params={
                 "queries": [item.query for item in research_plan.queries[: budget.max_round_one_queries]],
                 "providers": list(providers or []),
+                "source_strategy": research_plan.source_strategy,
             },
             tool_result=f"sources={len(deduped_round_one_sources)}",
         )
@@ -844,9 +1131,11 @@ Rules:
 - Propose at most {budget.max_follow_up_queries} follow-up queries.
 - Only propose follow-up queries that repair coverage gaps or contradictions.
 - If evidence is sufficient, return an empty follow-up list.
+- For community-first research, treat social/forum posts as leads. Mark claims as partial or unverified unless an independent durable source supports them.
 
 User query: {query}
 Research intent: {json.dumps(intent.__dict__, ensure_ascii=False)}
+Source strategy: {research_plan.source_strategy}
 Research plan facets: {json.dumps(research_plan.facets, ensure_ascii=False)}
 First-round results:
 {chr(10).join(_search_response_excerpt(response) for response in round_one_responses)}
@@ -897,15 +1186,19 @@ Knowledge context:
     round_two_started = int(time.time() * 1000)
     if max_rounds > 1 and follow_up_queries and budget.max_follow_up_queries > 0:
         for item in follow_up_queries[: budget.max_follow_up_queries]:
+            response = await search_web(
+                item.query,
+                max_results=max_results_per_query,
+                providers=providers,
+                search_depth="advanced",
+                topic=item.bucket if item.bucket == "news" else None,
+                time_range=time_range,
+                include_answer=True,
+            )
             round_two_responses.append(
-                await search_web(
-                    item.query,
-                    max_results=max_results_per_query,
-                    providers=providers,
-                    search_depth="advanced",
-                    topic=item.bucket if item.bucket == "news" else None,
-                    time_range=time_range,
-                    include_answer=True,
+                _tag_response_for_source_strategy(
+                    response,
+                    source_strategy=resolved_source_strategy,
                 )
             )
         round_results.extend(round_two_responses)
@@ -925,7 +1218,10 @@ Knowledge context:
             started_at_ms=round_two_started,
             ended_at_ms=int(time.time() * 1000),
             tool_name="search_web",
-            tool_params={"queries": [item.query for item in follow_up_queries[: budget.max_follow_up_queries]]},
+            tool_params={
+                "queries": [item.query for item in follow_up_queries[: budget.max_follow_up_queries]],
+                "source_strategy": research_plan.source_strategy,
+            },
             tool_result=round_two_result,
         )
     )
@@ -955,11 +1251,17 @@ Knowledge context:
     for source in all_sources[:fetch_limit]:
         if not source.url:
             continue
+        if not _should_fetch_source(source, source_strategy=resolved_source_strategy):
+            continue
         try:
             fetched_docs.append(await fetch_webpage_document(source.url))
         except Exception:
             logger.warning("fetch_primary_pages failed url=%s", source.url, exc_info=True)
-    enriched_sources = dedupe_search_documents([*fetched_docs, *all_sources], limit=8, max_per_domain=2)
+    tagged_fetched_docs = _tag_documents_for_source_strategy(
+        fetched_docs,
+        source_strategy=resolved_source_strategy,
+    )
+    enriched_sources = dedupe_search_documents([*tagged_fetched_docs, *all_sources], limit=8, max_per_domain=2)
     fetch_result = f"fetched={len(fetched_docs)}"
     if not fetched_docs:
         fetch_result = "fetched=0"
@@ -994,8 +1296,15 @@ Research plan: {json.dumps({
     "facets": research_plan.facets,
     "template_id": research_plan.template_id,
     "resolution_strategy": research_plan.resolution_strategy,
+    "source_strategy": research_plan.source_strategy,
+    "source_policy": research_plan.source_policy,
+    "evidence_policy": research_plan.evidence_policy,
 }, ensure_ascii=False)}
 Research caveats so far: {json.dumps(_dedupe_strings(caveats), ensure_ascii=False)}
+Rules:
+- If source_strategy is community_first, separate "community signals" from verified facts.
+- Do not present social/forum posts as confirmed evidence unless durable independent sources support the same claim.
+- Mention coverage limits when X/social results come through search-engine indexes rather than direct platform APIs.
 Knowledge context:
 {knowledge_context or "none"}
 
@@ -1023,6 +1332,9 @@ Sources:
     )
     findings, contradictions = _attach_source_references(findings, contradictions, enriched_sources)
     caveats.extend(_normalize_text_list(synthesis_data.get("caveats")))
+    related_questions = _normalize_text_list(synthesis_data.get("related_questions"))
+    if not related_questions:
+        related_questions = build_related_questions(query, enriched_sources, search_strategy=None)
     workflow_nodes.append(
         _workflow_node(
             "synthesize_report",
@@ -1060,4 +1372,5 @@ Sources:
         caveats=caveats,
         research_intent=intent,
         research_plan=research_plan,
+        related_questions=related_questions,
     )

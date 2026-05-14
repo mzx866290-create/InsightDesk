@@ -1616,6 +1616,7 @@ def build_content_router(
             "context": context,
             "plan": plan,
             "research_mode": str(request.research_mode or "deep").strip().lower() or "deep",
+            "research_source_strategy": str(request.research_source_strategy or "web_only").strip().lower() or "web_only",
             "providers": [str(item).strip() for item in request.providers if str(item).strip()],
             "max_rounds": max(1, int(request.max_rounds or 2)),
             "max_results_per_query": max(1, int(request.max_results_per_query or 4)),

@@ -22,6 +22,10 @@ function normalizeText(value: string): string {
   return value.trim()
 }
 
+function formatStrategyToken(value: string): string {
+  return normalizeText(value).replace(/[_-]+/g, ' ')
+}
+
 function isDifferentQuery(left: string, right: string): boolean {
   const normalizedLeft = normalizeText(left).toLowerCase()
   const normalizedRight = normalizeText(right).toLowerCase()
@@ -30,6 +34,11 @@ function isDifferentQuery(left: string, right: string): boolean {
 
 function modeBadgeClass(mode: string): string {
   return mode.toLowerCase() === 'deep' ? badgeClass('warm') : badgeClass('accent')
+}
+
+function copyRelatedQuestion(question: string): void {
+  if (typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return
+  void navigator.clipboard.writeText(question)
 }
 
 export const ResearchMetaCard: React.FC<ResearchMetaCardProps> = ({
@@ -48,6 +57,35 @@ export const ResearchMetaCard: React.FC<ResearchMetaCardProps> = ({
   const caveats = meta.caveats
     .filter((item) => normalizeText(item) !== fallbackNote)
     .slice(0, compact ? 2 : 3)
+  const sourceStrategy = formatStrategyToken(meta.sourceStrategy)
+  const strategyIntent = formatStrategyToken(meta.strategyIntent)
+  const strategyRegion = normalizeText(meta.strategyRegion)
+  const strategyFreshness = formatStrategyToken(meta.strategyFreshness)
+  const strategySourceTypes = meta.strategySourceTypes
+    .map(formatStrategyToken)
+    .filter(Boolean)
+    .slice(0, compact ? 4 : 6)
+  const strategyQueryVariants = meta.strategyQueryVariants
+    .map(normalizeText)
+    .filter(Boolean)
+    .slice(0, compact ? 2 : 4)
+  const strategyRankingPolicy = normalizeText(meta.strategyRankingPolicy)
+  const relatedQuestions = meta.relatedQuestions
+    .map(normalizeText)
+    .filter(Boolean)
+    .slice(0, compact ? 3 : 5)
+  const strategyBadges = [
+    sourceStrategy && sourceStrategy !== 'web only' ? `Source: ${sourceStrategy}` : '',
+    strategyIntent ? `Intent: ${strategyIntent}` : '',
+    strategyRegion ? `Region: ${strategyRegion}` : '',
+    strategyFreshness ? `Freshness: ${strategyFreshness}` : '',
+  ].filter(Boolean)
+  const showStrategy = Boolean(
+    strategyBadges.length > 0 ||
+      strategySourceTypes.length > 0 ||
+      strategyQueryVariants.length > 0 ||
+      strategyRankingPolicy,
+  )
   const showRewrittenQuery = isDifferentQuery(query, rewrittenQuery)
   const countItems = [
     meta.sourceCount > 0 ? `${meta.sourceCount} sources` : '',
@@ -62,6 +100,8 @@ export const ResearchMetaCard: React.FC<ResearchMetaCardProps> = ({
     countItems.length === 0 &&
     facets.length === 0 &&
     caveats.length === 0 &&
+    relatedQuestions.length === 0 &&
+    !showStrategy &&
     !fallbackNote
   ) {
     return null
@@ -125,6 +165,67 @@ export const ResearchMetaCard: React.FC<ResearchMetaCardProps> = ({
           <div>
             <p className="text-text-secondary/70">Search Query</p>
             <p className="mt-1 break-words text-text-primary">{rewrittenQuery}</p>
+          </div>
+        )}
+
+        {showStrategy && (
+          <div data-testid="research-search-strategy">
+            <p className="text-text-secondary/70">Search Strategy</p>
+            {(strategyBadges.length > 0 || strategySourceTypes.length > 0) && (
+              <div className="mt-1 flex flex-wrap gap-1.5">
+                {strategyBadges.map((item) => (
+                  <span
+                    key={item}
+                    className="rounded-full border border-accent-blue/20 bg-accent-blue/5 px-2 py-0.5 text-text-secondary"
+                  >
+                    {item}
+                  </span>
+                ))}
+                {strategySourceTypes.map((item) => (
+                  <span
+                    key={item}
+                    className="rounded-full border border-bg-border bg-bg-primary/40 px-2 py-0.5 text-text-secondary"
+                  >
+                    {item}
+                  </span>
+                ))}
+              </div>
+            )}
+            {strategyQueryVariants.length > 0 && (
+              <div className="mt-2 space-y-1">
+                <p className="text-text-secondary/70">Planned Queries</p>
+                {strategyQueryVariants.map((variant) => (
+                  <p key={variant} className="break-words text-text-primary">
+                    {variant}
+                  </p>
+                ))}
+              </div>
+            )}
+            {strategyRankingPolicy && (
+              <p className="mt-2 break-words text-text-secondary">
+                Ranking: {strategyRankingPolicy}
+              </p>
+            )}
+          </div>
+        )}
+
+        {relatedQuestions.length > 0 && (
+          <div data-testid="research-related-questions">
+            <p className="text-text-secondary/70">Continue Exploring</p>
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {relatedQuestions.map((question) => (
+                <button
+                  key={question}
+                  type="button"
+                  className="rounded-full border border-accent-blue/20 bg-accent-blue/5 px-2 py-1 text-left text-text-primary transition hover:border-accent-blue/40 hover:bg-accent-blue/10"
+                  title="Copy question"
+                  aria-label={`Copy related question: ${question}`}
+                  onClick={() => copyRelatedQuestion(question)}
+                >
+                  {question}
+                </button>
+              ))}
+            </div>
           </div>
         )}
 
