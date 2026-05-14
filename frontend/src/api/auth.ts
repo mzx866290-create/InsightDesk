@@ -1,4 +1,11 @@
-export const BASE = '/api'
+const runtimeEnv =
+  typeof import.meta !== 'undefined' && typeof import.meta.env !== 'undefined'
+    ? import.meta.env
+    : undefined
+
+const rawApiBase = (runtimeEnv?.VITE_API_BASE_URL ?? '').trim()
+
+export const BASE = (rawApiBase || '/api').replace(/\/+$/, '')
 
 const API_TOKEN_STORAGE_KEY = 'api_token'
 const ADMIN_API_TOKEN_STORAGE_KEY = 'admin_api_token'
@@ -131,36 +138,52 @@ function normalizeRequestPath(input: RequestInfo | URL): string {
   }
 }
 
+function normalizeApiPathPrefix(base: string): string {
+  try {
+    const origin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost'
+    const url = new URL(base, origin)
+    return url.pathname.replace(/\/+$/, '') || '/api'
+  } catch {
+    return base.startsWith('/') ? base.replace(/\/+$/, '') || '/api' : '/api'
+  }
+}
+
+const API_PATH_PREFIX = normalizeApiPathPrefix(BASE)
+
 function requestNeedsApiToken(path: string): boolean {
+  const protectedPrefixes = [
+    '/auth/',
+    '/security/',
+    '/access',
+    '/identity',
+    '/sessions',
+    '/tasks',
+    '/assistant-presets',
+    '/workspaces',
+    '/decks',
+    '/artifacts',
+    '/operations/observability',
+    '/operations/runtime',
+    '/operations/traces',
+    '/connectors',
+    '/config',
+    '/agents',
+    '/delivery-templates',
+    '/documents/upload',
+    '/documents/stats',
+    '/prompts',
+    '/reports',
+    '/research',
+    '/knowledge-bases',
+    '/knowledge-base/health',
+    '/knowledge-base/chunks',
+    '/knowledge-base/test-retrieval',
+    '/knowledge-base/by-path',
+  ]
+
   return (
-    path.startsWith(`${BASE}/auth/`) ||
-    path.startsWith(`${BASE}/security/`) ||
-    path.startsWith(`${BASE}/access`) ||
-    path.startsWith(`${BASE}/identity`) ||
-    path.startsWith(`${BASE}/sessions`) ||
-    path.startsWith(`${BASE}/tasks`) ||
-    path.startsWith(`${BASE}/assistant-presets`) ||
-    path.startsWith(`${BASE}/workspaces`) ||
-    path.startsWith(`${BASE}/decks`) ||
-    path.startsWith(`${BASE}/artifacts`) ||
-    path.startsWith(`${BASE}/operations/observability`) ||
-    path.startsWith(`${BASE}/operations/runtime`) ||
-    path.startsWith(`${BASE}/operations/traces`) ||
-    path.startsWith(`${BASE}/connectors`) ||
-    path.startsWith(`${BASE}/config`) ||
-    path.startsWith(`${BASE}/agents`) ||
-    path.startsWith(`${BASE}/delivery-templates`) ||
-    path.startsWith(`${BASE}/documents/upload`) ||
-    path.startsWith(`${BASE}/documents/stats`) ||
-    path.startsWith(`${BASE}/prompts`) ||
-    path.startsWith(`${BASE}/reports`) ||
-    path.startsWith(`${BASE}/research`) ||
-    path.startsWith(`${BASE}/knowledge-bases`) ||
-    path.startsWith(`${BASE}/knowledge-base/health`) ||
-    path.startsWith(`${BASE}/knowledge-base/chunks`) ||
-    path.startsWith(`${BASE}/knowledge-base/test-retrieval`) ||
-    path.startsWith(`${BASE}/knowledge-base/by-path`) ||
-    path === `${BASE}/knowledge-base`
+    protectedPrefixes.some((prefix) => path.startsWith(`${API_PATH_PREFIX}${prefix}`)) ||
+    path === `${API_PATH_PREFIX}/knowledge-base`
   )
 }
 

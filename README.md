@@ -59,6 +59,21 @@ flowchart LR
 - 自研一套可本地部署的 AI 工作台，覆盖知识库问答、Deep Research、任务编排、报告生成和 PPT 交付。
 - 支持本地 Ollama 与云端模型接入，并提供搜索增强、来源策略和多面板模型对比能力。
 
+## Vercel 在线展示
+
+这个仓库可以直接接到 Vercel 做前端展示页。
+
+1. 在 Vercel 新建项目并连接当前 GitHub 仓库。
+2. 将项目根目录保持为仓库根目录，构建会自动使用 `vercel.json`。
+3. 如果要让在线 Demo 真的可交互，再配置一个独立后端地址，例如 Render、Railway 或 VPS 上的 FastAPI 服务。
+4. 在 Vercel 环境变量里设置：
+
+```dotenv
+VITE_API_BASE_URL=https://你的后端域名/api
+```
+
+不填这个变量时，本地开发仍默认走 `/api`，不会影响现有 `start.bat` 和本地联调。
+
 ## 快速启动
 
 ```bash
