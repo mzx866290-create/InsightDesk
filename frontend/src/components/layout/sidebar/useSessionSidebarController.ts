@@ -76,6 +76,7 @@ export function useSessionSidebarController({
     setViewMode: filters.setViewMode,
     setTagFilter: filters.setTagFilter,
     setMovingSessionId,
+    setError,
   })
 
   const bookmarkController = useSidebarBookmarksController({

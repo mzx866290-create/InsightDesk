@@ -114,6 +114,7 @@ export const Sidebar: React.FC = () => {
         />
         <Button
           variant="outline"
+          data-testid="sidebar-new-chat"
           className="w-full justify-center gap-2 border-dashed border-bg-border hover:border-accent-blue/50 hover:bg-accent-blue/5"
           onClick={handleNewChat}
           loading={loadingNew}

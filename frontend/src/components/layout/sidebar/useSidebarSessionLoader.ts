@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { getSessions } from '../../../api/client'
 import type { Session } from '../../../api/client'
 import type { Panel } from '../../../stores/chatStoreModel'
+import { DEMO_BACKEND_NOTICE } from '../../../utils/demoSession'
 
 interface UseSidebarSessionLoaderOptions {
   workspaceReady: boolean
@@ -55,7 +56,7 @@ export function useSidebarSessionLoader({
       } catch (loadError) {
         console.error(loadError)
         if (!cancelled) {
-          setError('Failed to load sessions.')
+          setError(DEMO_BACKEND_NOTICE)
         }
       }
     }

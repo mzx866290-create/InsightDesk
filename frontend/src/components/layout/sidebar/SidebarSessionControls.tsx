@@ -39,6 +39,8 @@ export function SidebarSessionControls({
   onViewModeChange,
   onTagFilterChange,
 }: SidebarSessionControlsProps) {
+  const isNotice = error.startsWith('演示模式')
+
   return (
     <div className="px-3 pb-3">
       <label className="flex items-center gap-2 rounded-xl border border-bg-border bg-bg-secondary px-3 py-2">
@@ -123,7 +125,14 @@ export function SidebarSessionControls({
       )}
 
       {error && (
-        <div className="mt-3 rounded-xl border border-accent-red/30 bg-accent-red/10 px-3 py-2 text-xs text-accent-red">
+        <div
+          data-testid="sidebar-session-error"
+          className={`mt-3 rounded-xl border px-3 py-2 text-xs ${
+            isNotice
+              ? 'border-accent-blue/30 bg-accent-blue/10 text-accent-blue'
+              : 'border-accent-red/30 bg-accent-red/10 text-accent-red'
+          }`}
+        >
           {error}
         </div>
       )}

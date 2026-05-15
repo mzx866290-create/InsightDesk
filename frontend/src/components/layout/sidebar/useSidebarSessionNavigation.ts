@@ -8,6 +8,10 @@ import { useChatStore } from '../../../stores/chatStore'
 import type { Panel } from '../../../stores/chatStoreModel'
 import { useWorkflowStore } from '../../../stores/workflowStore'
 import {
+  createLocalDemoSession,
+  DEMO_BACKEND_NOTICE,
+} from '../../../utils/demoSession'
+import {
   DEFAULT_WORKSPACE_ID,
   type SessionViewMode,
 } from './sidebarConstants'
@@ -27,6 +31,7 @@ interface UseSidebarSessionNavigationOptions {
   setViewMode: (mode: SessionViewMode) => void
   setTagFilter: (value: string | null) => void
   setMovingSessionId: (sessionId: string | null) => void
+  setError: (message: string) => void
 }
 
 export function useSidebarSessionNavigation({
@@ -40,6 +45,7 @@ export function useSidebarSessionNavigation({
   setViewMode,
   setTagFilter,
   setMovingSessionId,
+  setError,
 }: UseSidebarSessionNavigationOptions) {
   const {
     addSession,
@@ -88,6 +94,25 @@ export function useSidebarSessionNavigation({
       setSearch('')
       setViewMode('all')
       setTagFilter(null)
+      if (isMobile) {
+        setSidebarOpen(false)
+      }
+      setError('')
+    } catch (error) {
+      console.error('Failed to create remote session; using local demo session.', error)
+      const session = createLocalDemoSession(
+        '新建对话',
+        currentWorkspaceId ?? DEFAULT_WORKSPACE_ID,
+      )
+      addSession(session)
+      adjustWorkspaceSessionCount(session.workspace_id, 1)
+      setCurrentSession(session.session_id)
+      clearMessages()
+      resetPanelWorkflows()
+      setSearch('')
+      setViewMode('all')
+      setTagFilter(null)
+      setError(DEMO_BACKEND_NOTICE)
       if (isMobile) {
         setSidebarOpen(false)
       }

@@ -13,6 +13,11 @@ import { createAndTrackTask, createAndTrackWorkflowTask, useTaskStore } from '..
 import type { ActiveStreamControl } from './streamControl'
 import { useWorkflowStore } from '../../stores/workflowStore'
 import { dispatchChatStreamChunk } from '../../hooks/useChatStreaming'
+import {
+  createLocalDemoSession,
+  DEMO_ASSISTANT_MESSAGE,
+  isDemoSessionId,
+} from '../../utils/demoSession'
 
 interface MessageInputProps {
   onStreamingChange: (panelId: string, streaming: boolean) => void
@@ -714,7 +719,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
     return {
       content: isNetworkError
-        ? 'Network connection failed. Unable to reach the backend service.'
+        ? '当前前端未连接后端服务，无法真正调用模型。请本地运行 start.bat，或在 Vercel 配置 VITE_API_BASE_URL 指向已部署的 FastAPI 后端。'
         : isTimeoutError
           ? 'The request timed out before the model finished responding.'
           : normalizedError,
@@ -761,6 +766,21 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     })
   }
 
+  const appendDemoAssistantMessage = (
+    answerGroupId: string,
+    content = DEMO_ASSISTANT_MESSAGE,
+  ) => {
+    panels.forEach((panel) => {
+      const messageId = `assistant-demo-${panel.id}-${Date.now()}`
+      appendChunk(panel.id, messageId, '', {
+        answerGroupId,
+        modelId: 'demo_mode',
+      })
+      setAssistantMessage(panel.id, messageId, content, false)
+      onStreamingChange(panel.id, false)
+    })
+  }
+
   const buildAnswerGroupId = (preferredAnswerGroupId?: string | null): string =>
     preferredAnswerGroupId?.trim() ||
     (globalThis.crypto?.randomUUID?.() ?? `grp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
@@ -793,8 +813,15 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       )
       return nextSessionId
     } catch (error) {
-      console.error('Failed to create session', error)
-      return null
+      console.error('Failed to create remote session; using local demo session.', error)
+      const session = createLocalDemoSession(
+        sessionTitleSeed,
+        currentWorkspaceId ?? 'workspace-default',
+      )
+      setCurrentSession(session.session_id)
+      addSession(session)
+      adjustWorkspaceSessionCount(session.workspace_id, 1)
+      return session.session_id
     }
   }
 
@@ -833,6 +860,21 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     const primaryPanelId = panels[0]?.id
     const assistantMessageId = `assistant-research-${Date.now()}`
     const researchModelId = shouldUseWorkflow ? 'multi_agent_workflow' : 'web_research'
+
+    if (isDemoSessionId(sessionId)) {
+      addUserMessage(query, [], hasWorkflowDataFiles ? pendingDataFiles : [], answerGroupId)
+      appendDemoAssistantMessage(
+        answerGroupId,
+        '演示模式暂不执行联网研究或数据分析任务。完整功能需要连接 FastAPI 后端和模型运行环境。',
+      )
+      syncSessionMetaFromPanels(sessionId)
+      if (currentSession && currentSession.message_count === 0 && sessionTitleSeed) {
+        updateSessionTitle(sessionId, sessionTitleSeed.slice(0, 40))
+      }
+      resetComposer()
+      setIsResearchStarting(false)
+      return
+    }
 
     try {
       const task =
@@ -1000,6 +1042,13 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     const currentSession = sessions.find((session) => session.session_id === sessionId)
     if (!isEditRegeneration && currentSession && currentSession.message_count === 0 && sessionTitleSeed) {
       updateSessionTitle(sessionId, sessionTitleSeed.slice(0, 40))
+    }
+
+    if (isDemoSessionId(sessionId)) {
+      appendDemoAssistantMessage(answerGroupId)
+      syncSessionMetaFromPanels(sessionId)
+      setIsLoading(false)
+      return
     }
 
     panels.forEach((panel) => onStreamingChange(panel.id, true))
@@ -1257,7 +1306,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
         )}
 
         <div className="rounded-2xl border border-bg-border bg-bg-secondary px-4 py-3 transition-colors focus-within:border-accent-blue/50">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+          <div className="flex flex-col gap-3">
             <div className="relative w-full flex-1">
               {suggestions.length > 0 && (
                 <div className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-hidden rounded-xl border border-bg-border bg-bg-primary shadow-xl">
@@ -1294,7 +1343,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               <textarea
                 ref={textareaRef}
                 data-testid="composer-input"
-                className="min-h-[24px] max-h-[180px] w-full resize-none bg-transparent text-sm leading-relaxed text-text-primary outline-none placeholder:text-text-secondary"
+                className="min-h-[72px] max-h-[220px] w-full resize-none bg-transparent text-sm leading-relaxed text-text-primary outline-none placeholder:text-text-secondary"
                 placeholder={
                   composerLocked
                     ? lockedPlaceholder
@@ -1316,7 +1365,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                   void handlePaste(event)
                 }}
                 onKeyDown={handleKeyDown}
-                rows={1}
+                rows={3}
                 disabled={composerBusy || composerLocked}
               />
             </div>
@@ -1345,7 +1394,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               }}
             />
 
-            <div className="flex flex-wrap items-center justify-end gap-2 sm:pb-0.5">
+            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-bg-border/70 pt-3">
               <div
                 className="inline-flex items-center rounded-lg border border-bg-border bg-bg-primary/50 p-0.5"
                 title="研究模式"
