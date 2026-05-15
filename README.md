@@ -64,9 +64,17 @@ flowchart LR
 这个仓库可以直接接到 Vercel 做前端展示页。
 
 1. 在 Vercel 新建项目并连接当前 GitHub 仓库。
-2. 将项目根目录保持为仓库根目录，构建会自动使用 `vercel.json`。
-3. 如果要让在线 Demo 真的可交互，再配置一个独立后端地址，例如 Render、Railway 或 VPS 上的 FastAPI 服务。
-4. 在 Vercel 环境变量里设置：
+2. 点击 `Root Directory` 的 `Edit`，选择 `frontend` 作为部署根目录。
+3. `Application Preset` 选择 `Vite`；如果没有自动识别，手动设置：
+
+```text
+Install Command: npm ci
+Build Command: npm run build
+Output Directory: dist
+```
+
+4. 如果要让在线 Demo 真的可交互，再配置一个独立后端地址，例如 Render、Railway 或 VPS 上的 FastAPI 服务。
+5. 在 Vercel 环境变量里设置：
 
 ```dotenv
 VITE_API_BASE_URL=https://你的后端域名/api
