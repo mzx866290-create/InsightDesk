@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from langgraph.graph import END, StateGraph
 
@@ -20,12 +20,52 @@ from backend.agent.registry import (
 )
 from backend.agent.state import (
     ApprovalDecision,
+    ApprovalStatus,
     OrchestratorPlanStep,
+    OrchestratorStepStatus,
     OrchestratorState,
 )
 from backend.core.tracing import trace_span
 
 DEFAULT_STEP_ORDER = ("research", "data_analysis", "writing", "review", "integrator", "model_compare")
+_APPROVAL_STATUSES: set[ApprovalStatus] = {
+    "not_required",
+    "pending",
+    "approved",
+    "rejected",
+}
+_STEP_STATUSES: set[OrchestratorStepStatus] = {
+    "pending",
+    "waiting_approval",
+    "running",
+    "completed",
+    "failed",
+    "blocked",
+    "skipped",
+}
+
+
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _copy_plan_step(step: OrchestratorPlanStep) -> OrchestratorPlanStep:
+    return cast(OrchestratorPlanStep, dict(step))
+
+
+def _copy_plan(plan: list[OrchestratorPlanStep]) -> list[OrchestratorPlanStep]:
+    return [_copy_plan_step(step) for step in plan]
+
+
+def _normalize_step_status(value: Any) -> OrchestratorStepStatus:
+    status = str(value or "pending")
+    return cast(OrchestratorStepStatus, status if status in _STEP_STATUSES else "pending")
+
+
+def _normalize_approval_status_value(value: Any, *, requires_approval: bool) -> ApprovalStatus:
+    fallback: ApprovalStatus = "pending" if requires_approval else "not_required"
+    status = str(value or fallback)
+    return cast(ApprovalStatus, status if status in _APPROVAL_STATUSES else fallback)
 
 
 def infer_task_types(user_request: str) -> list[str]:
@@ -143,7 +183,7 @@ def _apply_agent_metadata_to_step(
     step: OrchestratorPlanStep,
     registry: AgentRegistry,
 ) -> OrchestratorPlanStep:
-    enriched = dict(step)
+    enriched = _copy_plan_step(step)
     agent_metadata = _agent_metadata_for_step(
         registry,
         agent_name=str(enriched.get("agent") or "").strip(),
@@ -152,7 +192,7 @@ def _apply_agent_metadata_to_step(
     if not agent_metadata:
         return enriched
 
-    metadata = dict(enriched.get("metadata") or {})
+    metadata = _dict_or_empty(enriched.get("metadata"))
     if bool(agent_metadata.get("plugin")):
         metadata.setdefault("agent_plugin", True)
     source = str(agent_metadata.get("source") or "").strip()
@@ -195,7 +235,7 @@ def _build_requested_plan(
 
     explicit_steps = _normalize_requested_items(context_map.get("requested_steps"))
     if explicit_steps:
-        plan: list[OrchestratorPlanStep] = []
+        explicit_plan: list[OrchestratorPlanStep] = []
         for index, raw_step in enumerate(explicit_steps, start=1):
             if isinstance(raw_step, dict):
                 task_type = str(
@@ -209,7 +249,8 @@ def _build_requested_plan(
                 if not agent_name:
                     agent = registry.find_for_task(task_type)
                     agent_name = agent.name if agent is not None else "general"
-                plan.append(
+                requires_approval = bool(raw_step.get("requires_approval", False))
+                explicit_plan.append(
                     {
                         "id": str(raw_step.get("id") or f"step-{index}").strip(),
                         "agent": agent_name,
@@ -221,26 +262,22 @@ def _build_requested_plan(
                             or ""
                         ).strip(),
                         "input": raw_step.get("input", user_request),
-                        "status": str(raw_step.get("status") or "pending"),
-                        "requires_approval": bool(raw_step.get("requires_approval", False)),
-                        "approval_status": str(
-                            raw_step.get("approval_status")
-                            or (
-                                "pending"
-                                if bool(raw_step.get("requires_approval", False))
-                                else "not_required"
-                            )
+                        "status": _normalize_step_status(raw_step.get("status")),
+                        "requires_approval": requires_approval,
+                        "approval_status": _normalize_approval_status_value(
+                            raw_step.get("approval_status"),
+                            requires_approval=requires_approval,
                         ),
                         "parallel_group": str(raw_step.get("parallel_group") or "").strip(),
                         "depends_on": _normalize_depends_on(raw_step.get("depends_on")),
-                        "metadata": dict(raw_step.get("metadata") or {}),
+                        "metadata": _dict_or_empty(raw_step.get("metadata")),
                     }
                 )
             else:
                 task_type = str(raw_step or "").strip().lower() or "general"
                 agent = registry.find_for_task(task_type)
                 agent_name = agent.name if agent is not None else "general"
-                plan.append(
+                explicit_plan.append(
                     {
                         "id": f"step-{index}",
                         "agent": agent_name,
@@ -253,7 +290,7 @@ def _build_requested_plan(
                         "metadata": {"planner": "context", "requested_steps": True},
                     }
                 )
-        return plan
+        return explicit_plan
 
     task_requests = _normalize_requested_items(
         requested_tasks if requested_tasks is not None else context_map.get("requested_tasks")
@@ -263,7 +300,7 @@ def _build_requested_plan(
     )
     if task_requests or agent_requests:
         step_count = max(len(task_requests), len(agent_requests))
-        plan: list[OrchestratorPlanStep] = []
+        requested_plan: list[OrchestratorPlanStep] = []
         for index in range(step_count):
             requested_task = str(task_requests[index] or "").strip() if index < len(task_requests) else ""
             requested_agent = str(agent_requests[index] or "").strip() if index < len(agent_requests) else ""
@@ -282,7 +319,7 @@ def _build_requested_plan(
             task_type = requested_task or _agent_task_type(requested_agent, registry)
             agent = registry.find_for_task(task_type)
             agent_name = requested_agent or (agent.name if agent is not None else "general")
-            plan.append(
+            requested_plan.append(
                 {
                     "id": f"step-{index + 1}",
                     "agent": agent_name,
@@ -299,7 +336,7 @@ def _build_requested_plan(
                     },
                 }
             )
-        return plan
+        return requested_plan
 
     return []
 
@@ -386,7 +423,7 @@ def _task_approval_policy_match(
             "reviewer_role": policy["default_reviewer_role"],
         }
 
-    metadata = step.get("metadata") if isinstance(step.get("metadata"), dict) else {}
+    metadata = _dict_or_empty(step.get("metadata"))
     risk_level = str(
         metadata.get("risk_level")
         or metadata.get("risk")
@@ -415,14 +452,14 @@ def _apply_task_approval_policy(
         context_map.get("task_approval_policy") or context_map.get("approval_policy")
     )
     if not policy.get("enabled"):
-        return [dict(step) for step in plan]
+        return _copy_plan(plan)
 
     updated_plan: list[OrchestratorPlanStep] = []
     for raw_step in plan:
-        step = dict(raw_step)
+        step = _copy_plan_step(raw_step)
         match = _task_approval_policy_match(step, policy)
         if match:
-            metadata = dict(step.get("metadata") or {})
+            metadata = _dict_or_empty(step.get("metadata"))
             metadata["task_approval_policy"] = {
                 "enabled": True,
                 "required_task_types": list(policy["required_task_types"]),
@@ -439,7 +476,7 @@ def _apply_task_approval_policy(
 
 
 def _copy_state(state: OrchestratorState) -> OrchestratorState:
-    return dict(state)
+    return cast(OrchestratorState, dict(state))
 
 
 def _mark_step(
@@ -449,7 +486,7 @@ def _mark_step(
     *,
     error: str = "",
 ) -> list[OrchestratorPlanStep]:
-    updated = [dict(step) for step in plan]
+    updated = _copy_plan(plan)
     if 0 <= index < len(updated):
         updated[index]["status"] = status
         if error:
@@ -486,7 +523,7 @@ def _normalize_plan(plan: list[OrchestratorPlanStep]) -> list[OrchestratorPlanSt
     active_group_depends_on: list[str] = []
 
     for index, raw_step in enumerate(plan):
-        step = dict(raw_step)
+        step = _copy_plan_step(raw_step)
         step["id"] = _step_id(step, index)
         requires_approval = bool(step.get("requires_approval", False))
         explicit_depends_on = "depends_on" in step
@@ -639,7 +676,7 @@ def _dependencies_satisfied(
 def _refresh_blocked_steps(
     plan: list[OrchestratorPlanStep],
 ) -> tuple[list[OrchestratorPlanStep], dict[str, Any]]:
-    updated = [dict(step) for step in plan]
+    updated = _copy_plan(plan)
     changed = True
     while changed:
         changed = False
@@ -653,7 +690,7 @@ def _refresh_blocked_steps(
             step_id = _step_id(step, index)
             updated[index]["status"] = "blocked"
             updated[index]["error"] = "Blocked by failed dependency"
-            metadata = dict(updated[index].get("metadata") or {})
+            metadata = _dict_or_empty(updated[index].get("metadata"))
             metadata["blocked_by"] = blockers
             updated[index]["metadata"] = metadata
             changed = True
@@ -662,7 +699,7 @@ def _refresh_blocked_steps(
     for index, step in enumerate(updated):
         if str(step.get("status") or "") == "blocked":
             step_id = _step_id(step, index)
-            metadata = dict(step.get("metadata") or {})
+            metadata = _dict_or_empty(step.get("metadata"))
             blocked_steps[step_id] = {
                 "step_id": step_id,
                 "depends_on": _normalize_depends_on(step.get("depends_on")),
@@ -700,7 +737,7 @@ def _build_approval_batch(
                 "description": str(step.get("description") or "Task requires approval"),
                 "depends_on": _normalize_depends_on(step.get("depends_on")),
                 "parallel_group": _parallel_group_id(step),
-                "metadata": dict(step.get("metadata") or {}),
+                "metadata": _dict_or_empty(step.get("metadata")),
             }
         )
     step_ids = [item["step_id"] for item in approvals]
@@ -815,7 +852,7 @@ def build_orchestrator_graph(
             next_state["approval_batch"] = approval_batch
             next_state["status"] = "waiting_approval"
             next_state["next_agent"] = "human_gate"
-            updated_plan = [dict(item) for item in plan]
+            updated_plan = _copy_plan(plan)
             for index in approval_indexes:
                 updated_plan[index]["status"] = "waiting_approval"
             next_state["plan"] = updated_plan
@@ -836,7 +873,7 @@ def build_orchestrator_graph(
         if len(executable_indexes) > 1:
             next_state["next_agent"] = "parallel_group"
             next_state["parallel_step_indexes"] = executable_indexes
-            updated_plan = [dict(item) for item in plan]
+            updated_plan = _copy_plan(plan)
             for index in executable_indexes:
                 updated_plan[index]["status"] = "running"
             next_state["plan"] = updated_plan
@@ -864,7 +901,7 @@ def build_orchestrator_graph(
             "description": str(step.get("description") or ""),
             "input": step.get("input"),
             "requires_approval": bool(step.get("requires_approval", False)),
-            "metadata": dict(step.get("metadata") or {}),
+            "metadata": _dict_or_empty(step.get("metadata")),
         }
         span_attributes = {
             "component": "agent_orchestrator",
@@ -879,7 +916,7 @@ def build_orchestrator_graph(
                 agent = agent_registry.get(expected_agent)
                 agent_context = dict(state.get("context") or {})
                 agent_context["_agent_results"] = dict(state.get("agent_results") or {})
-                agent_context["_plan"] = [dict(item) for item in state.get("plan", [])]
+                agent_context["_plan"] = _copy_plan(state.get("plan", []))
                 agent_context["_current_step"] = step_index
                 result = await agent.execute(task, agent_context)
                 metric = build_agent_metric(
@@ -949,13 +986,13 @@ def build_orchestrator_graph(
         if current_step >= len(plan):
             return next_state
         outcome = await run_agent_step(next_state, current_step, expected_agent)
-        next_state["plan"] = apply_step_outcome(next_state, outcome, [dict(item) for item in plan])
+        next_state["plan"] = apply_step_outcome(next_state, outcome, _copy_plan(plan))
         next_state["current_step"] = _next_pending_index(next_state["plan"])
         return next_state
 
     async def execute_parallel_group_node(state: OrchestratorState) -> OrchestratorState:
         next_state = _copy_state(state)
-        plan = [dict(item) for item in next_state.get("plan", [])]
+        plan = _copy_plan(next_state.get("plan", []))
         indexes = [
             int(index)
             for index in next_state.get("parallel_step_indexes", [])
@@ -1141,7 +1178,7 @@ async def run_orchestrator(
         initial_state: OrchestratorState = {
             "user_request": user_request,
             "context": context_map,
-            "plan": list(plan or []),
+            "plan": _copy_plan(plan or []),
             "current_step": 0,
             "agent_results": {},
             "agent_metrics": {},
@@ -1166,7 +1203,7 @@ async def run_orchestrator(
                 "error_count": len(result.get("errors", [])),
             }
         )
-        return result
+        return cast(OrchestratorState, result)
 
 
 async def resume_orchestrator(
@@ -1216,7 +1253,7 @@ async def resume_orchestrator(
                 "error_count": len(result.get("errors", [])),
             }
         )
-        return result
+        return cast(OrchestratorState, result)
 
 
 def run_orchestrator_sync(

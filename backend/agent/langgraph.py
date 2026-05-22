@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Literal, Optional
+from typing import TYPE_CHECKING, Literal, Optional, cast
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -77,7 +77,7 @@ async def build_langgraph_agent(
 
     async def classify_intent(
         state: AgentState,
-        config: RunnableConfig = None,
+        config: RunnableConfig = cast(RunnableConfig, None),
     ) -> AgentState:
         """节点1: 分类用户意图，选择工具"""
         started_at = time.monotonic()
@@ -164,7 +164,7 @@ async def build_langgraph_agent(
 
     async def execute_tool(
         state: AgentState,
-        config: RunnableConfig = None,
+        config: RunnableConfig = cast(RunnableConfig, None),
     ) -> AgentState:
         """节点2: 执行选定的工具"""
         started_at = time.monotonic()
@@ -277,7 +277,7 @@ async def build_langgraph_agent(
 
     async def generate_answer(
         state: AgentState,
-        config: RunnableConfig = None,
+        config: RunnableConfig = cast(RunnableConfig, None),
     ) -> AgentState:
         """节点3: 生成最终回答，并在引用文档时注入脚注标记"""
         started_at = time.monotonic()
@@ -376,19 +376,19 @@ async def build_langgraph_agent(
                 # Even without a stream sink, prefer native token streaming so
                 # wrappers can optionally replay original token chunks.
                 try:
-                    raw_output_parts: list[str] = []
+                    fallback_output_parts: list[str] = []
                     async for chunk in _astream_llm_with_timeout(
                         llm,
                         answer_prompt,
                         timeout_seconds=60,
                     ):
-                        raw_output_parts.append(chunk)
+                        fallback_output_parts.append(chunk)
 
-                    raw_output = "".join(raw_output_parts).strip()
+                    raw_output = "".join(fallback_output_parts).strip()
                     state["output"] = _strip_think_tags(raw_output)
                     native_stream_chunks = [
                         _strip_think_tags(str(chunk))
-                        for chunk in raw_output_parts
+                        for chunk in fallback_output_parts
                         if str(chunk or "").strip()
                     ]
                     native_stream_chunks = [

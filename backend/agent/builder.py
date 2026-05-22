@@ -2,7 +2,7 @@
 
 import logging
 from importlib import import_module
-from typing import Any, Optional
+from typing import Any, Callable, Optional, cast
 
 from backend.agent.connection import get_llm, normalize_connection_type
 from backend.agent.llm import _normalize_runtime_system_prompt
@@ -188,9 +188,14 @@ async def build_agent(
         agent_executor_cls = globals().get("AgentExecutor")
         create_agent_fn = globals().get("create_tool_calling_agent")
         if agent_executor_cls is None or create_agent_fn is None:
-            from langchain_classic.agents import AgentExecutor as agent_executor_cls
-            from langchain_classic.agents import create_tool_calling_agent as create_agent_fn
+            from langchain_classic.agents import AgentExecutor
+            from langchain_classic.agents import create_tool_calling_agent
+
+            agent_executor_cls = AgentExecutor
+            create_agent_fn = create_tool_calling_agent
         from langchain_core.prompts import ChatPromptTemplate
+        agent_executor_factory = cast(Callable[..., Any], agent_executor_cls)
+        create_agent = cast(Callable[..., Any], create_agent_fn)
 
         all_tools = await build_runtime_tools(
             pipeline,
@@ -220,9 +225,9 @@ async def build_agent(
             ("placeholder", "{agent_scratchpad}"),
         ])
         
-        base_agent = create_agent_fn(llm, all_tools, prompt)
-        
-        agent_executor = agent_executor_cls(
+        base_agent = create_agent(llm, all_tools, prompt)
+
+        agent_executor = agent_executor_factory(
             agent=base_agent,
             tools=all_tools,
             verbose=verbose,

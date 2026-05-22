@@ -2,7 +2,7 @@
 
 import logging
 import time
-from typing import Any, Literal, Optional, TypedDict
+from typing import Any, Literal, NotRequired, Optional, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
@@ -57,6 +57,7 @@ class AgentState(TypedDict):
     sources: list
     retrieval_meta: dict[str, Any]
     output: str
+    _native_stream_chunks: NotRequired[list[str]]
 
 
 def _graph_configurable_value(config: Any, key: str, default: Any) -> Any:
