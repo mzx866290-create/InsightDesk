@@ -241,7 +241,7 @@ class PostgresChatMessageHistory(PostgresStoreMixin, BaseChatMessageHistory):
                     """,
                     tuple(params),
                 )
-                rows = cursor.fetchall()
+                rows: list[Any] = list(cursor.fetchall() or [])
 
         if apply_context_limit:
             context_limit = _env_int("CONTEXT_HISTORY_MESSAGES", 16)
@@ -441,15 +441,16 @@ class PostgresChatMessageHistory(PostgresStoreMixin, BaseChatMessageHistory):
 
     def add_user_message(
         self,
-        message: str,
+        message: HumanMessage | str,
         model_id: str = "",
         panel_id: str = "",
         answer_group_id: str = "",
         images: Optional[list[dict[str, Any]]] = None,
         files: Optional[list[dict[str, Any]]] = None,
     ) -> None:
+        human_message = message if isinstance(message, HumanMessage) else HumanMessage(content=message)
         self.add_message(
-            HumanMessage(content=message),
+            human_message,
             model_id=model_id,
             panel_id=panel_id,
             answer_group_id=answer_group_id,
@@ -459,7 +460,7 @@ class PostgresChatMessageHistory(PostgresStoreMixin, BaseChatMessageHistory):
 
     def add_ai_message(
         self,
-        message: str,
+        message: AIMessage | str,
         model_id: str = "",
         panel_id: str = "",
         answer_group_id: str = "",
@@ -471,8 +472,9 @@ class PostgresChatMessageHistory(PostgresStoreMixin, BaseChatMessageHistory):
         task_type: str = "",
         token_usage: Optional[dict[str, Any]] = None,
     ) -> None:
+        ai_message = message if isinstance(message, AIMessage) else AIMessage(content=message)
         self.add_message(
-            AIMessage(content=message),
+            ai_message,
             model_id=model_id,
             panel_id=panel_id,
             answer_group_id=answer_group_id,
