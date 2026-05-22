@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from typing import Literal
 from urllib.parse import urlparse
 
 import httpx
@@ -42,7 +43,7 @@ class SearxngSearchProvider(SearchProvider):
         if not base_url:
             raise SearchConfigError("未配置 SEARXNG_URL")
 
-        params: dict[str, object] = {
+        params: dict[str, str | int] = {
             "q": query,
             "format": "json",
             "language": "auto",
@@ -81,7 +82,9 @@ class SearxngSearchProvider(SearchProvider):
             url = str(item.get("url", "") or "")
             parsed = urlparse(url) if url else None
             snippet = str(item.get("content") or item.get("snippet") or "")
-            source_type = "news" if normalized_topic == "news" else "web"
+            source_type: Literal["news", "web"] = (
+                "news" if normalized_topic == "news" else "web"
+            )
             documents.append(
                 SearchDocument(
                     doc_id=f"{self.name}:{index}:{url or 'result'}",

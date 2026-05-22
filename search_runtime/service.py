@@ -660,9 +660,9 @@ def build_related_questions(
     if cjk:
         questions.extend(
             [
-                f"这个问题的最新官方进展是什么？",
+                "这个问题的最新官方进展是什么？",
                 f"围绕“{topic}”还有哪些关键细节需要继续核验？",
-                f"除了当前来源，还有哪些更权威的参考可以对照？",
+                "除了当前来源，还有哪些更权威的参考可以对照？",
             ]
         )
         if source_hint:
@@ -681,7 +681,7 @@ def build_related_questions(
             [
                 f"What is the latest official update on {topic}?",
                 f"Which details about {topic} still need verification?",
-                f"What sources should be compared against the current results?",
+                "What sources should be compared against the current results?",
             ]
         )
         if source_hint:

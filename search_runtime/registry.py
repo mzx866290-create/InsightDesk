@@ -91,7 +91,7 @@ def normalize_provider_list(providers: Sequence[str] | str | None = None) -> lis
             normalized.append("duckduckgo")
         return _dedupe_provider_sequence(normalized)
 
-    return _dedupe_provider_sequence(str(provider or "") for provider in providers)
+    return _dedupe_provider_sequence([str(provider or "") for provider in providers])
 
 
 def get_default_provider_sequence() -> list[str]:
