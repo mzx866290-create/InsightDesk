@@ -326,13 +326,13 @@ def initialize_runtime_metrics_exporter(
         return report
 
     try:
-        from opentelemetry import metrics as otel_metrics  # type: ignore[import-not-found]
-        from opentelemetry.sdk.metrics import MeterProvider  # type: ignore[import-not-found]
-        from opentelemetry.sdk.metrics.export import (  # type: ignore[import-not-found]
+        from opentelemetry import metrics as otel_metrics
+        from opentelemetry.sdk.metrics import MeterProvider
+        from opentelemetry.sdk.metrics.export import (
             ConsoleMetricExporter,
             PeriodicExportingMetricReader,
         )
-        from opentelemetry.sdk.resources import Resource  # type: ignore[import-not-found]
+        from opentelemetry.sdk.resources import Resource
 
         resource = Resource.create(
             _runtime_metrics_resource_attributes(resolved.service_name)
@@ -341,13 +341,13 @@ def initialize_runtime_metrics_exporter(
             exporter = ConsoleMetricExporter()
             reader = PeriodicExportingMetricReader(exporter)
         elif resolved.exporter == "prometheus":
-            from opentelemetry.exporter.prometheus import (  # type: ignore[import-not-found]
+            from opentelemetry.exporter.prometheus import (
                 PrometheusMetricReader,
             )
 
             reader = PrometheusMetricReader()
         elif resolved.protocol == "grpc":
-            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (  # type: ignore[import-not-found]
+            from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
                 OTLPMetricExporter,
             )
 
@@ -359,7 +359,7 @@ def initialize_runtime_metrics_exporter(
             )
             reader = PeriodicExportingMetricReader(exporter)
         else:
-            from opentelemetry.exporter.otlp.proto.http.metric_exporter import (  # type: ignore[import-not-found]
+            from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
                 OTLPMetricExporter,
             )
 
@@ -739,19 +739,17 @@ def aggregate_runtime_metrics_snapshots(
     """Merge process-local or external runtime metrics into node-aware totals."""
 
     nodes: list[dict[str, Any]] = []
-    totals = {
-        "total_requests": 0,
-        "total_errors": 0,
-        "by_status_class": {
-            "2xx": 0,
-            "3xx": 0,
-            "4xx": 0,
-            "5xx": 0,
-            "other": 0,
-        },
-        "last_request_at": None,
-        "last_error_at": None,
+    total_requests_sum = 0
+    total_errors_sum = 0
+    status_class_totals: dict[str, int] = {
+        "2xx": 0,
+        "3xx": 0,
+        "4xx": 0,
+        "5xx": 0,
+        "other": 0,
     }
+    last_request_at_total: float | None = None
+    last_error_at_total: float | None = None
 
     for index, raw_snapshot in enumerate(snapshots):
         if not isinstance(raw_snapshot, dict):
@@ -765,27 +763,21 @@ def aggregate_runtime_metrics_snapshots(
             status_class: max(0, int(value or 0))
             for status_class, value in dict(metrics.get("by_status_class") or {}).items()
         }
-        for status_class in totals["by_status_class"]:
-            totals["by_status_class"][status_class] += int(status_counts.get(status_class, 0))
+        for status_class in status_class_totals:
+            status_class_totals[status_class] += int(status_counts.get(status_class, 0))
         for status_class, value in status_counts.items():
-            if status_class not in totals["by_status_class"]:
-                totals["by_status_class"][status_class] = int(value)
+            if status_class not in status_class_totals:
+                status_class_totals[status_class] = int(value)
 
         last_request_at = metrics.get("last_request_at")
         if isinstance(last_request_at, (int, float)):
-            totals["last_request_at"] = max(
-                float(totals["last_request_at"] or 0.0),
-                float(last_request_at),
-            )
+            last_request_at_total = max(float(last_request_at_total or 0.0), float(last_request_at))
         last_error_at = metrics.get("last_error_at")
         if isinstance(last_error_at, (int, float)):
-            totals["last_error_at"] = max(
-                float(totals["last_error_at"] or 0.0),
-                float(last_error_at),
-            )
+            last_error_at_total = max(float(last_error_at_total or 0.0), float(last_error_at))
 
-        totals["total_requests"] += total_requests
-        totals["total_errors"] += total_errors
+        total_requests_sum += total_requests
+        total_errors_sum += total_errors
         nodes.append(
             {
                 "source": source,
@@ -798,18 +790,18 @@ def aggregate_runtime_metrics_snapshots(
             }
         )
 
-    total_requests = int(totals["total_requests"])
-    total_errors = int(totals["total_errors"])
     return {
         "nodes": nodes,
         "summary": {
             "node_count": len(nodes),
-            "total_requests": total_requests,
-            "total_errors": total_errors,
-            "error_rate": round(total_errors / total_requests, 6) if total_requests else 0.0,
-            "by_status_class": totals["by_status_class"],
-            "last_request_at": totals["last_request_at"],
-            "last_error_at": totals["last_error_at"],
+            "total_requests": total_requests_sum,
+            "total_errors": total_errors_sum,
+            "error_rate": round(total_errors_sum / total_requests_sum, 6)
+            if total_requests_sum
+            else 0.0,
+            "by_status_class": status_class_totals,
+            "last_request_at": last_request_at_total,
+            "last_error_at": last_error_at_total,
         },
     }
 

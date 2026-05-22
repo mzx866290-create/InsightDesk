@@ -7,7 +7,7 @@ block is split out of the entrypoint.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 from backend.core import model_config_runtime, prompt_runtime
 from backend.helpers.chat_input_helpers import chat_file_suffix, decode_data_url
@@ -214,7 +214,7 @@ def _get_deep_research_semaphore(ctx) -> asyncio.Semaphore:
         if semaphore is None:
             semaphore = ctx.asyncio.Semaphore(ctx.DEEP_RESEARCH_MAX_CONCURRENCY)
             ctx._deep_research_semaphores[loop_key] = semaphore
-        return semaphore
+        return cast(asyncio.Semaphore, semaphore)
 
 
 def _get_task_store(ctx) -> SQLiteTaskStore:
@@ -415,7 +415,7 @@ async def _run_task(ctx, record: TaskRecord) -> None:
 
 async def create_task(ctx, request: CreateTaskRequest) -> dict[str, Any]:
     """Backward-compatible task creation entrypoint used by tests and scripts."""
-    return await ctx.enqueue_task(
+    result: dict[str, Any] = await ctx.enqueue_task(
         ctx._tasks,
         ctx._tasks_lock,
         task_type=request.task_type,
@@ -433,6 +433,7 @@ async def create_task(ctx, request: CreateTaskRequest) -> dict[str, Any]:
         if request.task_type == "web_research"
         else None,
     )
+    return result
 
 
 async def get_task(ctx, task_id: str) -> dict[str, Any]:
@@ -445,7 +446,8 @@ async def get_task(ctx, task_id: str) -> dict[str, Any]:
         record = ctx._get_task_store().get(task_id)
     if record is None:
         raise ctx.HTTPException(status_code=404, detail="Task was not found.")
-    return ctx.task_record_payload(record)
+    result: dict[str, Any] = ctx.task_record_payload(record)
+    return result
 
 
 async def list_tasks(ctx, limit: int = 20) -> dict[str, Any]:
@@ -461,7 +463,7 @@ async def list_tasks(ctx, limit: int = 20) -> dict[str, Any]:
         from backend.tasks.registry import arq_runtime_config_payload
 
         runtime_config = arq_runtime_config_payload()
-    return ctx.list_tasks_payload(
+    result: dict[str, Any] = ctx.list_tasks_payload(
         in_memory_tasks=in_memory_tasks,
         persisted_tasks=ctx._get_task_store().list_recent(
             limit=max(limit, ctx.TASK_HISTORY_LIMIT)
@@ -470,3 +472,4 @@ async def list_tasks(ctx, limit: int = 20) -> dict[str, Any]:
         queue_health=queue_health,
         runtime_config=runtime_config,
     )
+    return result

@@ -15,7 +15,7 @@ _CLOUD_MODEL_API_KEY_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{5,127}
 
 def stored_config_value(store: Any, logger: Any, key: str, default: str = "") -> str:
     try:
-        return store.get_value(key, default)
+        return str(store.get_value(key, default))
     except Exception:
         logger.exception("Failed to read persisted app config key=%s", key)
         return str(default or "")
@@ -74,7 +74,7 @@ def upsert_cloud_model_api_key(
 
 
 def delete_cloud_model_api_key(store: Any, api_key_ref: str) -> bool:
-    return store.delete(cloud_model_api_key_config_key(api_key_ref))
+    return bool(store.delete(cloud_model_api_key_config_key(api_key_ref)))
 
 
 def resolve_model_api_key(

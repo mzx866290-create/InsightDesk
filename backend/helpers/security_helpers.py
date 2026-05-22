@@ -7,7 +7,7 @@ import hashlib
 import json
 import logging
 import re
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlencode
 
 
@@ -804,7 +804,7 @@ def security_audit_siem_event_payload(event: Mapping[str, Any]) -> dict[str, Any
 
 
 def build_security_audit_siem_export_payload(
-    events: list[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
     *,
     format: str = "json",
     limit: int = 100,
@@ -836,7 +836,7 @@ def build_security_audit_siem_export_payload(
 
 
 def build_security_audit_archive_policy_payload(
-    events: list[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
     *,
     mode: str = "preview",
     retention_days: int = 365,
@@ -929,7 +929,7 @@ def _increment_nested_count(
 
 
 def build_security_audit_aggregate_report_payload(
-    events: list[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
     *,
     limit: int = 0,
     filters: Mapping[str, Any] | None = None,
@@ -980,7 +980,7 @@ def build_security_audit_aggregate_report_payload(
 
 
 def filter_security_audit_events(
-    events: list[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
     *,
     action: str = "",
     result: str = "",
@@ -1133,7 +1133,7 @@ def security_audit_category_for_action(action: Any) -> str:
 
 
 def build_security_audit_summary_payload(
-    events: list[Mapping[str, Any]],
+    events: Sequence[Mapping[str, Any]],
     *,
     category: str = "",
     window_limit: int = 0,

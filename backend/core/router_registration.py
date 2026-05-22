@@ -7,7 +7,7 @@ entire ``api_server`` module as an implicit god object.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from backend.core import (
     app_config_runtime,
@@ -51,7 +51,7 @@ from backend.helpers.workspace_session_helpers import require_workspace_session
 
 _registered_core_app_ids: set[int] = set()
 
-_CORE_ROUTER_CONTEXT_ATTRIBUTES = (
+_CORE_ROUTER_CONTEXT_ATTRIBUTES: tuple[str, ...] = (
     "AgentCatalogResponse", "AuthTokenCatalogResponse", "AuthWhoAmIResponse", "BACKEND_DIR", "DeleteResourceGrantRequest",
     "DeliveryTemplateCatalogResponse", "IdentityCatalogResponse", "MembershipResponse", "OrganizationResponse", "ProviderCatalogResponse",
     "ResourceAccessResponse", "ResourceGrantListResponse", "ResourceGrantResponse", "RolePermissionMatrixResponse",
@@ -81,7 +81,7 @@ _CORE_ROUTER_CONTEXT_ATTRIBUTES = (
     "uninstall_agent_plugin_manifest_payload", "uninstall_delivery_template_manifest_payload",
 )
 
-_DEFERRED_ROUTER_CONTEXT_ATTRIBUTES = (
+_DEFERRED_ROUTER_CONTEXT_ATTRIBUTES: tuple[str, ...] = (
     "ApprovalPolicyRequest", "ApprovalTaskDecisionRequest", "CHAT_ATTACHMENT_PREVIEW_CHARS", "CHAT_FILE_CONTEXT_END_MARKER",
     "CHAT_FILE_CONTEXT_START_MARKER", "CHAT_FILE_MAX_BYTES", "CHAT_FILE_MAX_CHARS_PER_FILE", "CHAT_FILE_MAX_COUNT",
     "CHAT_FILE_MAX_TOTAL_CHARS", "ChatFileConfig", "ChatRequest", "CreateBookmarkRequest",
@@ -202,7 +202,7 @@ def _ensure_router_context(
             raise AttributeError(
                 "Router context missing required attributes: " + ", ".join(missing)
             )
-        return ctx
+        return cast(RouterContext, ctx)
     _validate_router_context_source(ctx, attributes)
     return RouterContext(ctx, attributes)
 

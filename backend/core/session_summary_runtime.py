@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from backend.core import model_config_runtime
 from backend.schemas.api_models import ModelConfig
@@ -68,20 +68,20 @@ def build_session_summary_runtime_context(source: Any) -> SessionSummaryRuntimeC
 def _clip_text(ctx, text: Any, limit: int) -> str:
     normalized = ctx.re.sub("\\s+", " ", str(text or "")).strip()
     if limit <= 0 or len(normalized) <= limit:
-        return normalized
-    return normalized[: max(1, limit - 3)].rstrip() + "..."
+        return str(normalized)
+    return str(normalized[: max(1, limit - 3)].rstrip() + "...")
 
 
 def _summary_llm_enabled(ctx) -> bool:
-    return ctx.summary_llm_enabled()
+    return bool(ctx.summary_llm_enabled())
 
 
 def _summary_llm_timeout_seconds(ctx) -> float:
-    return ctx.summary_llm_timeout_seconds(12.0)
+    return float(ctx.summary_llm_timeout_seconds(12.0))
 
 
 def _normalize_llm_text_content(ctx, content: Any) -> str:
-    return ctx.normalize_llm_text_content(content)
+    return str(ctx.normalize_llm_text_content(content))
 
 
 def _resolve_summary_model_config(
@@ -118,7 +118,7 @@ def _resolve_summary_model_config(
 def _build_phase_summary_llm_prompt(
     ctx, turns: list[dict[str, Any]], *, total_turns: int
 ) -> str:
-    return ctx.build_phase_summary_llm_prompt(turns, total_turns=total_turns)
+    return str(ctx.build_phase_summary_llm_prompt(turns, total_turns=total_turns))
 
 
 async def _try_llm_phase_summary_content(
@@ -179,19 +179,24 @@ async def _try_llm_phase_summary_content(
 
 
 def _summary_turns(ctx, message_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return ctx.summary_turns(
+    return cast(
+        list[dict[str, Any]],
+        ctx.summary_turns(
         message_records, clip_text=lambda text, limit: _clip_text(ctx, text, limit)
+        ),
     )
 
 
 def _build_phase_summary_content(
     ctx, turns: list[dict[str, Any]], *, total_turns: int
 ) -> str:
-    return ctx.build_phase_summary_content(
-        turns,
-        total_turns=total_turns,
-        clip_text=lambda text, limit: _clip_text(ctx, text, limit),
-        max_chars=ctx.SESSION_MEMORY_AUTO_SUMMARY_MAX_CONTENT_CHARS,
+    return str(
+        ctx.build_phase_summary_content(
+            turns,
+            total_turns=total_turns,
+            clip_text=lambda text, limit: _clip_text(ctx, text, limit),
+            max_chars=ctx.SESSION_MEMORY_AUTO_SUMMARY_MAX_CONTENT_CHARS,
+        )
     )
 
 

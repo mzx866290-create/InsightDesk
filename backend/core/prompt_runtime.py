@@ -33,7 +33,7 @@ def delete_assistant_preset(preset_id: str) -> bool:
     return chat_store.delete_assistant_preset(preset_id)
 
 
-def activate_assistant_preset(preset_id: str) -> dict[str, Any] | None:
+def activate_assistant_preset(preset_id: str) -> bool:
     from backend import chat_store
 
     return chat_store.activate_assistant_preset(preset_id)
@@ -63,7 +63,7 @@ def delete_system_prompt(prompt_id: str) -> bool:
     return chat_store.delete_system_prompt(prompt_id)
 
 
-def activate_system_prompt(prompt_id: str) -> dict[str, Any] | None:
+def activate_system_prompt(prompt_id: str) -> bool:
     from backend import chat_store
 
     return chat_store.activate_system_prompt(prompt_id)

@@ -436,10 +436,10 @@ def initialize_otel_tracing(
         return report
 
     try:
-        from opentelemetry import trace as otel_trace  # type: ignore[import-not-found]
-        from opentelemetry.sdk.resources import Resource  # type: ignore[import-not-found]
-        from opentelemetry.sdk.trace import TracerProvider  # type: ignore[import-not-found]
-        from opentelemetry.sdk.trace.export import (  # type: ignore[import-not-found]
+        from opentelemetry import trace as otel_trace
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import (
             BatchSpanProcessor,
             ConsoleSpanExporter,
             SimpleSpanProcessor,
@@ -453,7 +453,7 @@ def initialize_otel_tracing(
             processor = SimpleSpanProcessor(exporter)
             processor_name = "SimpleSpanProcessor"
         elif resolved.protocol == "grpc":
-            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (  # type: ignore[import-not-found]
+            from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
                 OTLPSpanExporter,
             )
 
@@ -466,7 +466,7 @@ def initialize_otel_tracing(
             processor = BatchSpanProcessor(exporter)
             processor_name = "BatchSpanProcessor"
         else:
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # type: ignore[import-not-found]
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
                 OTLPSpanExporter,
             )
 
@@ -790,7 +790,12 @@ class TraceSpan:
     def __enter__(self) -> "TraceSpan":
         return self.start()
 
-    def __exit__(self, exc_type: Any, exc: BaseException | None, traceback: Any) -> bool:
+    def __exit__(
+        self,
+        exc_type: Any,
+        exc: BaseException | None,
+        traceback: Any,
+    ) -> Literal[False]:
         if exc is not None:
             self.error(exc)
         else:
@@ -800,7 +805,12 @@ class TraceSpan:
     async def __aenter__(self) -> "TraceSpan":
         return self.start()
 
-    async def __aexit__(self, exc_type: Any, exc: BaseException | None, traceback: Any) -> bool:
+    async def __aexit__(
+        self,
+        exc_type: Any,
+        exc: BaseException | None,
+        traceback: Any,
+    ) -> Literal[False]:
         if exc is not None:
             self.error(exc)
         else:

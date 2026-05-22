@@ -469,7 +469,7 @@ def _share_link_secret_is_weak(ctx) -> bool:
 
 
 def _share_link_secret_uses_default(ctx) -> bool:
-    return _current_share_link_secret(ctx) == ctx.DEFAULT_SHARE_LINK_SECRET
+    return _current_share_link_secret(ctx) == str(ctx.DEFAULT_SHARE_LINK_SECRET)
 
 
 def _require_remote_role(
@@ -603,6 +603,15 @@ def _share_link_audit_payload(
 
 def _security_status_payload(ctx) -> dict[str, Any]:
     cors_origins, cors_allow_credentials = env_runtime.cors_settings()
+
+    def configured_auth_token_records() -> list[dict[str, Any]]:
+        return _configured_auth_token_records(ctx)
+
+    def auth_token_hygiene_summary(
+        auth_records: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return _auth_token_hygiene_summary(ctx, auth_records)
+
     return build_security_status_payload(
         allow_remote_clients=ctx.ALLOW_REMOTE_CLIENTS,
         share_link_ttl_seconds=ctx.SHARE_LINK_TTL_SECONDS,
@@ -629,10 +638,8 @@ def _security_status_payload(ctx) -> dict[str, Any]:
         },
         cors_allowed_origins=cors_origins,
         cors_allow_credentials=cors_allow_credentials,
-        configured_auth_token_records=lambda: _configured_auth_token_records(ctx),
-        auth_token_hygiene_summary=lambda auth_records=None: (
-            _auth_token_hygiene_summary(ctx, auth_records)
-        ),
+        configured_auth_token_records=configured_auth_token_records,
+        auth_token_hygiene_summary=auth_token_hygiene_summary,
         role_rank=lambda value: _role_rank(ctx, value),
         share_link_secret_is_weak=lambda: _share_link_secret_is_weak(ctx),
         share_link_secret_uses_default=lambda: _share_link_secret_uses_default(ctx),
@@ -712,12 +719,18 @@ def _save_sso_config_payload(ctx, body: Any) -> dict[str, Any]:
 
 
 def _auth_token_catalog_payload(ctx) -> dict[str, Any]:
+    def configured_auth_token_records() -> list[dict[str, Any]]:
+        return _configured_auth_token_records(ctx)
+
+    def auth_token_hygiene_summary(
+        auth_records: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        return _auth_token_hygiene_summary(ctx, auth_records)
+
     return build_auth_token_catalog_payload(
         default_role=ctx.DEFAULT_AUTH_ROLE,
-        configured_auth_token_records=lambda: _configured_auth_token_records(ctx),
-        auth_token_hygiene_summary=lambda auth_records=None: (
-            _auth_token_hygiene_summary(ctx, auth_records)
-        ),
+        configured_auth_token_records=configured_auth_token_records,
+        auth_token_hygiene_summary=auth_token_hygiene_summary,
         auth_token_preview=auth_token_preview,
         token_fingerprint=token_fingerprint,
         auth_token_is_weak=lambda token: _auth_token_is_weak(ctx, token),

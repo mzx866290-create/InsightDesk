@@ -366,7 +366,7 @@ def configure_structlog(
     """Configure structlog when the optional dependency is installed."""
 
     try:
-        import structlog  # type: ignore[import-not-found]
+        import structlog
     except Exception:
         return False
 
@@ -377,7 +377,8 @@ def configure_structlog(
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         structlog.processors.EventRenamer("message"),
     ]
-    if (log_format or os.getenv("LOG_FORMAT", "text")).strip().lower() == "json":
+    resolved_format = str(log_format or os.getenv("LOG_FORMAT", "text") or "text")
+    if resolved_format.strip().lower() == "json":
         processors.append(structlog.processors.JSONRenderer())
     else:
         processors.append(structlog.dev.ConsoleRenderer())
@@ -397,7 +398,7 @@ def get_logger(name: str | None = None, **context: Any) -> Any:
 
     if _env_bool("LOG_USE_STRUCTLOG"):
         try:
-            import structlog  # type: ignore[import-not-found]
+            import structlog
 
             logger = structlog.get_logger(name or "insightdesk")
             return logger.bind(**context) if context else logger
