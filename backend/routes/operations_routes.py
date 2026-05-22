@@ -45,6 +45,27 @@ from backend.agent_mcp_helpers import (
     install_mcp_connector_manifest_payload,
     save_mcp_server_config_payload,
 )
+from backend.schemas.operations_models import (
+    ClearTracesResponse,
+    CloudModelApiKeyResponse,
+    ConfigResponse,
+    DeleteCloudModelApiKeyResponse,
+    IngestTraceEventsResponse,
+    InstallMcpConnectorResponse,
+    IntegratorConnectorCredentialsRotationResponse,
+    IntegratorConnectorProbeResponse,
+    IntegratorConnectorTestResult,
+    IntegratorConnectorsResponse,
+    IntegratorOutboundAuditCleanupResponse,
+    IntegratorOutboundAuditResponse,
+    IntegratorScheduleTickResponse,
+    IntegratorScheduleTriggerResponse,
+    IntegratorSchedulesResponse,
+    McpConfigResponse,
+    ObservabilitySnapshotResponse,
+    SaveConfigResponse,
+    TraceEventsResponse,
+)
 
 
 class SaveConfigRequest(BaseModel):
@@ -335,7 +356,11 @@ def build_operations_router(
         )
         return payload
 
-    @router.get("/api/operations/traces")
+    @router.get(
+        "/api/operations/traces",
+        response_model=TraceEventsResponse,
+        response_model_exclude_none=True,
+    )
     async def get_runtime_traces(
         request: Request,
         limit: int = 100,
@@ -378,7 +403,10 @@ def build_operations_router(
         )
         return payload
 
-    @router.post("/api/operations/traces/ingest")
+    @router.post(
+        "/api/operations/traces/ingest",
+        response_model=IngestTraceEventsResponse,
+    )
     async def ingest_runtime_traces(
         request: Request,
         payload: IngestTraceEventsRequest,
@@ -400,7 +428,10 @@ def build_operations_router(
         )
         return {"ok": True, **result}
 
-    @router.get("/api/operations/observability")
+    @router.get(
+        "/api/operations/observability",
+        response_model=ObservabilitySnapshotResponse,
+    )
     async def get_observability_snapshot(request: Request, trace_limit: int = 50):
         require_remote_admin(request)
         safe_trace_limit = min(200, max(1, int(trace_limit or 50)))
@@ -442,14 +473,14 @@ def build_operations_router(
             "panel_templates": trace_payload["panel_templates"],
         }
 
-    @router.delete("/api/operations/traces")
+    @router.delete("/api/operations/traces", response_model=ClearTracesResponse)
     async def clear_runtime_traces(request: Request):
         require_remote_admin(request)
         reset_trace_events()
         audit_security_event("clear_runtime_traces", request)
         return {"ok": True, "cleared": True}
 
-    @router.get("/api/config")
+    @router.get("/api/config", response_model=ConfigResponse)
     async def get_config(request: Request):
         require_remote_admin(request)
         tavily_key = sync_runtime_secret_from_store("TAVILY_API_KEY", "tavily_api_key")
@@ -467,7 +498,7 @@ def build_operations_router(
         audit_security_event("get_config", request)
         return payload
 
-    @router.post("/api/config")
+    @router.post("/api/config", response_model=SaveConfigResponse)
     async def save_config(request: Request, payload: SaveConfigRequest):
         require_remote_admin(request)
         if payload.tavily_api_key is not None:
@@ -487,7 +518,10 @@ def build_operations_router(
         )
         return {"ok": True, "tavily_api_key_set": bool(os.environ.get("TAVILY_API_KEY"))}
 
-    @router.post("/api/config/cloud-model-api-key")
+    @router.post(
+        "/api/config/cloud-model-api-key",
+        response_model=CloudModelApiKeyResponse,
+    )
     async def save_cloud_model_api_key(
         request: Request,
         payload: UpsertCloudModelApiKeyRequest,
@@ -501,7 +535,10 @@ def build_operations_router(
         )
         return {"ok": True, "api_key_ref": api_key_ref, "api_key_set": True}
 
-    @router.delete("/api/config/cloud-model-api-key/{api_key_ref}")
+    @router.delete(
+        "/api/config/cloud-model-api-key/{api_key_ref}",
+        response_model=DeleteCloudModelApiKeyResponse,
+    )
     async def remove_cloud_model_api_key(api_key_ref: str, request: Request):
         require_remote_admin(request)
         deleted = delete_cloud_model_api_key(api_key_ref)
@@ -512,7 +549,11 @@ def build_operations_router(
         )
         return {"ok": True, "deleted": deleted}
 
-    @router.get("/api/connectors/mcp/config")
+    @router.get(
+        "/api/connectors/mcp/config",
+        response_model=McpConfigResponse,
+        response_model_exclude_none=True,
+    )
     async def get_mcp_server_config(request: Request):
         require_remote_viewer(request)
         payload = current_mcp_server_config_payload()
@@ -523,7 +564,11 @@ def build_operations_router(
         )
         return payload
 
-    @router.put("/api/connectors/mcp/config")
+    @router.put(
+        "/api/connectors/mcp/config",
+        response_model=McpConfigResponse,
+        response_model_exclude_none=True,
+    )
     async def save_mcp_server_config(
         request: Request,
         payload: UpsertMcpServerConfigRequest,
@@ -541,7 +586,11 @@ def build_operations_router(
         )
         return result
 
-    @router.post("/api/connectors/mcp/marketplace/install")
+    @router.post(
+        "/api/connectors/mcp/marketplace/install",
+        response_model=InstallMcpConnectorResponse,
+        response_model_exclude_none=True,
+    )
     async def install_mcp_connector_manifest(
         request: Request,
         payload: InstallMcpConnectorManifestRequest,
@@ -562,7 +611,10 @@ def build_operations_router(
         )
         return result
 
-    @router.get("/api/integrations/connectors")
+    @router.get(
+        "/api/integrations/connectors",
+        response_model=IntegratorConnectorsResponse,
+    )
     async def list_integrator_connectors(request: Request):
         require_remote_admin(request)
         try:
@@ -576,7 +628,10 @@ def build_operations_router(
         )
         return payload
 
-    @router.put("/api/integrations/connectors")
+    @router.put(
+        "/api/integrations/connectors",
+        response_model=IntegratorConnectorsResponse,
+    )
     async def save_integrator_connectors(
         request: Request,
         payload: UpsertIntegratorConnectorsRequest,
@@ -597,7 +652,11 @@ def build_operations_router(
         )
         return result
 
-    @router.post("/api/integrations/connectors/test")
+    @router.post(
+        "/api/integrations/connectors/test",
+        response_model=IntegratorConnectorTestResult,
+        response_model_exclude_none=True,
+    )
     async def test_integrator_connector(
         request: Request,
         payload: dict[str, Any],
@@ -624,7 +683,10 @@ def build_operations_router(
         )
         return result
 
-    @router.post("/api/integrations/connectors/{connector_id}/credentials/rotate")
+    @router.post(
+        "/api/integrations/connectors/{connector_id}/credentials/rotate",
+        response_model=IntegratorConnectorCredentialsRotationResponse,
+    )
     async def rotate_integrator_connector_credentials(
         connector_id: str,
         request: Request,
@@ -653,7 +715,11 @@ def build_operations_router(
         )
         return result
 
-    @router.post("/api/integrations/connectors/{connector_id}/probe")
+    @router.post(
+        "/api/integrations/connectors/{connector_id}/probe",
+        response_model=IntegratorConnectorProbeResponse,
+        response_model_exclude_none=True,
+    )
     async def probe_integrator_connector(
         connector_id: str,
         request: Request,
@@ -686,7 +752,11 @@ def build_operations_router(
         )
         return result
 
-    @router.get("/api/integrations/schedules")
+    @router.get(
+        "/api/integrations/schedules",
+        response_model=IntegratorSchedulesResponse,
+        response_model_exclude_none=True,
+    )
     async def list_integrator_schedules(request: Request):
         require_remote_admin(request)
         try:
@@ -710,7 +780,11 @@ def build_operations_router(
         )
         return payload
 
-    @router.put("/api/integrations/schedules")
+    @router.put(
+        "/api/integrations/schedules",
+        response_model=IntegratorSchedulesResponse,
+        response_model_exclude_none=True,
+    )
     async def save_integrator_schedules(
         request: Request,
         payload: UpsertIntegratorSchedulesRequest,
@@ -730,7 +804,11 @@ def build_operations_router(
         )
         return result
 
-    @router.post("/api/integrations/schedules/tick")
+    @router.post(
+        "/api/integrations/schedules/tick",
+        response_model=IntegratorScheduleTickResponse,
+        response_model_exclude_none=True,
+    )
     async def tick_integrator_schedules(
         request: Request,
         payload: dict[str, Any] | None = None,
@@ -778,7 +856,11 @@ def build_operations_router(
         )
         return result
 
-    @router.post("/api/integrations/schedules/{schedule_id}/trigger")
+    @router.post(
+        "/api/integrations/schedules/{schedule_id}/trigger",
+        response_model=IntegratorScheduleTriggerResponse,
+        response_model_exclude_none=True,
+    )
     async def trigger_integrator_schedule(
         schedule_id: str,
         request: Request,
@@ -826,7 +908,11 @@ def build_operations_router(
         )
         return result
 
-    @router.get("/api/integrations/audit")
+    @router.get(
+        "/api/integrations/audit",
+        response_model=IntegratorOutboundAuditResponse,
+        response_model_exclude_none=True,
+    )
     async def list_integrator_audit(request: Request, limit: int = 20):
         require_remote_admin(request)
         payload = integrator_outbound_audit_payload(limit=limit)
@@ -837,7 +923,11 @@ def build_operations_router(
         )
         return payload
 
-    @router.get("/api/integrations/outbound-audit")
+    @router.get(
+        "/api/integrations/outbound-audit",
+        response_model=IntegratorOutboundAuditResponse,
+        response_model_exclude_none=True,
+    )
     async def list_integrator_outbound_audit(
         request: Request,
         limit: int = 50,
@@ -851,7 +941,10 @@ def build_operations_router(
         )
         return payload
 
-    @router.post("/api/integrations/outbound-audit/cleanup")
+    @router.post(
+        "/api/integrations/outbound-audit/cleanup",
+        response_model=IntegratorOutboundAuditCleanupResponse,
+    )
     async def cleanup_integrator_outbound_audit(
         request: Request,
         keep_latest: int = 0,

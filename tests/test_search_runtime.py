@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import backend.helpers.task_execution_helpers as task_execution_helpers_module
@@ -772,6 +773,8 @@ def test_search_web_does_not_fallback_when_provider_list_is_explicit(monkeypatch
 
 
 def test_search_web_respects_explicit_site_filter_and_scores_sources(monkeypatch):
+    today = datetime.now(UTC).date().isoformat()
+
     class FakeProvider:
         async def search(
             self,
@@ -795,7 +798,7 @@ def test_search_web_respects_explicit_site_filter_and_scores_sources(monkeypatch
                         title="OpenAI Agents launch",
                         url="https://openai.com/index/agents",
                         snippet="OpenAI agents launch details",
-                        published_at="2026-04-17",
+                        published_at=today,
                         score=0.5,
                     ),
                     SearchDocument(
@@ -804,7 +807,7 @@ def test_search_web_respects_explicit_site_filter_and_scores_sources(monkeypatch
                         title="Mirror page",
                         url="https://mirror.example.com/openai-agents",
                         snippet="Mirror content",
-                        published_at="2026-04-17",
+                        published_at=today,
                         score=0.99,
                     ),
                 ],
