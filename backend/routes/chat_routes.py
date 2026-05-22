@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from backend.agent.providers.ollama import list_ollama_models
 from backend.routes.resource_access_helpers import require_resource_access
+from backend.schemas.api_models import ChatRequest, SingleChatRequest
 
 
 class MCPConnectorApprovalRequest(BaseModel):
@@ -207,7 +208,7 @@ def build_chat_router(
         return {"ok": True, "message": "智能体缓存已清除"}
 
     @router.post("/api/chat/parallel")
-    async def chat_parallel(request: chat_request_model, http_request: Request):
+    async def chat_parallel(request: ChatRequest, http_request: Request):
         from fastapi import HTTPException
         from backend.chat_store import replace_session_panels
 
@@ -247,7 +248,7 @@ def build_chat_router(
         return sse_streaming_response(event_generator())
 
     @router.post("/api/chat/single")
-    async def chat_single(request: single_chat_request_model, http_request: Request):
+    async def chat_single(request: SingleChatRequest, http_request: Request):
         from backend.chat_store import upsert_session_panel
 
         require_chat_session_access(http_request, request.session_id)
