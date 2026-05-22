@@ -49,7 +49,10 @@ def _build_citation_panel_payload(
     claim_source_links: list[dict[str, object]] = []
     for chain in evidence_chains:
         claim_id = str(chain.get("claim_id") or "").strip()
-        for source_id in chain.get("supporting_source_ids", []):
+        raw_source_ids = chain.get("supporting_source_ids")
+        if not isinstance(raw_source_ids, list):
+            continue
+        for source_id in raw_source_ids:
             source_id_text = str(source_id or "").strip()
             if claim_id and source_id_text:
                 claim_source_links.append(

@@ -29,11 +29,12 @@ def build_fallback_research_plan(
     template_facets: list[str] = []
     if template_match:
         template_id = str(template_match.get("template_id") or "").strip() or None
+        raw_facets = template_match.get("facets")
         template_facets = [
             str(item).strip()
-            for item in template_match.get("facets", [])
+            for item in raw_facets
             if str(item).strip()
-        ]
+        ] if isinstance(raw_facets, (list, tuple, set)) else []
 
     resolved_source_strategy = _normalize_source_strategy(source_strategy)
 

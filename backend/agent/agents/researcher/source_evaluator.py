@@ -103,6 +103,17 @@ def _normalized_score(value: float | None, default: float) -> float:
     return _clamp(numeric / 100.0 if numeric > 10 else numeric / 10.0)
 
 
+def _float_or_default(value: object, default: float) -> float:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float, str)):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
+
+
 def _freshness_band(document: SearchDocument) -> str:
     raw_date = str(document.published_at or document.fetched_at or "").strip()
     if not raw_date:
@@ -269,10 +280,10 @@ def _selection_reason(
 def _low_trust_ratio_limit(plan: ResearchPlan | None) -> float:
     if not plan:
         return 0.2
-    try:
-        raw_value = float(plan.source_policy.get("max_low_trust_ratio", 0.2) or 0.2)
-    except (TypeError, ValueError):
-        return 0.2
+    raw_value = _float_or_default(
+        plan.source_policy.get("max_low_trust_ratio", 0.2) or 0.2,
+        0.2,
+    )
     return _clamp(raw_value)
 
 

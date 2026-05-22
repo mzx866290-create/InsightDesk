@@ -42,6 +42,21 @@ def _count_values(values: Sequence[str], defaults: Sequence[str]) -> dict[str, i
     return payload
 
 
+def _int_or_default(value: object, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _object_list(value: object) -> list[object]:
+    return list(value) if isinstance(value, (list, tuple, set)) else []
+
+
 def _claim_ids_by_status(
     evidence_chains: Sequence[dict[str, object]],
     statuses: set[str],
@@ -164,23 +179,23 @@ def _build_delivery_quality_summary(
 ) -> dict[str, Any]:
     """Summarize whether a Research V2 artifact is ready for downstream delivery."""
     claim_count = len(evidence_chains)
-    supported_claim_count = sum(
-        1
-        for item in evidence_chains
-        if int(item.get("supporting_source_count") or 0) > 0
+    supported_claim_count = len(
+        [
+            item
+            for item in evidence_chains
+            if _int_or_default(item.get("supporting_source_count")) > 0
+        ]
     )
-    primary_supported_claim_count = sum(
-        1
-        for item in evidence_chains
-        if bool(item.get("has_primary_source"))
+    primary_supported_claim_count = len(
+        [item for item in evidence_chains if bool(item.get("has_primary_source"))]
     )
-    verified_claim_count = int(verification_summary.get("verified_claims") or 0)
-    partial_claim_count = int(verification_summary.get("partial_claims") or 0)
-    unverified_claim_count = int(verification_summary.get("unverified_claims") or 0)
-    contradiction_count = int(verification_summary.get("contradiction_count") or 0)
+    verified_claim_count = _int_or_default(verification_summary.get("verified_claims"))
+    partial_claim_count = _int_or_default(verification_summary.get("partial_claims"))
+    unverified_claim_count = _int_or_default(verification_summary.get("unverified_claims"))
+    contradiction_count = _int_or_default(verification_summary.get("contradiction_count"))
     attention_claim_ids = [
         str(item)
-        for item in verification_summary.get("claims_needing_attention", [])
+        for item in _object_list(verification_summary.get("claims_needing_attention"))
         if str(item or "").strip()
     ]
     partial_claim_ids = _claim_ids_by_status(evidence_chains, {"partial"})

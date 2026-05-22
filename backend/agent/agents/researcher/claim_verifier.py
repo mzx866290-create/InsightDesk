@@ -2,7 +2,20 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from search_runtime.types import AtomicClaim, ClaimVerification, ResearchPlan, ResearchSource
+
+
+def _int_or_default(value: object, default: int) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
 
 
 def _source_lookup(sources: list[ResearchSource]) -> dict[str, ResearchSource]:
@@ -34,7 +47,10 @@ def verify_atomic_claims(
     min_families = 2
     require_date = False
     if plan:
-        min_families = int(plan.evidence_policy.get("min_independent_families_per_claim", 2) or 2)
+        min_families = _int_or_default(
+            plan.evidence_policy.get("min_independent_families_per_claim", 2) or 2,
+            2,
+        )
         require_date = bool(plan.evidence_policy.get("require_date_for_time_sensitive_claims", False))
 
     verifications: list[ClaimVerification] = []
@@ -64,8 +80,8 @@ def verify_atomic_claims(
         ]
 
         if claim.claim_type == "policy_signal" and has_primary:
-            status = "verified"
-            strength = "high"
+            status: Literal["verified", "partial", "unverified"] = "verified"
+            strength: Literal["high", "medium", "low"] = "high"
             note = "policy claim has primary-source support"
         elif len(families) >= min_families:
             status = "verified"
@@ -93,8 +109,8 @@ def verify_atomic_claims(
         verifications.append(
             ClaimVerification(
                 claim_id=claim.claim_id,
-                status=status,  # type: ignore[arg-type]
-                evidence_strength=strength,  # type: ignore[arg-type]
+                status=status,
+                evidence_strength=strength,
                 supporting_sources=supporting,
                 verification_note=note,
             )
