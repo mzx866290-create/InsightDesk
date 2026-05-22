@@ -3,6 +3,11 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Request
 
+from backend.schemas.api_models import (
+    DeleteResourceGrantRequest,
+    UpsertResourceGrantRequest,
+)
+
 
 def _record_payload(record: Any) -> dict[str, Any]:
     if hasattr(record, "__dict__"):
@@ -159,7 +164,7 @@ def build_access_router(
         response_model=resource_grant_response_model,
     )
     async def upsert_resource_grant(
-        request: Request, body: upsert_resource_grant_request_model
+        request: Request, body: UpsertResourceGrantRequest
     ):
         require_remote_admin(request)
         store = access_store()
@@ -216,7 +221,7 @@ def build_access_router(
 
     @router.delete("/api/access/resource-grants")
     async def delete_resource_grant(
-        request: Request, body: delete_resource_grant_request_model
+        request: Request, body: DeleteResourceGrantRequest
     ):
         require_remote_admin(request)
         store = access_store()
