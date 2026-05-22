@@ -3,6 +3,13 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Request
 
+from backend.schemas.api_models import (
+    SetMembershipRequest,
+    SyncExternalIdentityRequest,
+    UpsertOrganizationRequest,
+    UpsertUserRequest,
+)
+
 
 def _record_payload(record: Any) -> dict[str, Any]:
     if hasattr(record, "__dict__"):
@@ -57,7 +64,7 @@ def build_identity_router(
 
     @router.post("/api/identity/orgs", response_model=organization_response_model)
     async def upsert_organization(
-        request: Request, body: upsert_organization_request_model
+        request: Request, body: UpsertOrganizationRequest
     ):
         require_remote_admin(request)
         try:
@@ -77,7 +84,7 @@ def build_identity_router(
         return _record_payload(record)
 
     @router.post("/api/identity/users", response_model=user_response_model)
-    async def upsert_user(request: Request, body: upsert_user_request_model):
+    async def upsert_user(request: Request, body: UpsertUserRequest):
         require_remote_admin(request)
         try:
             record = identity_store().upsert_user(
@@ -101,7 +108,7 @@ def build_identity_router(
     )
     async def sync_external_identity(
         request: Request,
-        body: sync_external_identity_request_model,
+        body: SyncExternalIdentityRequest,
     ):
         require_remote_admin(request)
         try:
@@ -120,7 +127,7 @@ def build_identity_router(
         return payload
 
     @router.post("/api/identity/memberships", response_model=membership_response_model)
-    async def set_membership(request: Request, body: set_membership_request_model):
+    async def set_membership(request: Request, body: SetMembershipRequest):
         require_remote_admin(request)
         try:
             record = identity_store().set_membership(
