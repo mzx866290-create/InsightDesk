@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Literal, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -167,7 +167,6 @@ async def build_langgraph_agent(
         config: RunnableConfig = None,
     ) -> AgentState:
         """节点2: 执行选定的工具"""
-        import json as _json
         started_at = time.monotonic()
         tool_choice = state["tool_choice"]
         user_input = state["input"]

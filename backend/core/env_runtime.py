@@ -12,7 +12,7 @@ from backend.helpers.env_config_helpers import (
     env_int as env_int_impl,
     env_int_setting as env_int_setting_impl,
     integrator_scheduler_config_from_env,
-    is_loopback_host,
+    is_loopback_host as is_loopback_host,
 )
 
 logger = logging.getLogger(__name__)

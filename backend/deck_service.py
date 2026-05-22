@@ -1395,14 +1395,6 @@ def _build_source_pack(
 
 
 def _decide_content_slide_count(pack: SourcePack, target_slide_count: int) -> int:
-    recent_qa_pairs = "\n\n---\n\n".join(
-        (
-            f"Question: {_truncate(question, 120)}\n"
-            f"回答原文: \n{_truncate_multiline(_answer_plaintext(answer), 5000 if pack.source_mode == 'chat_only' else 2400)}"
-        )
-        for question, answer in pack.qa_pairs[-2:]
-    )
-
     if pack.source_mode == "kb_plus_chat":
         desired = max(2, min(target_slide_count - 3, 5))
         evidence_bound = max(2, min(5, len(pack.excerpts) // 2 + 1))

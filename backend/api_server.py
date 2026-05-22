@@ -5,9 +5,7 @@ FastAPI 鍚庣 API 鏈嶅姟
 
 import asyncio
 from dataclasses import dataclass
-import hashlib
 import httpx
-import json
 import logging
 import os
 from pathlib import Path
@@ -17,41 +15,6 @@ import threading
 import time
 import uuid
 from typing import Any, AsyncGenerator, Optional
-
-BACKEND_DIR = Path(__file__).resolve().parent
-
-
-class _ApiServerContextSource:
-    """Dynamic explicit dependency surface for runtime/router contexts."""
-
-    __slots__ = ("_allowed_attributes",)
-
-    def __init__(self, allowed_attributes: tuple[str, ...]) -> None:
-        object.__setattr__(self, "_allowed_attributes", frozenset(allowed_attributes))
-
-    def __getattr__(self, name: str) -> Any:
-        if name not in self._allowed_attributes:
-            raise AttributeError(f"API server context has no dependency {name!r}")
-        try:
-            return globals()[name]
-        except KeyError as exc:
-            raise AttributeError(f"API server context missing dependency {name!r}") from exc
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if name == "_allowed_attributes":
-            object.__setattr__(self, name, value)
-            return
-        if name not in self._allowed_attributes:
-            raise AttributeError(f"API server context has no dependency {name!r}")
-        globals()[name] = value
-
-
-def _api_server_context_source(
-    allowed_attributes: tuple[str, ...],
-) -> _ApiServerContextSource:
-    return _ApiServerContextSource(allowed_attributes)
-
-
 from backend.core import session_summary_runtime
 from backend.core import task_runtime
 from backend.core import security_runtime
@@ -91,24 +54,20 @@ from backend.delivery_templates import (
 )
 from backend.helpers.security_helpers import (
     build_sso_login_payload as _build_sso_login_payload,
-    ceil_seconds,
     content_hash,
     hash_secret,
     normalize_auth_role,
     pkce_code_challenge,
     sanitize_log_value,
     sanitize_request_path,
-    security_audit_category_for_action as _security_audit_category_for_action,
     sso_callback_url_for_mode,
     sso_session_token_hash,
-    token_fingerprint,
 )
 from backend.helpers.identity_helpers import (
     sync_external_identity_payload as build_sync_external_identity_payload,
 )
 from backend.helpers import delete_kb_directory
 from backend.helpers import (
-    ChatRouteRuntime,
     build_parallel_agent_streams,
     build_share_url,
     build_single_agent_stream,
@@ -145,8 +104,6 @@ from backend.helpers.misc_helpers import (
 )
 from backend.schemas.api_models import (
     ModelConfig,
-    ImageInput,
-    FileInput,
     ChatRequest,
     SingleChatRequest,
     CreateSessionRequest,
@@ -204,7 +161,6 @@ from backend.schemas.api_models import (
     CreateMultiAgentWorkflowTaskRequest,
     ApprovalPolicyRequest,
     ApprovalTaskDecisionRequest,
-    AssistantPresetListResponse,
     AgentCatalogResponse,
     DeliveryTemplateCatalogResponse,
     ProviderCatalogResponse,
@@ -239,13 +195,11 @@ from backend.stores.factory import (
 from backend.stores import (
     SQLiteAppConfigStore,
     SQLiteSecurityAuditStore,
-    SQLiteShareLinkStore,
     SQLiteTaskStore,
     TaskRecord,
     TaskStatus,
 )
 from backend.services.artifact_service import (
-    SQLiteArtifactStore,
     artifact_export_formats,
     build_deck_artifact,
     build_report_artifact,
@@ -295,7 +249,6 @@ from backend.helpers.document_helpers import (
     retrieval_test_payload,
     safe_report_filename,
     stage_upload_files,
-    stage_upload_files_with_limits,
     upload_documents_response,
 )
 from backend.helpers.deck_report_helpers import (
@@ -357,7 +310,6 @@ from backend.helpers.task_runtime_helpers import (
 from backend.tasks.health import arq_queue_health_payload
 from backend.helpers.task_execution_helpers import (
     persist_multi_agent_workflow_task_placeholder,
-    persist_multi_agent_workflow_task_result,
     persist_web_research_task_placeholder,
     persist_web_research_task_result,
     run_analyze_knowledge_base_task,
@@ -370,8 +322,6 @@ from backend.helpers.task_execution_helpers import (
     run_web_research_task,
 )
 from backend.services.deck_service import (
-    DeckSlide,
-    SQLiteDeckStore,
     build_deck,
     build_report_markdown,
     build_export_filename,
@@ -382,10 +332,233 @@ from backend.services.deck_service import (
 )
 from backend.logging_config import configure_logging
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
+
+BACKEND_DIR = Path(__file__).resolve().parent
+
+
+class _ApiServerContextSource:
+    """Dynamic explicit dependency surface for runtime/router contexts."""
+
+    __slots__ = ("_allowed_attributes",)
+
+    def __init__(self, allowed_attributes: tuple[str, ...]) -> None:
+        object.__setattr__(self, "_allowed_attributes", frozenset(allowed_attributes))
+
+    def __getattr__(self, name: str) -> Any:
+        if name not in self._allowed_attributes:
+            raise AttributeError(f"API server context has no dependency {name!r}")
+        try:
+            return globals()[name]
+        except KeyError as exc:
+            raise AttributeError(f"API server context missing dependency {name!r}") from exc
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name == "_allowed_attributes":
+            object.__setattr__(self, name, value)
+            return
+        if name not in self._allowed_attributes:
+            raise AttributeError(f"API server context has no dependency {name!r}")
+        globals()[name] = value
+
+
+def _api_server_context_source(
+    allowed_attributes: tuple[str, ...],
+) -> _ApiServerContextSource:
+    return _ApiServerContextSource(allowed_attributes)
+
+
+# These symbols are consumed through explicit runtime/router context proxies.
+# Keeping the reference list here makes that dynamic dependency surface visible
+# to static analysis without widening the contexts themselves.
+_DYNAMIC_CONTEXT_DEPENDENCIES = (
+    AgentCatalogResponse,
+    ApprovalPolicyRequest,
+    ApprovalTaskDecisionRequest,
+    AuthTokenCatalogResponse,
+    AuthWhoAmIResponse,
+    ChatFileConfig,
+    ChatRequest,
+    CreateBookmarkRequest,
+    CreateDeckRequest,
+    CreateMultiAgentWorkflowTaskRequest,
+    CreateSessionRequest,
+    CreateWorkspaceRequest,
+    DeleteResourceGrantRequest,
+    DeliveryTemplateCatalogResponse,
+    GenerateArtifactRequest,
+    GenerateReportRequest,
+    HTTPException,
+    IdentityCatalogResponse,
+    ImportSessionMessagesRequest,
+    MembershipResponse,
+    OrganizationResponse,
+    PinSessionMemoryRequest,
+    ProviderCatalogResponse,
+    RegenerateDeckSlideRequest,
+    ReorderSessionsRequest,
+    ResourceAccessResponse,
+    ResourceGrantListResponse,
+    ResourceGrantResponse,
+    RevokeShareLinkResponse,
+    RolePermissionMatrixResponse,
+    RuntimeOperationsResponse,
+    SecurityAuditActionCatalogResponse,
+    SecurityAuditAggregateReportResponse,
+    SecurityAuditArchivePolicyResponse,
+    SecurityAuditCleanupResponse,
+    SecurityAuditEventListResponse,
+    SecurityAuditLegalHoldResponse,
+    SecurityAuditSiemExportResponse,
+    SecurityAuditSummaryResponse,
+    SecurityStatusResponse,
+    SetMembershipRequest,
+    SetMessageFeedbackRequest,
+    SetRetrievalFeedbackRequest,
+    ShareLinkAuditListResponse,
+    ShareLinkResponse,
+    SingleChatRequest,
+    SQLiteAppConfigStore,
+    SsoCallbackResponse,
+    SsoConfigResponse,
+    SsoLoginResponse,
+    SyncExternalIdentityResponse,
+    TruncateSessionMessagesRequest,
+    UpdateArtifactRequest,
+    UpdateDeckRequest,
+    UpdateSessionMemoryRequest,
+    UpdateSessionRequest,
+    UpdateWorkspaceRequest,
+    UpsertOrganizationRequest,
+    UpsertResourceGrantRequest,
+    UpsertUserRequest,
+    UserResponse,
+    _build_answer_group_review_payload,
+    _build_session_messages_payload,
+    _build_user_input_impl,
+    _collect_session_attachments,
+    _find_session_attachment,
+    _kb_collect_chunks,
+    _kb_docstore_dict,
+    _kb_rebuild_from_documents,
+    _kb_safe_metadata,
+    _prepare_chat_files_impl,
+    _render_shared_deck_html,
+    _render_shared_session_html,
+    _validate_chat_payload_impl,
+    apply_deck_update,
+    arq_queue_health_payload,
+    artifact_export_formats,
+    attach_current_kb_status,
+    build_access_router,
+    build_agent_catalog_router,
+    build_assistant_preset_router,
+    build_chat_report_title,
+    build_chat_router,
+    build_content_router,
+    build_create_deck_kwargs,
+    build_deck,
+    build_deck_artifact,
+    build_delivery_template_router,
+    build_export_filename,
+    build_phase_summary_content,
+    build_phase_summary_llm_prompt,
+    build_identity_router,
+    build_kb_router,
+    build_operations_router,
+    build_parallel_agent_streams,
+    build_prompt_router,
+    build_provider_router,
+    build_regenerate_deck_kwargs,
+    build_report_artifact,
+    build_report_markdown,
+    build_research_archive_artifact,
+    build_security_router,
+    build_session_router,
+    build_share_url,
+    build_single_agent_stream,
+    build_upload_documents_task_record,
+    cleanup_temp_paths,
+    create_inline_task_record,
+    create_session_record,
+    create_share_link_payload,
+    create_task_store,
+    decode_share_token,
+    default_mcp_server_names,
+    delete_kb_chunk_payload,
+    delete_kb_directory,
+    delete_session_memory_payload,
+    encode_share_token,
+    ensure_deckable_chat,
+    export_deck_payload,
+    export_deck_to_pptx,
+    filter_kb_chunks,
+    install_agent_plugin_manifest_payload,
+    install_delivery_template_manifest_payload,
+    kb_health_payload,
+    knowledge_bases_payload,
+    list_agent_catalog,
+    list_delivery_template_catalog,
+    list_kb_chunks_payload,
+    list_llm_provider_catalog,
+    list_mcp_server_catalog,
+    list_tasks_payload,
+    load_integrator_connectors,
+    covered_turns_from_summary,
+    latest_auto_summary,
+    normalize_deck_theme,
+    normalize_llm_text_content,
+    open_shared_resource_payload,
+    persist_multi_agent_workflow_task_placeholder,
+    persist_web_research_task_placeholder,
+    persist_web_research_task_result,
+    pin_session_memory_payload,
+    populate_chat_report_presentation,
+    prepare_attachment_promotion,
+    prepare_chat_route_runtime,
+    prune_task_records,
+    re,
+    regenerate_deck_slide,
+    reorder_sessions_payload,
+    replace_deck_slide,
+    report_download_payload,
+    report_markdown_payload,
+    retrieval_test_payload,
+    run_analyze_knowledge_base_task,
+    run_generate_deck_task,
+    run_generate_report_task,
+    run_multi_agent_workflow_task,
+    run_placeholder_task,
+    run_promote_attachment_to_kb_task,
+    run_upload_documents_task,
+    run_web_research_task,
+    safe_report_filename,
+    session_attachments_payload,
+    session_memory_payload,
+    session_memory_updates,
+    session_update_requested,
+    set_inline_task_state,
+    sse_streaming_response,
+    stage_upload_files,
+    stream_parallel_sse,
+    stream_single_sse,
+    summarize_window_meta,
+    summarize_session_memory_payload,
+    summary_llm_enabled,
+    summary_llm_timeout_seconds,
+    summary_turns,
+    sync_deck_artifact,
+    task_record_payload,
+    update_kb_chunk_payload,
+    update_session_memory_payload,
+    uninstall_agent_plugin_manifest_payload,
+    uninstall_delivery_template_manifest_payload,
+    upload_documents_response,
+    workspaces_payload,
+)
+
 
 load_dotenv()
 
@@ -1545,7 +1718,8 @@ async def _invoke_agent_stream(
             if sources:
                 yield _panel_event(panel_id, "sources", sources=sources)
 
-            # 灏嗙瓟妗堝垎鍧楁ā鎷熸祦寮忔晥鏋滐紙80 瀛楃涓€鍧楋級銆?            for chunk in answer_chunks(answer, chunk_size=20):
+            # Emit the resolved answer in small chunks to match streaming output.
+            for chunk in answer_chunks(answer, chunk_size=20):
                 yield _panel_event(panel_id, "chunk", content=chunk)
                 await asyncio.sleep(0.01)
             if result.get("token_usage"):

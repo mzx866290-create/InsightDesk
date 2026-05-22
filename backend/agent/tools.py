@@ -17,7 +17,10 @@ from backend.agent.retrieval import (
     _retrieve_kb_documents,
     _trim_knowledge_doc_content,
 )
-from backend.agent.tool_registry import _build_enabled_tool_directory, list_enabled_builtin_tool_specs
+from backend.agent.tool_registry import (
+    _build_enabled_tool_directory as _build_enabled_tool_directory,
+    list_enabled_builtin_tool_specs,
+)
 from search_runtime.service import fetch_webpage_text, quick_answer_text, search_web_text
 
 logger = logging.getLogger(__name__)

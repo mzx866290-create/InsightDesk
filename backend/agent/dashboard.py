@@ -8,7 +8,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional
 
 from langchain_core.documents import Document
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
+from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage
 
 from backend.agent.llm import (
     _stringify_user_input,
@@ -25,27 +25,27 @@ from backend.agent.retrieval import (
     _dedupe_documents,
 )
 
-logger = logging.getLogger(__name__)
-
-if TYPE_CHECKING:
-    from backend.doc_pipeline import DocPipeline
-
 from backend.agent.dashboard_payload import (
-    DASHBOARD_TRIGGER_KEYWORDS,
-    DEFAULT_DASHBOARD_TEMPLATE,
+    DASHBOARD_TRIGGER_KEYWORDS as DASHBOARD_TRIGGER_KEYWORDS,
+    DEFAULT_DASHBOARD_TEMPLATE as DEFAULT_DASHBOARD_TEMPLATE,
     _build_attachment_dashboard_fallback,
     _build_dashboard_sources,
     _extract_attachment_evidence,
     _extract_attachment_sections,
     _extract_json_payload,
     _normalize_dashboard_template,
-    _parse_attachment_tables,
-    _parse_numeric_dashboard_value,
+    _parse_attachment_tables as _parse_attachment_tables,
+    _parse_numeric_dashboard_value as _parse_numeric_dashboard_value,
     _render_attachment_dashboard_card,
     _render_dashboard_card,
     _sanitize_dashboard_payload,
     _should_generate_dashboard,
 )
+
+if TYPE_CHECKING:
+    from backend.doc_pipeline import DocPipeline
+
+logger = logging.getLogger(__name__)
 
 
 async def _generate_dashboard_from_attachment(

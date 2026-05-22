@@ -7,14 +7,14 @@ from typing import Any, Dict, Optional
 from langchain_core.documents import Document
 
 from backend.agent.dashboard_attachments import (
-    _build_attachment_dashboard_fallback,
-    _coerce_dashboard_cell_value,
-    _extract_attachment_evidence,
-    _extract_attachment_sections,
-    _is_rate_like_metric,
-    _looks_like_date_dimension,
-    _parse_attachment_tables,
-    _parse_numeric_dashboard_value,
+    _build_attachment_dashboard_fallback as _build_attachment_dashboard_fallback,
+    _coerce_dashboard_cell_value as _coerce_dashboard_cell_value,
+    _extract_attachment_evidence as _extract_attachment_evidence,
+    _extract_attachment_sections as _extract_attachment_sections,
+    _is_rate_like_metric as _is_rate_like_metric,
+    _looks_like_date_dimension as _looks_like_date_dimension,
+    _parse_attachment_tables as _parse_attachment_tables,
+    _parse_numeric_dashboard_value as _parse_numeric_dashboard_value,
 )
 from backend.agent.llm import _stringify_user_input
 

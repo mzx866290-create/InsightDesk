@@ -6,6 +6,8 @@ while the large historical ``agent_core.py`` surface is split into smaller
 units.
 """
 
+# ruff: noqa: F401
+
 import json
 import logging
 import os
