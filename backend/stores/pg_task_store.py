@@ -218,7 +218,10 @@ class PostgresTaskStore(PostgresStoreMixin, SQLiteTaskStore):
                 rows = cursor.fetchall()
         return [record for row in rows if (record := self._from_row(row)) is not None]
 
-    def _promotion_from_row(self, row: Any) -> AttachmentPromotionRecord | None:
+    @staticmethod
+    def _promotion_from_row(
+        row: tuple[Any, ...] | None,
+    ) -> AttachmentPromotionRecord | None:
         return SQLiteTaskStore._promotion_from_row(row)
 
     def get_attachment_promotion(
