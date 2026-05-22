@@ -95,8 +95,14 @@ class SQLiteIntegratorOutboundAuditStore:
     def append(self, record: dict[str, Any]) -> IntegratorOutboundAuditStoredRecord:
         self._init_db()
         safe_record = dict(record or {})
-        connector = safe_record.get("connector") if isinstance(safe_record.get("connector"), dict) else {}
-        endpoint = safe_record.get("endpoint") if isinstance(safe_record.get("endpoint"), dict) else {}
+        raw_connector = safe_record.get("connector")
+        connector: dict[str, Any] = (
+            raw_connector if isinstance(raw_connector, dict) else {}
+        )
+        raw_endpoint = safe_record.get("endpoint")
+        endpoint: dict[str, Any] = (
+            raw_endpoint if isinstance(raw_endpoint, dict) else {}
+        )
         created_at = str(safe_record.get("created_at") or "")
         timestamp = float(safe_record.get("timestamp") or time.time())
         with connect_sqlite(self.db_path) as conn:
@@ -130,10 +136,10 @@ class SQLiteIntegratorOutboundAuditStore:
             row_id = int(cursor.lastrowid or 0)
             conn.commit()
         self.prune()
-        record = self.get(row_id)
-        if record is None:
+        stored_record = self.get(row_id)
+        if stored_record is None:
             raise RuntimeError("Failed to persist integrator outbound audit event")
-        return record
+        return stored_record
 
     def get(self, row_id: int) -> IntegratorOutboundAuditStoredRecord | None:
         self._init_db()
