@@ -214,8 +214,10 @@ def sanitize_mcp_runtime_health_history_item(item: Any) -> dict[str, Any] | None
     if not isinstance(item, dict):
         return None
 
-    summary = item.get("summary") if isinstance(item.get("summary"), dict) else {}
-    servers = item.get("servers") if isinstance(item.get("servers"), list) else []
+    raw_summary = item.get("summary")
+    summary: dict[str, Any] = raw_summary if isinstance(raw_summary, dict) else {}
+    raw_servers = item.get("servers")
+    servers: list[Any] = raw_servers if isinstance(raw_servers, list) else []
     try:
         timestamp = float(item.get("timestamp") or 0.0)
     except (TypeError, ValueError):
