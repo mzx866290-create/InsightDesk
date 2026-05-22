@@ -189,7 +189,7 @@ def normalize_integrator_connector(
 
 
 def connector_to_config(connector: ConnectorSpec) -> dict[str, Any]:
-    payload = {
+    payload: dict[str, Any] = {
         "type": connector.normalized_type,
         "name": connector.name,
         "description": connector.description,
@@ -574,28 +574,28 @@ def normalize_integrator_schedule(
         else (previous or {}).get("last_triggered_at")
     )
 
-    raw_payload = (
-        schedule.get("payload")
-        if isinstance(schedule.get("payload"), Mapping)
-        else schedule.get("settings")
-        if isinstance(schedule.get("settings"), Mapping)
+    raw_payload_source = schedule.get("payload")
+    if not isinstance(raw_payload_source, Mapping):
+        raw_payload_source = schedule.get("settings")
+    raw_payload = dict(raw_payload_source) if isinstance(raw_payload_source, Mapping) else {}
+    previous_payload_source = previous.get("payload") if previous is not None else None
+    if previous is not None and not isinstance(previous_payload_source, Mapping):
+        previous_payload_source = previous.get("settings")
+    previous_payload = (
+        dict(previous_payload_source)
+        if isinstance(previous_payload_source, Mapping)
         else {}
     )
-    previous_payload = (
-        previous.get("payload")
-        if isinstance((previous or {}).get("payload"), Mapping)
-        else previous.get("settings")
-        if isinstance((previous or {}).get("settings"), Mapping)
-        else {}
-    ) if previous is not None else {}
-    payload = _merge_redacted_settings(dict(raw_payload), dict(previous_payload))
+    payload = _merge_redacted_settings(raw_payload, previous_payload)
     has_context = "context" in schedule
-    raw_context = schedule.get("context") if isinstance(schedule.get("context"), Mapping) else {}
+    raw_context_source = schedule.get("context")
+    raw_context = dict(raw_context_source) if isinstance(raw_context_source, Mapping) else {}
+    previous_context_source = previous.get("context") if previous is not None else None
     previous_context = (
-        previous.get("context")
-        if isinstance((previous or {}).get("context"), Mapping)
+        dict(previous_context_source)
+        if isinstance(previous_context_source, Mapping)
         else {}
-    ) if previous is not None else {}
+    )
     context = (
         _merge_redacted_settings(dict(raw_context), dict(previous_context))
         if has_context
@@ -623,7 +623,7 @@ def normalize_integrator_schedule(
 
 
 def schedule_to_config(schedule: Mapping[str, Any]) -> dict[str, Any]:
-    payload = {
+    payload: dict[str, Any] = {
         "id": str(schedule.get("id") or "").strip(),
         "schedule_id": str(schedule.get("id") or schedule.get("schedule_id") or "").strip(),
         "name": str(schedule.get("name") or "").strip(),
@@ -983,8 +983,10 @@ def _probe_summary(
     blocking_failures: list[dict[str, Any]],
     warnings: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    checks = result.get("checks") if isinstance(result.get("checks"), list) else []
-    summary = dict(result.get("summary") or {})
+    raw_checks = result.get("checks")
+    checks: list[Any] = raw_checks if isinstance(raw_checks, list) else []
+    raw_summary = result.get("summary")
+    summary = dict(raw_summary) if isinstance(raw_summary, Mapping) else {}
     summary.update(
         {
             "check_count": len(checks),

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any, Callable
 
 from backend.stores.identity_store import normalize_identity_role
@@ -9,7 +10,7 @@ def _string_list(value: Any) -> list[str]:
     if value is None:
         return []
     if isinstance(value, str):
-        raw_items = value.split(",")
+        raw_items: Iterable[Any] = value.split(",")
     elif isinstance(value, (list, tuple, set)):
         raw_items = value
     else:
@@ -22,7 +23,7 @@ def _string_list(value: Any) -> list[str]:
     return items
 
 
-def _normalize_domain_list(domains: list[str] | str) -> list[str]:
+def _normalize_domain_list(domains: list[str] | str | None) -> list[str]:
     return [item.lower() for item in _string_list(domains)]
 
 
@@ -30,7 +31,7 @@ def map_external_identity_claims(
     claims: dict[str, Any],
     *,
     provider: str = "oidc",
-    allowed_domains: list[str] | str = (),
+    allowed_domains: list[str] | str | None = None,
 ) -> dict[str, Any]:
     """Map verified external identity claims to the local identity shape.
 

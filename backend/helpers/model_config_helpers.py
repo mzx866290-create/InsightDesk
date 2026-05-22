@@ -10,15 +10,19 @@ def model_config_payload(model_config: Any) -> dict[str, Any]:
     if isinstance(model_config, dict):
         return dict(model_config)
     if hasattr(model_config, "model_dump"):
-        return model_config.model_dump()
-    return model_config.dict()
+        payload: dict[str, Any] = model_config.model_dump()
+        return payload
+    payload = model_config.dict()
+    return dict(payload)
 
 
 def base_model_payload(model: Any) -> dict[str, Any]:
     if hasattr(model, "model_dump"):
-        return model.model_dump()
+        payload: dict[str, Any] = model.model_dump()
+        return payload
     if hasattr(model, "dict"):
-        return model.dict()
+        payload = model.dict()
+        return dict(payload)
     return dict(model)
 
 

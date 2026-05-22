@@ -109,7 +109,7 @@ def build_phase_summary_content(
         lines.append("Assistant progress: " + " | ".join(ai_points))
 
     summary = "\n".join(lines).strip()
-    return clip_text(summary, max(120, max_chars))
+    return str(clip_text(summary, max(120, max_chars)))
 
 
 def latest_auto_summary(summaries: list[dict[str, Any]]) -> dict[str, Any] | None:

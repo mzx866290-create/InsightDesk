@@ -27,7 +27,10 @@ def kb_safe_metadata(metadata: Any) -> dict[str, Any]:
     if not isinstance(metadata, dict):
         return {}
     try:
-        return json.loads(json.dumps(metadata, ensure_ascii=False, default=str))
+        payload: dict[str, Any] = json.loads(
+            json.dumps(metadata, ensure_ascii=False, default=str)
+        )
+        return payload
     except Exception:
         return {str(k): str(v) for k, v in metadata.items()}
 
@@ -119,9 +122,13 @@ def filter_kb_chunks(
 
 def kb_rebuild_from_documents(pipeline: Any, documents: list[Any]) -> None:
     if documents:
-        vector_class = pipeline.vectorstore.__class__ if pipeline.vectorstore is not None else None
+        vector_class: Any = (
+            pipeline.vectorstore.__class__ if pipeline.vectorstore is not None else None
+        )
         if vector_class is None:
-            from langchain_community.vectorstores import FAISS as vector_class
+            from langchain_community.vectorstores import FAISS
+
+            vector_class = FAISS
 
         pipeline.vectorstore = vector_class.from_documents(documents, pipeline.embeddings)
         pipeline._save_vectorstore_local()

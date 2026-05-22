@@ -281,7 +281,7 @@ def _build_research_knowledge_search(
         except Exception:
             return []
         try:
-            return pipeline.search_with_rerank(query, k=3, fetch_k=8)
+            return list(pipeline.search_with_rerank(query, k=3, fetch_k=8))
         except Exception:
             return []
 

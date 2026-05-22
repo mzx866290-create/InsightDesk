@@ -43,7 +43,7 @@ def cleanup_temp_paths(paths: Iterable[str]) -> None:
 def ensure_upload_staging_dir(staging_dir: Any | None) -> str | None:
     if staging_dir is None:
         return None
-    normalized = os.fspath(staging_dir).strip()
+    normalized = str(os.fspath(staging_dir)).strip()
     if not normalized:
         return None
     os.makedirs(normalized, exist_ok=True)

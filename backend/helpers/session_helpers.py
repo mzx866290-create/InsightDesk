@@ -93,9 +93,11 @@ def _clip_text(text: Any, limit: int) -> str:
 
 def _base_model_payload(model: Any) -> dict[str, Any]:
     if hasattr(model, "model_dump"):
-        return model.model_dump()
+        payload: dict[str, Any] = model.model_dump()
+        return payload
     if hasattr(model, "dict"):
-        return model.dict()
+        payload = model.dict()
+        return dict(payload)
     return dict(model)
 
 
@@ -477,7 +479,9 @@ def _build_consensus_points(
         for term, panel_ids in term_panels.items()
         if len(panel_ids) >= threshold
     ]
-    consensus.sort(key=lambda item: (-item["support_count"], item["term"]))
+    consensus.sort(
+        key=lambda item: (-int(str(item["support_count"])), str(item["term"]))
+    )
     return consensus[:8]
 
 
@@ -565,7 +569,7 @@ def _build_model_performance_items(
 
 def _build_token_summary(candidates: list[dict[str, Any]]) -> dict[str, Any]:
     items: list[dict[str, Any]] = []
-    totals = {
+    totals: dict[str, int] = {
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "total_tokens": 0,
@@ -585,7 +589,7 @@ def _build_token_summary(candidates: list[dict[str, Any]]) -> dict[str, Any]:
             "estimation_method": str(usage.get("estimation_method") or ""),
         }
         for key in totals:
-            totals[key] += item[key]
+            totals[key] += int(str(item[key]))
         if item["estimated"]:
             estimated_count += 1
         items.append(item)
@@ -1493,6 +1497,8 @@ def find_session_attachment(
         preview_char_limit=preview_char_limit,
     )
     for attachment in payload.get("attachments", []):
+        if not isinstance(attachment, dict):
+            continue
         if str(attachment.get("attachment_id") or "").strip() == attachment_id:
-            return attachment
+            return dict(attachment)
     return None

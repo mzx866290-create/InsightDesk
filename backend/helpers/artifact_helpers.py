@@ -8,6 +8,6 @@ def artifact_payload(
     *,
     artifact_export_formats: Callable[[Any], list[str]],
 ) -> dict[str, Any]:
-    payload = artifact.model_dump(mode="json")
+    payload: dict[str, Any] = artifact.model_dump(mode="json")
     payload["available_formats"] = artifact_export_formats(artifact)
     return payload

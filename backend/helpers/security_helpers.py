@@ -258,11 +258,11 @@ def _csv_values(value: Any) -> list[str]:
     ]
 
 
-def _scope_values(value: list[str] | str) -> list[str]:
+def _scope_values(value: list[str] | str | None) -> list[str]:
     if isinstance(value, str):
         raw_items = value.replace(",", " ").split()
     else:
-        raw_items = value
+        raw_items = value or []
     return [item for raw_item in raw_items if (item := str(raw_item or "").strip())]
 
 
@@ -554,7 +554,7 @@ def build_sso_config_payload(
     client_id: str,
     client_secret: str,
     allowed_domains: str,
-    scopes: list[str] | str = (),
+    scopes: list[str] | str | None = None,
     default_role: str = "viewer",
     session_ttl_seconds: int = 28800,
     callback_path: str = "/api/auth/sso/callback",
@@ -968,7 +968,12 @@ def build_security_audit_aggregate_report_payload(
     ]
     for row in rows:
         for dimension in SECURITY_AUDIT_AGGREGATE_GROUP_BY:
-            _increment_nested_count(totals, dimension, row[dimension], row["count"])
+            _increment_nested_count(
+                totals,
+                dimension,
+                row[dimension],
+                int(str(row["count"] or 0)),
+            )
     return {
         "total": len(events),
         "window_limit": int(limit or 0),
@@ -1027,7 +1032,7 @@ def build_sso_login_payload(
     state: str,
     nonce: str,
     code_challenge: str,
-    scopes: list[str] | str = (),
+    scopes: list[str] | str | None = None,
 ) -> dict[str, Any]:
     normalized_provider = str(provider or "").strip().lower()
     if normalized_provider != "oidc":
@@ -1070,7 +1075,7 @@ def build_sso_login_payload(
     }
 
 
-def _string_scopes(scopes: list[str] | str) -> list[str]:
+def _string_scopes(scopes: list[str] | str | None) -> list[str]:
     values = _scope_values(scopes)
     normalized = values or ["openid", "email", "profile"]
     if "openid" not in normalized:
@@ -1206,7 +1211,10 @@ def build_auth_token_catalog_payload(
         }
         for record in auth_records
     ]
-    configured_roles = sorted({item["role"] for item in tokens}, key=role_rank)
+    configured_roles = sorted(
+        {str(item["role"]) for item in tokens},
+        key=role_rank,
+    )
     return {
         "tokens": tokens,
         "total": len(tokens),

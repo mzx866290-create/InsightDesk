@@ -270,7 +270,7 @@ def resolve_report_messages(
     normalized_answer_group_id = _normalize_scope_value(answer_group_id)
     normalized_panel_id = _normalize_scope_value(panel_id)
     if not normalized_answer_group_id:
-        return history.get_all_messages()
+        return list(history.get_all_messages())
 
     return build_scoped_report_messages(
         history.get_all_message_records(),
@@ -516,8 +516,9 @@ def _refresh_deck_evidence_coverage(deck: Any) -> Any:
 def _deck_evidence_coverage_payload(deck: Any) -> dict[str, Any]:
     _refresh_deck_evidence_coverage(deck)
     coverage = getattr(getattr(deck, "generation", None), "evidence_coverage", None)
-    if hasattr(coverage, "model_dump"):
-        return coverage.model_dump(mode="json")
+    if coverage is not None and hasattr(coverage, "model_dump"):
+        payload: dict[str, Any] = coverage.model_dump(mode="json")
+        return payload
     if isinstance(coverage, dict):
         return coverage
     return {}
