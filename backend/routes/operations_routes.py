@@ -137,6 +137,7 @@ async def enqueue_integrator_schedule_workflow(
             "Task runtime is not available for integrator schedule trigger: "
             + ", ".join(missing_task_helpers)
         )
+    assert enqueue_task is not None
 
     resolved_tasks = tasks() if callable(tasks) else tasks or {}
     resolved_task_backend = str(task_backend() if callable(task_backend) else task_backend)
@@ -228,6 +229,7 @@ async def run_integrator_scheduler_tick(
         return result
     finally:
         if acquired_lock:
+            assert tick_lock is not None
             tick_lock.release()
 
 
