@@ -574,29 +574,30 @@ class IntegratorAgent:
         action: str | None = None,
         approval_gate: dict[str, Any] | None = None,
     ) -> AgentResult:
-        artifact = {
+        artifact_content: dict[str, Any] = {
+            "dry_run": dry_run,
+            "execution_requested": execution_requested,
+            "error": error,
+            "requested_connector": self._connector_selector(task, context),
+            "configured_connectors": [
+                {
+                    "id": connector.id,
+                    "type": connector.normalized_type,
+                    "enabled": connector.enabled,
+                    "approved": connector.approved,
+                }
+                for connector in self.connectors
+            ],
+        }
+        artifact: dict[str, Any] = {
             "type": "integration_error",
             "title": "Integration connector error",
-            "content": {
-                "dry_run": dry_run,
-                "execution_requested": execution_requested,
-                "error": error,
-                "requested_connector": self._connector_selector(task, context),
-                "configured_connectors": [
-                    {
-                        "id": connector.id,
-                        "type": connector.normalized_type,
-                        "enabled": connector.enabled,
-                        "approved": connector.approved,
-                    }
-                    for connector in self.connectors
-                ],
-            },
+            "content": artifact_content,
         }
         if action:
-            artifact["content"]["action"] = action
+            artifact_content["action"] = action
         if approval_gate is not None:
-            artifact["content"]["approval_gate"] = approval_gate
+            artifact_content["approval_gate"] = approval_gate
         metadata: dict[str, Any] = {
             **self.config.metadata,
             "context_keys": sorted(context.keys()),

@@ -147,7 +147,7 @@ class UrlLibWebhookClient:
 class _NoRedirectHTTPRedirectHandler(urllib_request.HTTPRedirectHandler):
     """Convert redirects into HTTPError so callers can validate 3xx targets themselves."""
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise HTTPError(req.full_url, code, msg, headers, fp)
 
 

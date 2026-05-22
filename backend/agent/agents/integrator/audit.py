@@ -111,7 +111,8 @@ def cleanup_integrator_outbound_audit_payload(
 
 
 def stored_integrator_outbound_audit_record_payload(record: Any) -> dict[str, Any]:
-    payload = sanitize_integrator_outbound_audit_record(dict(record.record or {}))
+    sanitized = sanitize_integrator_outbound_audit_record(dict(record.record or {}))
+    payload = dict(sanitized) if isinstance(sanitized, dict) else {}
     payload.update(
         {
             "id": int(record.id),
