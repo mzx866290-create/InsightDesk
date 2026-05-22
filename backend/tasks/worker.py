@@ -69,7 +69,11 @@ async def run_task_by_id(ctx, task_id: str) -> None:
     probe_task_store = _probe_task_store()
     probe_record = probe_task_store.get(str(task_id))
 
-    if str(getattr(probe_record, "task_type", "") or "").strip() == "arq_e2e_probe":
+    if (
+        probe_record is not None
+        and str(getattr(probe_record, "task_type", "") or "").strip()
+        == "arq_e2e_probe"
+    ):
         if not arq_should_start_task_record(status=probe_record.status, job_try=job_try):
             logger.info(
                 "task_id=%s skipped duplicate arq delivery status=%s job_try=%s",
