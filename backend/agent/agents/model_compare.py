@@ -21,6 +21,32 @@ _DEFAULT_PREFERENCE_WEIGHTS: dict[str, float] = {
 }
 
 
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _int_or_default(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    return default
+
+
+def _float_or_default(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float, str)):
+        try:
+            return float(value)
+        except ValueError:
+            return default
+    return default
+
+
 @dataclass(slots=True)
 class ModelCompareAgentConfig:
     """Runtime knobs for deterministic model comparison."""
@@ -157,6 +183,7 @@ def build_evaluation_repository(
 
     comparisons: list[dict[str, Any]] = []
     winner = normalized_candidates[0] if normalized_candidates else {}
+    winner_contract = _dict_or_empty(winner.get("contract_evaluation"))
     for candidate in normalized_candidates[1:]:
         comparisons.append(
             {
@@ -177,16 +204,8 @@ def build_evaluation_repository(
         "selected_model_id": str(winner.get("model_id") or ""),
         "selected_score": float(winner.get("score") or 0.0),
         "preference_contract": resolved_contract,
-        "selected_contract_satisfied": bool(
-            winner.get("contract_evaluation", {}).get("contract_satisfied")
-            if isinstance(winner.get("contract_evaluation"), dict)
-            else False
-        ),
-        "selected_missing_required_terms": list(
-            winner.get("contract_evaluation", {}).get("missing_required_terms", [])
-            if isinstance(winner.get("contract_evaluation"), dict)
-            else []
-        ),
+        "selected_contract_satisfied": bool(winner_contract.get("contract_satisfied")),
+        "selected_missing_required_terms": list(winner_contract.get("missing_required_terms") or []),
         "selection_reasons": _selection_reasons(winner),
         "candidate_count": len(normalized_candidates),
     }
@@ -225,11 +244,7 @@ def synthesize_model_comparison(
         if isinstance(item, dict) and str(item.get("note") or "").strip()
     ][:4]
     winner_content = _clip_text(winner.get("content"), 1200)
-    preference_model = (
-        evaluation_repository.get("preference_model")
-        if isinstance(evaluation_repository.get("preference_model"), dict)
-        else {}
-    )
+    preference_model = _dict_or_empty(evaluation_repository.get("preference_model"))
     selection_reasons = [
         str(item or "").strip()
         for item in preference_model.get("selection_reasons", [])
@@ -276,13 +291,13 @@ def synthesize_model_comparison(
         "consensus_terms": consensus_terms,
         "difference_notes": difference_notes,
         "selection_reasons": selection_reasons,
-        "preference_contract": dict(preference_model.get("preference_contract") or {}),
+        "preference_contract": _dict_or_empty(preference_model.get("preference_contract")),
         "estimated": False,
     }
 
 
 def _collect_candidates(task: AgentTask, context: dict[str, Any]) -> list[dict[str, Any]]:
-    task_metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    task_metadata = _dict_or_empty(task.get("metadata"))
     raw_candidates = _first_list(
         _mapping_list(task.get("input"), "candidates"),
         task_metadata.get("candidates"),
@@ -293,7 +308,7 @@ def _collect_candidates(task: AgentTask, context: dict[str, Any]) -> list[dict[s
     if candidates:
         return candidates
 
-    upstream = context.get("_agent_results") if isinstance(context.get("_agent_results"), dict) else {}
+    upstream = _dict_or_empty(context.get("_agent_results"))
     return [
         _candidate_from_agent_result(step_id, result)
         for step_id, result in upstream.items()
@@ -318,7 +333,7 @@ def _normalize_candidate(raw: Any, index: int) -> dict[str, Any]:
 
 
 def _candidate_from_agent_result(step_id: str, result: dict[str, Any]) -> dict[str, Any]:
-    metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    metadata = _dict_or_empty(result.get("metadata"))
     return {
         "panel_id": str(step_id or result.get("task_id") or result.get("agent") or "candidate"),
         "model_id": _first_text(metadata.get("model"), metadata.get("model_id"), result.get("agent")),
@@ -370,7 +385,7 @@ def _score_candidate(
 
 
 def _completed_workflow_count(candidate: dict[str, Any]) -> int:
-    metadata = candidate.get("metadata") if isinstance(candidate.get("metadata"), dict) else {}
+    metadata = _dict_or_empty(candidate.get("metadata"))
     value = metadata.get("completed_workflow_count") or metadata.get("completed_steps") or 0
     try:
         return max(0, int(value))
@@ -384,7 +399,7 @@ def _build_evaluation_matrix(
 ) -> list[dict[str, Any]]:
     matrix: list[dict[str, Any]] = []
     for rank, candidate in enumerate(candidates, start=1):
-        criteria = {
+        criteria: dict[str, dict[str, Any]] = {
             "source_count": {
                 "value": int(candidate.get("source_count") or 0),
                 "weight": weights["source_count"],
@@ -414,11 +429,7 @@ def _build_evaluation_matrix(
                 ),
             },
         }
-        contract_evaluation = (
-            candidate.get("contract_evaluation")
-            if isinstance(candidate.get("contract_evaluation"), dict)
-            else {}
-        )
+        contract_evaluation = _dict_or_empty(candidate.get("contract_evaluation"))
         criteria["required_term_coverage"] = {
             "value": float(contract_evaluation.get("required_term_coverage") or 0.0),
             "weight": weights["required_term_coverage"],
@@ -478,7 +489,7 @@ def _build_consensus_points(candidates: list[dict[str, Any]]) -> list[dict[str, 
         for term, panel_ids in term_panels.items()
         if len(panel_ids) >= threshold
     ]
-    consensus.sort(key=lambda item: (-item["support_count"], item["term"]))
+    consensus.sort(key=lambda item: (-_int_or_default(item.get("support_count")), str(item.get("term") or "")))
     return consensus[:8]
 
 
@@ -517,8 +528,8 @@ def _candidate_advantages(left: dict[str, Any], right: dict[str, Any]) -> list[s
         advantages.append("more structured artifacts")
     if int(left.get("content_length") or 0) > int(right.get("content_length") or 0):
         advantages.append("deeper answer coverage")
-    left_contract = left.get("contract_evaluation") if isinstance(left.get("contract_evaluation"), dict) else {}
-    right_contract = right.get("contract_evaluation") if isinstance(right.get("contract_evaluation"), dict) else {}
+    left_contract = _dict_or_empty(left.get("contract_evaluation"))
+    right_contract = _dict_or_empty(right.get("contract_evaluation"))
     if bool(left_contract.get("contract_satisfied")) and not bool(right_contract.get("contract_satisfied")):
         advantages.append("satisfies preference contract")
     if len(left_contract.get("matched_preferred_terms") or []) > len(
@@ -532,11 +543,7 @@ def _selection_reasons(winner: dict[str, Any]) -> list[str]:
     if not winner:
         return []
     reasons: list[str] = []
-    contract_evaluation = (
-        winner.get("contract_evaluation")
-        if isinstance(winner.get("contract_evaluation"), dict)
-        else {}
-    )
+    contract_evaluation = _dict_or_empty(winner.get("contract_evaluation"))
     if contract_evaluation.get("contract_satisfied"):
         matched_required = list(contract_evaluation.get("matched_required_terms") or [])
         if matched_required:
