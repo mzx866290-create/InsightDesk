@@ -109,7 +109,7 @@ OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=qwen3.5-2B:latest
 
 # 可选：用于 Web Research / Deep Research
-TAVILY_API_KEY=你的 Tavily Key
+TAVILY_API_KEY=your_tavily_api_key
 ```
 
 3. 启动后端与前端：
