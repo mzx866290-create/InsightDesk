@@ -4,8 +4,8 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable, Sequence
-from typing import Any
+from collections.abc import Callable, Iterable, Sequence
+from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
 from .service import build_related_questions, dedupe_search_documents, fetch_webpage_document, search_web
@@ -25,6 +25,8 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
+
+ResearchFindingStatus = Literal["verified", "partial", "unverified"]
 
 TIME_SENSITIVE_TERMS = (
     "latest",
@@ -365,7 +367,7 @@ def _source_strategy_evidence_policy(source_strategy: ResearchSourceStrategy) ->
     return policy
 
 
-def _dedupe_strings(items: Sequence[str]) -> list[str]:
+def _dedupe_strings(items: Iterable[str]) -> list[str]:
     deduped: list[str] = []
     for item in items:
         cleaned = str(item or "").strip()
@@ -421,14 +423,16 @@ def _resolve_domain_template(query: str) -> dict[str, object] | None:
     best_score = 0
 
     for template_id, template in DOMAIN_TEMPLATE_REGISTRY.items():
-        match_terms = tuple(str(item).lower() for item in template.get("match_terms", ()) if str(item).strip())
+        match_terms = tuple(
+            item.lower() for item in _normalize_text_list(template.get("match_terms"))
+        )
         score = sum(1 for term in match_terms if term and term in lowered)
         if score <= 0 or score < best_score:
             continue
         best_score = score
         best_match = {
             "template_id": template_id,
-            "facets": list(template.get("facets", [])),
+            "facets": _normalize_text_list(template.get("facets")),
             "prompt_hint": str(template.get("prompt_hint") or "").strip(),
             "match_score": score,
         }
@@ -478,10 +482,16 @@ def _parse_findings(payload: Any) -> list[ResearchFinding]:
         claim = str(item.get("claim") or "").strip()
         if not claim:
             continue
+        raw_status = str(item.get("status") or "verified").strip() or "verified"
+        status: ResearchFindingStatus
+        if raw_status in {"verified", "partial", "unverified"}:
+            status = cast(ResearchFindingStatus, raw_status)
+        else:
+            status = "verified"
         findings.append(
             ResearchFinding(
                 claim=claim,
-                status=str(item.get("status") or "verified").strip() or "verified",
+                status=status,
                 evidence=[str(value).strip() for value in item.get("evidence", []) if str(value).strip()],
                 note=str(item.get("note") or "").strip(),
             )
@@ -972,7 +982,7 @@ async def run_deep_research(
     template_prompt_hint = ""
     if template_match:
         template_id = str(template_match.get("template_id") or "").strip() or None
-        template_facets = _dedupe_strings(str(item) for item in template_match.get("facets", []))
+        template_facets = _normalize_text_list(template_match.get("facets"))
         template_prompt_hint = str(template_match.get("prompt_hint") or "").strip()
     generic_facets = _generic_facets_for_intent(intent, resolved_source_strategy)
 
