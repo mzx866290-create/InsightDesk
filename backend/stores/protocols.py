@@ -61,10 +61,9 @@ class ShareLinkStore(Protocol):
         share_token: str,
         resource_type: str,
         resource_id: str,
-        created_at: float,
         expires_at: float,
-        created_by: str = "",
-        meta: dict[str, Any] | None = None,
+        created_by_ip: str = "",
+        created_user_agent: str = "",
     ) -> ShareLinkRecord: ...
 
     def get(self, share_token: str) -> ShareLinkRecord | None: ...
@@ -80,16 +79,22 @@ class ShareLinkStore(Protocol):
         self,
         *,
         resource_type: str = "",
-        resource_id: str = "",
-        include_revoked: bool = False,
+        active_only: bool = False,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[ShareLinkRecord]: ...
 
     def revoke(self, share_token: str) -> bool: ...
 
     def delete_for_resource(self, resource_type: str, resource_id: str) -> int: ...
 
-    def record_access(self, share_token: str, *, accessed_at: float) -> bool: ...
+    def record_access(
+        self,
+        share_token: str,
+        *,
+        accessed_ip: str = "",
+        accessed_user_agent: str = "",
+    ) -> None: ...
 
 
 @runtime_checkable
@@ -142,7 +147,11 @@ class TaskStore(Protocol):
 
     def delete_for_session(self, session_id: str) -> dict[str, int]: ...
 
-    def prune(self, *, now: float | None = None) -> None: ...
+    def prune(
+        self,
+        limit: int | None = None,
+        ttl_seconds: int | None = None,
+    ) -> None: ...
 
 
 @runtime_checkable
