@@ -55,7 +55,8 @@ def _report_markdown(artifact: ArtifactRecord) -> str:
 
 def report_qa_pairs(artifact: ArtifactRecord) -> list[tuple[str, str]]:
     content = artifact.content if isinstance(artifact.content, dict) else {}
-    raw_pairs = content.get("qa_pairs") if isinstance(content.get("qa_pairs"), list) else []
+    raw_qa_pairs = content.get("qa_pairs")
+    raw_pairs = raw_qa_pairs if isinstance(raw_qa_pairs, list) else []
     pairs: list[tuple[str, str]] = []
     for item in raw_pairs:
         if not isinstance(item, dict):

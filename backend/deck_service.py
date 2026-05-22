@@ -12,12 +12,12 @@ import time
 import uuid
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from langchain_core.documents import Document
 from pydantic import BaseModel, Field
 
-from backend.agent_core import get_llm
+from backend.services.agent_core import get_llm
 from backend.chat_store import connect_sqlite
 from backend.core.storage_runtime import app_database_path
 from backend.doc_pipeline import DocPipeline
@@ -430,7 +430,7 @@ def _metadata_dict(value: Any) -> dict[str, Any]:
 
 def normalize_deck_theme(theme: Any) -> DeckThemeName:
     raw = _clean_text(theme).lower().replace("-", "_").replace(" ", "_")
-    aliases = {
+    aliases: dict[str, DeckThemeName] = {
         "": "default",
         "default": "default",
         "classic": "default",
@@ -2475,7 +2475,7 @@ def export_deck_to_pptx(deck: DeckSpec) -> bytes:
         from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
         from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE
         from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
-        from pptx.util import Pt
+        from pptx.util import Emu, Pt
     except ImportError as exc:
         raise RuntimeError(
             "python-pptx is not installed. Install requirements.txt and retry."
@@ -2484,7 +2484,7 @@ def export_deck_to_pptx(deck: DeckSpec) -> bytes:
     theme = DECK_THEME_PALETTES[normalize_deck_theme(deck.meta.theme)]
 
     def rgb(color_key: str) -> RGBColor:
-        return RGBColor.from_string(theme.get(color_key, color_key))
+        return cast(RGBColor, RGBColor.from_string(theme.get(color_key, color_key)))
 
     def set_slide_background(ppt_slide, color_key: str = "bg") -> None:
         fill = ppt_slide.background.fill
@@ -3694,8 +3694,8 @@ def export_deck_to_pptx(deck: DeckSpec) -> bytes:
         add_notes(ppt_slide, slide)
 
     presentation = Presentation()
-    presentation.slide_width = 12192000
-    presentation.slide_height = 6858000
+    presentation.slide_width = Emu(12192000)
+    presentation.slide_height = Emu(6858000)
     presentation.core_properties.title = deck.meta.title
     presentation.core_properties.author = deck.meta.author or "system"
     presentation.core_properties.subject = deck.meta.subtitle or deck.meta.purpose

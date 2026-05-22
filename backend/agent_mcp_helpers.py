@@ -6,8 +6,9 @@ import re
 import shlex
 import threading
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 logger = logging.getLogger(__name__)
 
@@ -254,7 +255,7 @@ def _env_positive_float(name: str, default: float) -> float:
 
 def parse_name_list(raw_value: Any) -> list[str]:
     if isinstance(raw_value, str):
-        candidates = raw_value.split(",")
+        candidates: Iterable[Any] = raw_value.split(",")
     elif isinstance(raw_value, (list, tuple, set, frozenset)):
         candidates = raw_value
     else:
@@ -1145,7 +1146,8 @@ def _connection_from_mcp_manifest(manifest: dict[str, Any]) -> tuple[str, dict[s
     if isinstance(env, dict):
         connection["env"] = {str(key): str(value) for key, value in env.items()}
 
-    metadata = manifest.get("metadata") if isinstance(manifest.get("metadata"), dict) else {}
+    raw_metadata = manifest.get("metadata")
+    metadata: dict[str, Any] = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
     connection["metadata"] = {
         "label": str(manifest.get("label") or metadata.get("label") or name),
         "description": str(
@@ -1422,8 +1424,10 @@ def build_mcp_runtime_monitor_payload(
 ) -> dict[str, Any]:
     """Normalize runtime-health payloads into a compact monitor contract."""
 
-    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
-    alerts = summary.get("alerts") if isinstance(summary.get("alerts"), list) else []
+    raw_summary = payload.get("summary")
+    summary: dict[str, Any] = dict(raw_summary) if isinstance(raw_summary, dict) else {}
+    raw_alerts = summary.get("alerts")
+    alerts = raw_alerts if isinstance(raw_alerts, list) else []
     status = str(payload.get("status") or "unknown")
     if status == "ok" and int(summary.get("alert_count", 0) or 0) > 0:
         status = "attention"
@@ -1596,8 +1600,10 @@ def record_mcp_runtime_health_snapshot(
     updated so runtime health remains available if persistence is unavailable.
     """
 
-    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
-    servers = payload.get("servers") if isinstance(payload.get("servers"), list) else []
+    raw_summary = payload.get("summary")
+    summary: dict[str, Any] = dict(raw_summary) if isinstance(raw_summary, dict) else {}
+    raw_servers = payload.get("servers")
+    servers = raw_servers if isinstance(raw_servers, list) else []
     snapshot = {
         "timestamp": time.time() if recorded_at is None else float(recorded_at),
         "status": str(payload.get("status") or "unknown"),
@@ -1793,7 +1799,7 @@ async def list_mcp_server_runtime_health(
         for name, connection in (active_connections or {}).items()
     }
     if not active_connections:
-        payload = {
+        disabled_payload: dict[str, Any] = {
             "status": "disabled",
             "servers": [],
             "summary": {
@@ -1804,9 +1810,9 @@ async def list_mcp_server_runtime_health(
                 **summarize_mcp_runtime_health([]),
             },
         }
-        payload["monitor"] = build_mcp_runtime_monitor_payload(payload)
+        disabled_payload["monitor"] = build_mcp_runtime_monitor_payload(disabled_payload)
         return attach_mcp_runtime_health_history(
-            payload,
+            disabled_payload,
             history_limit=history_limit,
             history_recorder=history_recorder,
             history_reader=history_reader,
@@ -1820,7 +1826,7 @@ async def list_mcp_server_runtime_health(
         try:
             from langchain_mcp_adapters.client import MultiServerMCPClient
         except ImportError:
-            servers = [
+            unavailable_servers = [
                 {
                     "name": name,
                     "status": "unavailable",
@@ -1832,20 +1838,20 @@ async def list_mcp_server_runtime_health(
                 }
                 for name in sorted(active_connections)
             ]
-            payload = {
+            unavailable_payload: dict[str, Any] = {
                 "status": "unavailable",
-                "servers": servers,
+                "servers": unavailable_servers,
                 "summary": {
-                    "total": len(servers),
+                    "total": len(unavailable_servers),
                     "healthy": 0,
-                    "unhealthy": len(servers),
+                    "unhealthy": len(unavailable_servers),
                     "tool_count": 0,
-                    **summarize_mcp_runtime_health(servers),
+                    **summarize_mcp_runtime_health(unavailable_servers),
                 },
             }
-            payload["monitor"] = build_mcp_runtime_monitor_payload(payload)
+            unavailable_payload["monitor"] = build_mcp_runtime_monitor_payload(unavailable_payload)
             return attach_mcp_runtime_health_history(
-                payload,
+                unavailable_payload,
                 history_limit=history_limit,
                 history_recorder=history_recorder,
                 history_reader=history_reader,
@@ -1856,7 +1862,7 @@ async def list_mcp_server_runtime_health(
     for name, connection in sorted(active_connections.items()):
         started_at = time.perf_counter()
         try:
-            client = client_factory({name: connection}, tool_name_prefix=False)
+            client = client_factory(cast(Any, {name: connection}), tool_name_prefix=False)
             tools = await asyncio.wait_for(client.get_tools(), timeout=resolved_timeout)
             tool_names = sorted(
                 {
@@ -1902,8 +1908,8 @@ async def list_mcp_server_runtime_health(
             )
 
     healthy_count = sum(1 for item in servers if item["healthy"])
-    tool_count = sum(int(item["tool_count"]) for item in servers)
-    payload = {
+    tool_count = sum(int(str(item["tool_count"])) for item in servers)
+    health_payload: dict[str, Any] = {
         "status": "ok" if healthy_count == len(servers) else "degraded",
         "servers": servers,
         "summary": {
@@ -1914,9 +1920,9 @@ async def list_mcp_server_runtime_health(
             **summarize_mcp_runtime_health(servers),
         },
     }
-    payload["monitor"] = build_mcp_runtime_monitor_payload(payload)
+    health_payload["monitor"] = build_mcp_runtime_monitor_payload(health_payload)
     return attach_mcp_runtime_health_history(
-        payload,
+        health_payload,
         history_limit=history_limit,
         history_recorder=history_recorder,
         history_reader=history_reader,
@@ -1956,7 +1962,7 @@ async def load_mcp_tool_overrides(
         client_factory = MultiServerMCPClient
 
     try:
-        client = client_factory(active_connections, tool_name_prefix=False)
+        client = client_factory(cast(Any, active_connections), tool_name_prefix=False)
         tools = await client.get_tools()
     except Exception:
         logger.exception("Failed to load MCP tools; falling back to built-in tools")

@@ -13,7 +13,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, cast
 import pandas as pd
 from langchain_community.document_loaders import (
     PyPDFLoader,
@@ -55,14 +55,17 @@ EXPIRY_HINT_PATTERN = re.compile(
 # 设置标准输出为 UTF-8，避免 Windows 控制台 GBK 编码问题
 if sys.platform == "win32":
     try:
-        sys.stdout.reconfigure(encoding="utf-8")
+        reconfigure_stdout = getattr(sys.stdout, "reconfigure", None)
+        if callable(reconfigure_stdout):
+            reconfigure_stdout(encoding="utf-8")
     except Exception:
         pass
 
 
 class DocPipeline:
-    _embedding_cache = {}
-    _reranker_cache = {}
+    _embedding_cache: dict[tuple[str, str], Any] = {}
+    _reranker_cache: dict[tuple[str, str], CrossEncoder] = {}
+    _reranker: CrossEncoder | None
     """文档处理管道类"""
 
     def __init__(
@@ -83,13 +86,13 @@ class DocPipeline:
             "EMBEDDING_MODEL", "BAAI/bge-base-zh-v1.5"
         )
         self.device = self._resolve_device(device)
-        self.vector_store_path = vector_store_path or os.getenv(
+        self.vector_store_path: str = str(vector_store_path or os.getenv(
             "VECTOR_STORE_PATH", "./vector_store"
-        )
+        ))
         self.vector_store_adapter = create_vector_store_adapter(path=self.vector_store_path)
 
         # 延迟加载: 首次使用时才加载模型,避免启动卡顿
-        self._embeddings = None
+        self._embeddings: Any | None = None
         self._reranker = None  # 延迟加载 Reranker 模型
         self._reranker_device = self.device
 
@@ -360,14 +363,17 @@ class DocPipeline:
         return Path(tempfile.mkdtemp(prefix=f"{prefix}_", dir=str(base_dir)))
 
     def _save_vectorstore_local(self) -> None:
+        vectorstore = self.vectorstore
+        if vectorstore is None:
+            raise ValueError("Vector store is not initialized.")
         if self.vector_store_adapter.provider != VECTOR_STORE_PROVIDER_FAISS:
-            self.vector_store_adapter.save(self.vectorstore, path=self.vector_store_path)
+            self.vector_store_adapter.save(vectorstore, path=self.vector_store_path)
             return
 
         target_dir = Path(self.vector_store_path)
         target_dir.mkdir(parents=True, exist_ok=True)
         if not self._should_use_faiss_staging_dir():
-            self.vectorstore.save_local(str(target_dir))
+            vectorstore.save_local(str(target_dir))
             return
 
         staging_dir = self._make_faiss_staging_dir("save")
@@ -376,7 +382,7 @@ class DocPipeline:
             target_dir,
         )
         try:
-            self.vectorstore.save_local(str(staging_dir))
+            vectorstore.save_local(str(staging_dir))
             for file_name in ("index.faiss", "index.pkl"):
                 shutil.copy2(staging_dir / file_name, target_dir / file_name)
         finally:
@@ -531,12 +537,15 @@ class DocPipeline:
         local_files_only: bool,
     ) -> CrossEncoder:
         hf_token = os.getenv("HF_TOKEN") or None
-        return CrossEncoder(
-            model_name,
-            max_length=512,
-            device=device,
-            local_files_only=local_files_only,
-            token=hf_token,
+        return cast(
+            CrossEncoder,
+            CrossEncoder(
+                model_name,
+                max_length=512,
+                device=device,
+                local_files_only=local_files_only,
+                token=hf_token,
+            ),
         )
 
     def _load_reranker(
@@ -962,6 +971,7 @@ class DocPipeline:
         file_path = str(Path(file_path).resolve())
         ext = Path(file_path).suffix.lower()
         file_name = Path(file_path).name
+        loader: Any
         logger.info("加载文件: %s", file_name)
 
         # XLSX / XLS：使用 pandas 自定义加载
@@ -973,7 +983,7 @@ class DocPipeline:
         if ext == ".pdf":
             try:
                 loader = PyPDFLoader(file_path)
-                docs = loader.load()
+                docs = list(loader.load())
             except Exception as e:
                 logger.error(
                     "PDF 解析失败: %s — %s（%s）", file_name, type(e).__name__, e
@@ -988,7 +998,7 @@ class DocPipeline:
         if ext == ".md":
             try:
                 loader = UnstructuredMarkdownLoader(file_path)
-                docs = loader.load()
+                docs = list(loader.load())
                 logger.debug(
                     "Markdown 使用 UnstructuredMarkdownLoader 加载: %s", file_name
                 )
@@ -999,7 +1009,7 @@ class DocPipeline:
                     file_name,
                 )
                 loader = TextLoader(file_path, encoding="utf-8")
-                docs = loader.load()
+                docs = list(loader.load())
             for doc in docs:
                 doc.metadata["source"] = file_name
                 doc.metadata["file_path"] = file_path
@@ -1035,7 +1045,7 @@ class DocPipeline:
 
             # 3. Docx2txtLoader 兜底
             loader = Docx2txtLoader(file_path)
-            docs = loader.load()
+            docs = list(loader.load())
             for doc in docs:
                 doc.metadata["source"] = file_name
                 doc.metadata["file_path"] = file_path
@@ -1051,7 +1061,7 @@ class DocPipeline:
             raise ValueError(f"不支持的文件类型: {ext}")
 
         loader = loader_cls(file_path)
-        docs = loader.load()
+        docs = list(loader.load())
 
         # 为每个文档添加文件名元数据
         for doc in docs:
@@ -1208,7 +1218,7 @@ class DocPipeline:
         if self.vectorstore is None:
             raise ValueError("向量库未初始化,请先调用 load_store() 或 ingest()")
 
-        return self.vectorstore.similarity_search(query, k=k)
+        return list(self.vectorstore.similarity_search(query, k=k))
 
     def search_with_scores(self, query: str, k: int = 4) -> List[tuple[Document, float]]:
         """
@@ -1872,7 +1882,7 @@ class DocPipeline:
             scores = self._predict_rerank_scores(query, candidates)
         except Exception:
             logger.exception("Reranker 失败，回退到 FAISS similarity_search")
-            return candidates[:safe_k]
+            return list(candidates[:safe_k])
 
         feedback_map = self._load_feedback_summary_map(source_type="doc")
         scored_candidates: list[tuple[Document, float, dict[str, Any]]] = []
@@ -1972,7 +1982,7 @@ class DocPipeline:
 
         summary_factory = getattr(self.vector_store_adapter, "validation_summary", None)
         if callable(summary_factory):
-            return summary_factory(path=self.vector_store_path)
+            return dict(summary_factory(path=self.vector_store_path))
         return vector_store_runtime_summary(
             provider=getattr(self.vector_store_adapter, "provider", None),
             path=self.vector_store_path,
