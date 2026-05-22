@@ -5,7 +5,7 @@ import json
 import logging
 import base64
 import time
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Coroutine, Optional, cast
 from urllib.parse import unquote_to_bytes
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -26,7 +26,19 @@ from backend.helpers.deck_report_helpers import (
     build_deck_delivery_response,
     update_deck_block_refs,
 )
-from backend.schemas.api_models import ApprovalTaskBatchDecisionRequest
+from backend.schemas.api_models import (
+    ApprovalPolicyRequest,
+    ApprovalTaskBatchDecisionRequest,
+    ApprovalTaskDecisionRequest,
+    CreateDeckRequest,
+    CreateMultiAgentWorkflowTaskRequest,
+    CreateTaskRequest,
+    GenerateArtifactRequest,
+    GenerateReportRequest,
+    RegenerateDeckSlideRequest,
+    UpdateArtifactRequest,
+    UpdateDeckRequest,
+)
 from backend.tasks.backends import dispatch_task_record
 
 
@@ -136,6 +148,9 @@ def build_content_router(
         "default_reviewer_role": "admin",
         "updated_at": None,
     }
+
+    def spawn_background_task(coro: Awaitable[None]) -> Any:
+        return asyncio.create_task(cast(Coroutine[Any, Any, None], coro))
 
     def resolve_artifact_store() -> Any:
         if callable(artifact_store):
@@ -1003,6 +1018,12 @@ def build_content_router(
                     500,
                 )
                 conflicting_claims.append(claim_id)
+                source_ids_value = conflict.get("source_ids")
+                raw_source_ids = (
+                    source_ids_value
+                    if isinstance(source_ids_value, list)
+                    else [conflict.get("source_id")]
+                )
                 items.append(
                     {
                         "conflict_id": conflict_id,
@@ -1015,11 +1036,7 @@ def build_content_router(
                         "text": text,
                         "source_ids": [
                             str(source_id).strip()
-                            for source_id in (
-                                conflict.get("source_ids")
-                                if isinstance(conflict.get("source_ids"), list)
-                                else [conflict.get("source_id")]
-                            )
+                            for source_id in raw_source_ids
                             if str(source_id or "").strip()
                         ],
                         "review_status": str(review.get("status") or "unreviewed").strip()
@@ -1297,18 +1314,21 @@ def build_content_router(
             report.get("claim_evidence_chains")
         )
         sources = research_archive_sources(content, report)
+        content_verification_summary = content.get("claim_verification_summary")
+        report_verification_summary = report.get("claim_verification_summary")
+        raw_delivery_quality = report.get("delivery_quality")
         verification_summary = (
-            dict(content.get("claim_verification_summary"))
-            if isinstance(content.get("claim_verification_summary"), dict)
+            dict(content_verification_summary)
+            if isinstance(content_verification_summary, dict)
             else {}
         ) or (
-            dict(report.get("claim_verification_summary"))
-            if isinstance(report.get("claim_verification_summary"), dict)
+            dict(report_verification_summary)
+            if isinstance(report_verification_summary, dict)
             else {}
         )
         delivery_quality = (
-            dict(report.get("delivery_quality"))
-            if isinstance(report.get("delivery_quality"), dict)
+            dict(raw_delivery_quality)
+            if isinstance(raw_delivery_quality, dict)
             else {}
         )
         paragraph_citations = research_paragraph_citations(content, report)
@@ -1450,7 +1470,7 @@ def build_content_router(
         else:
             require_remote_editor(http_request)
         task_state = resolve_tasks()
-        payload = await enqueue_task(
+        payload: dict[str, Any] = await enqueue_task(
             task_state,
             tasks_lock,
             task_type=task_type,
@@ -1460,7 +1480,7 @@ def build_content_router(
             persist_record=persist_task_record,
             prune_persisted=prune_persisted_tasks,
             run_task=run_task,
-            spawn_background_task=asyncio.create_task,
+            spawn_background_task=spawn_background_task,
             logger=logger,
             task_backend=resolve_task_backend(),
             enqueue_external_task=enqueue_external_task,
@@ -1493,7 +1513,7 @@ def build_content_router(
             record,
             task_backend=resolve_task_backend(),
             run_task=run_task,
-            spawn_background_task=asyncio.create_task,
+            spawn_background_task=spawn_background_task,
             enqueue_external_task=enqueue_external_task,
         )
         logger.info(
@@ -1568,7 +1588,7 @@ def build_content_router(
     # 鈹€鈹€ 寮傛浠诲姟 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     @router.post("/api/tasks")
-    async def create_task(http_request: Request, request: create_task_request_model):
+    async def create_task(http_request: Request, request: CreateTaskRequest):
         on_record_created = None
         if request.task_type == "web_research":
             on_record_created = persist_web_research_task_placeholder
@@ -1585,7 +1605,7 @@ def build_content_router(
     @router.post("/api/tasks/multi-agent-workflow")
     async def create_multi_agent_workflow_task(
         http_request: Request,
-        request: create_multi_agent_workflow_request_model,
+        request: CreateMultiAgentWorkflowTaskRequest,
     ):
         user_request = str(request.user_request or "").strip()
         if not user_request:
@@ -1697,7 +1717,7 @@ def build_content_router(
     @router.put("/api/tasks/approval-policy")
     async def update_task_approval_policy(
         http_request: Request,
-        request: approval_policy_request_model,
+        request: ApprovalPolicyRequest,
     ):
         require_remote_admin(http_request)
         payload = save_approval_policy_payload(request)
@@ -1734,7 +1754,7 @@ def build_content_router(
     async def decide_task_approval(
         task_id: str,
         http_request: Request,
-        request: approval_task_decision_request_model,
+        request: ApprovalTaskDecisionRequest,
     ):
         return await apply_task_approval_decision(task_id, http_request, request)
 
@@ -1846,7 +1866,7 @@ def build_content_router(
         }
 
     @router.post("/api/decks")
-    async def create_deck(http_request: Request, request: create_deck_request_model):
+    async def create_deck(http_request: Request, request: CreateDeckRequest):
         from backend.stores.factory import create_chat_message_history
         require_session_access(http_request, request.session_id, "editor")
         history = create_chat_message_history(session_id=request.session_id)
@@ -1957,7 +1977,7 @@ def build_content_router(
         return attach_deck_delivery_audit(deck).model_dump(mode="json")
 
     @router.patch("/api/decks/{deck_id}")
-    async def update_deck(deck_id: str, http_request: Request, request: update_deck_request_model):
+    async def update_deck(deck_id: str, http_request: Request, request: UpdateDeckRequest):
         require_deck_access(http_request, deck_id, "editor")
         try:
             deck = resolve_deck_store().get(deck_id)
@@ -2004,7 +2024,7 @@ def build_content_router(
 
     @router.post("/api/decks/{deck_id}/slides/{slide_id}/regenerate")
     async def regenerate_saved_deck_slide(
-        deck_id: str, slide_id: str, http_request: Request, request: regenerate_deck_slide_request_model,
+        deck_id: str, slide_id: str, http_request: Request, request: RegenerateDeckSlideRequest,
     ):
         from backend.stores.factory import create_chat_message_history
         require_deck_access(http_request, deck_id, "editor")
@@ -2101,7 +2121,7 @@ def build_content_router(
     # 鈹€鈹€ 鎶ュ憡 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     @router.post("/api/reports/generate")
-    async def generate_report(http_request: Request, request: generate_report_request_model):
+    async def generate_report(http_request: Request, request: GenerateReportRequest):
         from backend.stores.factory import create_chat_message_history
         require_session_access(http_request, request.session_id, "editor")
         history = create_chat_message_history(session_id=request.session_id)
@@ -2325,7 +2345,7 @@ def build_content_router(
         return artifact_payload(artifact)
 
     @router.patch("/api/artifacts/{artifact_id}")
-    async def update_artifact(artifact_id: str, http_request: Request, request: update_artifact_request_model):
+    async def update_artifact(artifact_id: str, http_request: Request, request: UpdateArtifactRequest):
         require_artifact_access(http_request, artifact_id, "editor")
         store = resolve_artifact_store()
         try:
@@ -2473,7 +2493,7 @@ def build_content_router(
         raise HTTPException(status_code=400, detail="Unsupported artifact type.")
 
     @router.post("/api/artifacts/generate")
-    async def generate_artifact(http_request: Request, request: generate_artifact_request_model):
+    async def generate_artifact(http_request: Request, request: GenerateArtifactRequest):
         from backend.stores.factory import create_chat_message_history
         require_session_access(http_request, request.session_id, "editor")
         history = create_chat_message_history(session_id=request.session_id)
