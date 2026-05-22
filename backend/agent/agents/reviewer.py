@@ -56,8 +56,8 @@ class ReviewAgent:
 
         return {
             "agent": self.name,
-            "task_id": task.get("id"),
-            "task_type": task.get("type") or task.get("task_type") or "review",
+            "task_id": str(task.get("id") or ""),
+            "task_type": str(task.get("type") or task.get("task_type") or "review"),
             "status": "completed",
             "output": output,
             "artifacts": [
@@ -163,8 +163,11 @@ class ReviewAgent:
             f"Deterministic gate payload:\n{review_payload}\n\n"
             f"Workflow content:\n{source_text or '[none]'}"
         )
+        llm = self.llm
+        if llm is None:
+            return self._render_review_markdown(review_payload)
         response = await asyncio.wait_for(
-            self.llm.ainvoke(prompt),
+            llm.ainvoke(prompt),
             timeout=max(1.0, float(self.config.timeout_seconds)),
         )
         return str(getattr(response, "content", response) or "").strip() or self._render_review_markdown(review_payload)

@@ -452,8 +452,17 @@ class WritingAgent:
             f"User request:\n{request}\n\n"
             f"Upstream findings:\n{source_text or '[none]'}"
         )
+        llm = self.llm
+        if llm is None:
+            return self._fallback_draft(
+                request,
+                upstream,
+                template_id,
+                negotiated_outline,
+                fact_check,
+            )
         response = await asyncio.wait_for(
-            self.llm.ainvoke(prompt),
+            llm.ainvoke(prompt),
             timeout=max(1.0, float(self.config.timeout_seconds)),
         )
         return str(getattr(response, "content", response) or "").strip() or self._fallback_draft(
@@ -687,22 +696,22 @@ class WritingAgent:
     def _coerce_outline_sections(self, value: Any) -> list[str]:
         if isinstance(value, str):
             raw_parts = value.replace("\r", "\n").split("\n")
-            sections = []
+            sections: list[str] = []
             for raw_part in raw_parts:
                 section = raw_part.strip().lstrip("-0123456789. )\t")
                 if section:
                     sections.append(section)
             return sections
         if isinstance(value, list | tuple):
-            sections: list[str] = []
+            item_sections: list[str] = []
             for item in value:
                 if isinstance(item, dict):
                     text = self._plain_text(item.get("title") or item.get("section") or item.get("name"))
                 else:
                     text = self._plain_text(item)
                 if text:
-                    sections.append(text)
-            return sections
+                    item_sections.append(text)
+            return item_sections
         return []
 
     @staticmethod
