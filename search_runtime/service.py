@@ -7,6 +7,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Protocol, cast
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
@@ -30,6 +31,10 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _AinvokeLLM(Protocol):
+    async def ainvoke(self, prompt: str) -> object: ...
 
 TIME_SENSITIVE_KEYWORDS = (
     "latest",
@@ -653,7 +658,9 @@ def build_related_questions(
             source_domains.append(domain)
 
     intent = (search_strategy.intent if search_strategy is not None else "").strip().lower()
-    freshness = (search_strategy.freshness if search_strategy is not None else "").strip().lower()
+    freshness = (
+        str(search_strategy.freshness or "") if search_strategy is not None else ""
+    ).strip().lower()
     source_hint = source_titles[0] if source_titles else (source_domains[0] if source_domains else "")
 
     questions: list[str] = []
@@ -731,7 +738,8 @@ def _extract_json_payload(text: str) -> object | None:
         raw = fenced.group(1).strip()
 
     try:
-        return json.loads(raw)
+        payload: object = json.loads(raw)
+        return payload
     except json.JSONDecodeError:
         pass
 
@@ -739,7 +747,8 @@ def _extract_json_payload(text: str) -> object | None:
     end = raw.rfind("}")
     if start != -1 and end > start:
         try:
-            return json.loads(raw[start : end + 1])
+            embedded_payload: object = json.loads(raw[start : end + 1])
+            return embedded_payload
         except json.JSONDecodeError:
             return None
     return None
@@ -955,13 +964,17 @@ Rules:
 User query: {normalized_query}
 {context_block}"""
 
+    planning_llm = cast(_AinvokeLLM, llm)
     try:
         if timeout_seconds is not None:
             import asyncio
 
-            response = await asyncio.wait_for(llm.ainvoke(prompt), timeout=timeout_seconds)
+            response = await asyncio.wait_for(
+                planning_llm.ainvoke(prompt),
+                timeout=timeout_seconds,
+            )
         else:
-            response = await llm.ainvoke(prompt)
+            response = await planning_llm.ainvoke(prompt)
         strategy = _extract_search_strategy_plan(_response_text(response), normalized_query)
         return strategy if strategy.query_variants else fallback_strategy
     except Exception:
