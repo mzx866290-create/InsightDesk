@@ -107,3 +107,16 @@ def test_assistant_preset_crud_and_activation(tmp_path):
     assert len(remaining) == 1
     assert remaining[0]["is_active"] is True
     assert client.delete(f"/api/assistant-presets/{remaining[0]['id']}").status_code == 404
+
+
+def test_assistant_preset_create_uses_valid_default_model_config(tmp_path):
+    client = _client_for_db(tmp_path / "chat_history.db")
+
+    response = client.post("/api/assistant-presets", json={"name": "Default Model"})
+
+    assert response.status_code == 200
+    created = response.json()
+    assert created["default_model_config"]["panel_id"] == "assistant-preset-panel"
+    assert created["default_model_config"]["connection_type"] == "ollama"
+    assert created["default_model_config"]["model"] == "qwen3.5-2B:latest"
+    assert created["default_model_config"]["api_key"] == ""

@@ -187,11 +187,17 @@ class AssistantPresetToolConfig(BaseModel):
     mcp_servers_enabled: list[str] = Field(default_factory=list)
 
 
+def default_assistant_model_config() -> ModelConfig:
+    return ModelConfig(panel_id="assistant-preset-panel", connection_type="ollama")
+
+
 class AssistantPresetRequest(BaseModel):
     name: str
     avatar: str = ""
     system_prompt_id: str = ""
-    default_model_config: ModelConfig = Field(default_factory=ModelConfig)
+    default_model_config: ModelConfig = Field(
+        default_factory=default_assistant_model_config
+    )
     tool_config: AssistantPresetToolConfig = Field(
         default_factory=AssistantPresetToolConfig
     )
@@ -203,7 +209,9 @@ class AssistantPresetResponse(BaseModel):
     name: str
     avatar: str = ""
     system_prompt_id: str = ""
-    default_model_config: ModelConfig = Field(default_factory=ModelConfig)
+    default_model_config: ModelConfig = Field(
+        default_factory=default_assistant_model_config
+    )
     tool_config: AssistantPresetToolConfig = Field(
         default_factory=AssistantPresetToolConfig
     )
