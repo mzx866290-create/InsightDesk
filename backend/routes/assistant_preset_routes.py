@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, cast
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -14,9 +14,9 @@ from backend.schemas.api_models import (
 
 def _model_payload(model: Any) -> dict[str, Any]:
     if hasattr(model, "model_dump"):
-        return model.model_dump()
+        return cast(dict[str, Any], model.model_dump())
     if hasattr(model, "dict"):
-        return model.dict()
+        return cast(dict[str, Any], model.dict())
     return dict(model)
 
 
