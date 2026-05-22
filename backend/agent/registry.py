@@ -737,12 +737,13 @@ def _sanitized_agent_plugin_manifest(manifest: dict[str, Any]) -> tuple[str, dic
     if isinstance(agent, WorkflowManifestAgent):
         sanitized["runtime"] = "workflow_manifest"
         sanitized["workflow"] = [dict(step) for step in agent.workflow]
-    risk_level = str(agent.metadata.get("risk_level") or "").strip()
+    agent_metadata = AgentRegistry._agent_metadata(agent)
+    risk_level = str(agent_metadata.get("risk_level") or "").strip()
     if risk_level:
         sanitized["risk_level"] = risk_level
-    if "requires_approval" in agent.metadata:
-        sanitized["requires_approval"] = bool(agent.metadata.get("requires_approval"))
-    approval_reason = str(agent.metadata.get("approval_reason") or "").strip()
+    if "requires_approval" in agent_metadata:
+        sanitized["requires_approval"] = bool(agent_metadata.get("requires_approval"))
+    approval_reason = str(agent_metadata.get("approval_reason") or "").strip()
     if approval_reason:
         sanitized["approval_reason"] = approval_reason
     if safe_metadata:
@@ -759,7 +760,8 @@ def _marketplace_template_item(
 ) -> dict[str, Any]:
     installable_manifest = {**manifest, "enabled": True}
     agent_name, sanitized = _sanitized_agent_plugin_manifest(installable_manifest)
-    metadata = sanitized.get("metadata") if isinstance(sanitized.get("metadata"), dict) else {}
+    raw_metadata = sanitized.get("metadata")
+    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
     risk_level = str(sanitized.get("risk_level") or "medium").strip() or "medium"
     category = str(
         installable_manifest.get("category")

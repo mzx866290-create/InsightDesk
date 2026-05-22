@@ -40,6 +40,10 @@ def _normalize_label(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
 def _first_non_empty(*values: Any) -> str:
     for value in values:
         normalized = str(value or "").strip()
@@ -149,9 +153,9 @@ def build_agent_metric(
     trace_id: str = "",
     span_id: str = "",
 ) -> OrchestratorAgentMetric:
-    result_payload = result or {}
-    metadata = result_payload.get("metadata") if isinstance(result_payload.get("metadata"), dict) else {}
-    task_metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+    result_payload: AgentResult = result or {}
+    metadata = _dict_or_empty(result_payload.get("metadata"))
+    task_metadata = _dict_or_empty(task.get("metadata"))
     merged_metadata = {**task_metadata, **metadata}
     token_usage = _extract_token_usage(metadata)
     usage_cost = 0

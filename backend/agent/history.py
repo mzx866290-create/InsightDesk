@@ -2,7 +2,7 @@
 
 import re
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.messages import BaseMessage, SystemMessage
@@ -16,7 +16,11 @@ CHAT_FILE_CONTEXT_END_MARKER = "[[CHAT_FILE_CONTEXT_END]]"
 def create_chat_message_history(session_id: str) -> BaseChatMessageHistory:
     from backend.stores.factory import create_chat_message_history as factory_create
 
-    return factory_create(session_id=session_id)
+    return cast(BaseChatMessageHistory, factory_create(session_id=session_id))
+
+
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
 
 def get_session_history(session_id: str) -> BaseChatMessageHistory:
     """
@@ -159,7 +163,7 @@ def _build_session_memory_message(
     }
     for memory in normalized_memories:
         kind = str(memory.get("kind") or "").strip().lower()
-        meta = memory.get("meta") if isinstance(memory.get("meta"), dict) else {}
+        meta = _dict_or_empty(memory.get("meta"))
         if kind == "summary" and str(meta.get("source") or "").strip().lower() == "auto":
             auto_summaries.append(memory)
             continue
@@ -187,7 +191,7 @@ def _build_session_memory_message(
         if not content:
             continue
         count += 1
-        meta = memory.get("meta") if isinstance(memory.get("meta"), dict) else {}
+        meta = _dict_or_empty(memory.get("meta"))
         lines.append(
             f"{count}. [{_session_memory_kind_label(str(memory.get('kind') or 'fact'), meta)}] {content}"
         )

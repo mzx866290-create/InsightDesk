@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from backend.agent.protocols import AgentResult
 from backend.agent.state import ApprovalDecision, OrchestratorPlanStep, OrchestratorState
 
 
 def _copy_state(state: OrchestratorState) -> OrchestratorState:
-    return dict(state)
+    return cast(OrchestratorState, dict(state))
+
+
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
 
 
 def _normalize_approval_status(step: OrchestratorPlanStep) -> str:
@@ -81,7 +85,7 @@ def _latest_review_evaluation(state: OrchestratorState) -> dict[str, Any] | None
             fallback_quality_gate = quality_gate
         if not is_review_result:
             continue
-        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        metadata = _dict_or_empty(result.get("metadata"))
         if quality_gate is None and isinstance(metadata.get("quality_gate"), str):
             quality_gate = {
                 "gate": metadata.get("quality_gate"),
@@ -104,7 +108,7 @@ def _latest_review_evaluation(state: OrchestratorState) -> dict[str, Any] | None
 
 
 def _approval_policy_for_step(step: OrchestratorPlanStep, batch: dict[str, Any]) -> dict[str, Any]:
-    metadata = step.get("metadata") if isinstance(step.get("metadata"), dict) else {}
+    metadata = _dict_or_empty(step.get("metadata"))
     policy = _normalize_approval_policy(metadata.get("approval_policy"))
     batch_policy = batch.get("approval_policy")
     if isinstance(batch_policy, dict):
@@ -160,9 +164,12 @@ def apply_approval_decision(
 ) -> OrchestratorState:
     """Apply a human approval decision to the current orchestrator step."""
     next_state = _copy_state(state)
-    plan = [dict(step) for step in next_state.get("plan", [])]
+    plan: list[OrchestratorPlanStep] = [
+        cast(OrchestratorPlanStep, dict(step))
+        for step in next_state.get("plan", [])
+    ]
     current_step = int(next_state.get("current_step") or 0)
-    batch = next_state.get("approval_batch") if isinstance(next_state.get("approval_batch"), dict) else {}
+    batch = _dict_or_empty(next_state.get("approval_batch"))
     batch_step_ids = [
         str(step_id)
         for step_id in list(batch.get("step_ids") or [])
@@ -226,7 +233,7 @@ def apply_approval_decision(
     next_state["next_agent"] = ""
 
     for index in approval_indexes:
-        step = dict(plan[index])
+        step = cast(OrchestratorPlanStep, dict(plan[index]))
         step["approval_status"] = decision
         step["metadata"] = _build_approval_metadata(
             step,
@@ -254,7 +261,7 @@ def apply_approval_decision(
                 "artifacts": [],
                 "sources": [],
                 "error": reason,
-                "metadata": dict(step["metadata"]),
+                "metadata": _dict_or_empty(step.get("metadata")),
             }
             next_state["agent_results"][step_id] = rejected_result
         plan[index] = step

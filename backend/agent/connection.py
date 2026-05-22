@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from importlib import import_module
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
 
 
 OLLAMA_CONNECTION_ALIASES = {
@@ -53,7 +53,7 @@ class LLMProviderRegistration:
 
     def load_factory(self) -> LLMProviderFactory:
         module = import_module(self.factory_module)
-        return getattr(module, self.factory_name)
+        return cast(LLMProviderFactory, getattr(module, self.factory_name))
 
 
 LLM_PROVIDER_REGISTRY: dict[str, LLMProviderRegistration] = {

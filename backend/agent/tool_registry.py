@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
@@ -40,7 +41,7 @@ def get_builtin_tool_registry() -> tuple[BuiltinToolSpec, ...]:
 
 def _parse_builtin_tool_name_list(raw_value: Any) -> list[str]:
     if isinstance(raw_value, str):
-        candidates = raw_value.split(",")
+        candidates: Sequence[Any] = raw_value.split(",")
     elif isinstance(raw_value, (list, tuple)):
         candidates = raw_value
     else:

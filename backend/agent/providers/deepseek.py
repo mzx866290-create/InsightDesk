@@ -6,6 +6,8 @@ import logging
 import os
 from typing import Optional
 
+from pydantic import SecretStr
+
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +40,6 @@ def build_llm(
         temperature=temperature,
         timeout=request_timeout,
         max_retries=0,
-        api_key=resolved_api_key,
+        api_key=SecretStr(resolved_api_key),
         base_url=base_url,
     )
