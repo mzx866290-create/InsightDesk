@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 
 @runtime_checkable
 class VectorStoreAdapter(Protocol):
-    provider: str
+    @property
+    def provider(self) -> str: ...
 
     def from_documents(self, documents: list[Document], embeddings: Any) -> Any: ...
 
