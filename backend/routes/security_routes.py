@@ -54,8 +54,10 @@ def _sso_login_audit_details(payload: dict[str, Any], response_mode: str) -> str
 def _sso_callback_audit_details(payload: dict[str, Any]) -> str:
     memberships = payload.get("memberships")
     membership_count = len(memberships) if isinstance(memberships, list) else 0
-    external = payload.get("external") if isinstance(payload.get("external"), dict) else {}
-    user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+    raw_external = payload.get("external")
+    external: dict[str, Any] = raw_external if isinstance(raw_external, dict) else {}
+    raw_user = payload.get("user")
+    user: dict[str, Any] = raw_user if isinstance(raw_user, dict) else {}
     return (
         f"provider={external.get('provider') or ''} "
         f"user_id={user.get('user_id') or ''} "
