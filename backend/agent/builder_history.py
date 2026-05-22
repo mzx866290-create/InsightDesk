@@ -1,11 +1,69 @@
 """History loading and persistence helpers for agent builder wrappers."""
 
-from typing import Any, Optional
+from typing import Any, Optional, Protocol, cast
 
 from langchain_core.messages import BaseMessage
 
 from backend.agent.builder_context import BuilderInvocationConfig
 import backend.agent.runtime_support as runtime_support
+
+
+class _PanelChatMessageHistory(Protocol):
+    db_path: str
+
+    @property
+    def messages(self) -> list[BaseMessage]: ...
+
+    def get_panel_messages_for_rerun(
+        self,
+        panel_id: str,
+        answer_group_id: str,
+    ) -> list[BaseMessage]: ...
+
+    def get_panel_messages(self, panel_id: str) -> list[BaseMessage]: ...
+
+    def add_user_message_once(
+        self,
+        message: str,
+        answer_group_id: str,
+        images: Optional[list[dict[str, Any]]] = None,
+        files: Optional[list[dict[str, Any]]] = None,
+    ) -> None: ...
+
+    def add_user_message(
+        self,
+        message: str,
+        *,
+        images: Optional[list[dict[str, Any]]] = None,
+        files: Optional[list[dict[str, Any]]] = None,
+    ) -> None: ...
+
+    def delete_ai_messages_for_answer_group(
+        self,
+        panel_id: str,
+        answer_group_id: str,
+    ) -> None: ...
+
+    def add_ai_message(
+        self,
+        message: str,
+        *,
+        model_id: str = "",
+        panel_id: str = "",
+        answer_group_id: str = "",
+        sources: Optional[list[dict[str, Any]]] = None,
+        workflow_nodes: Optional[list[dict[str, Any]]] = None,
+        task_id: str = "",
+        task_type: str = "",
+        token_usage: Optional[dict[str, Any]] = None,
+    ) -> None: ...
+
+
+def _create_panel_chat_history(session_id: str) -> _PanelChatMessageHistory:
+    return cast(
+        _PanelChatMessageHistory,
+        runtime_support.create_chat_message_history(session_id=session_id),
+    )
 
 
 def _load_chat_history(
@@ -18,7 +76,7 @@ def _load_chat_history(
         # Clear-context mode: skip both persisted messages and session memory for this call only.
         return []
 
-    history = runtime_support.create_chat_message_history(session_id=session_id)
+    history = _create_panel_chat_history(session_id)
     session_memory = runtime_support.list_session_memory(
         session_id,
         limit=10,
@@ -62,7 +120,7 @@ def _persist_panel_history(
     task_type: str = "",
     token_usage: Optional[dict[str, Any]] = None,
 ) -> None:
-    history = runtime_support.create_chat_message_history(session_id=session_id)
+    history = _create_panel_chat_history(session_id)
     summarized_input = runtime_support._summarize_user_input_for_history(user_input)
     display_input = str(raw_user_message or "").strip()
     cleaned_output = runtime_support._strip_think_tags(output)

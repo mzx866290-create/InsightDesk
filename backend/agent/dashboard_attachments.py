@@ -318,11 +318,11 @@ def _build_attachment_dashboard_fallback(
     if numeric_columns:
         dimension_label = dimension_candidates[0][0] if dimension_candidates else ""
         metric_label = numeric_columns[0][0]
-        chart_rows = []
+        chart_rows: list[tuple[str, float]] = []
         for row in rows:
             raw_metric = row.get(metric_label)
-            metric_value = _parse_numeric_dashboard_value(raw_metric)
-            if metric_value is None:
+            parsed_metric = _parse_numeric_dashboard_value(raw_metric)
+            if parsed_metric is None:
                 continue
             if dimension_label:
                 raw_dimension = row.get(dimension_label)
@@ -331,7 +331,7 @@ def _build_attachment_dashboard_fallback(
                 label_value = str(raw_dimension)
             else:
                 label_value = f"第{len(chart_rows) + 1}行"
-            chart_rows.append((label_value, float(metric_value)))
+            chart_rows.append((label_value, float(parsed_metric)))
             if len(chart_rows) >= 8:
                 break
 

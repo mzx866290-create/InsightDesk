@@ -1,7 +1,7 @@
 """Runtime wrapper classes used by the high-level agent builder."""
 
 import asyncio
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
 
 from backend.agent.builder_context import (
     _attach_configured_task_meta,
@@ -56,6 +56,16 @@ class _BaseAgentWrapper:
         self.requested_agent_mode = requested_agent_mode
         self.actual_agent_mode = actual_agent_mode
         self.agent_mode_reason = agent_mode_reason
+
+    async def _run_once(
+        self,
+        session_id: str,
+        user_input: Any,
+        panel_id: str = "",
+        exclude_ai_answer_group_id: str = "",
+        omit_history: bool = False,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
 
     async def _run_plain_chat_once(
         self,
@@ -292,7 +302,7 @@ class LangGraphAgentWrapper(_BaseAgentWrapper):
             "_native_stream_chunks": native_stream_chunks,
         }
 
-    async def ainvoke(self, inputs: dict, config: dict = None):
+    async def ainvoke(self, inputs: dict[str, Any], config: dict[str, Any] | None = None):
         return await _ainvoke_agent_wrapper(
             self,
             inputs,
@@ -300,7 +310,7 @@ class LangGraphAgentWrapper(_BaseAgentWrapper):
             supports_workflow_event_sink=True,
         )
 
-    async def astream_answer(self, user_input: Any, config: dict = None):
+    async def astream_answer(self, user_input: Any, config: dict[str, Any] | None = None):
         async for item in _astream_langgraph_wrapper(self, user_input, config):
             yield item
 
@@ -326,10 +336,10 @@ class PlainChatWrapper(_BaseAgentWrapper):
             omit_history=omit_history,
         )
 
-    async def ainvoke(self, inputs: dict, config: dict = None):
+    async def ainvoke(self, inputs: dict[str, Any], config: dict[str, Any] | None = None):
         return await _ainvoke_agent_wrapper(self, inputs, config)
 
-    async def astream_answer(self, user_input: Any, config: dict = None):
+    async def astream_answer(self, user_input: Any, config: dict[str, Any] | None = None):
         invocation = _build_invocation_config(config)
         chat_history = _load_chat_history(
             invocation.session_id,
@@ -417,8 +427,11 @@ class FunctionCallingAgentWrapper(_BaseAgentWrapper):
         if dashboard_result:
             return dashboard_result
 
-        result = await self.agent_executor.ainvoke(
-            {"input": user_input, "chat_history": chat_history}
+        result = cast(
+            dict[str, Any],
+            await self.agent_executor.ainvoke(
+                {"input": user_input, "chat_history": chat_history}
+            ),
         )
         intermediate_steps = result.get("intermediate_steps", [])
         if not result.get("sources"):
@@ -430,10 +443,10 @@ class FunctionCallingAgentWrapper(_BaseAgentWrapper):
         )
         return result
 
-    async def ainvoke(self, inputs: dict, config: dict = None):
+    async def ainvoke(self, inputs: dict[str, Any], config: dict[str, Any] | None = None):
         return await _ainvoke_agent_wrapper(self, inputs, config)
 
-    async def astream_answer(self, user_input: Any, config: dict = None):
+    async def astream_answer(self, user_input: Any, config: dict[str, Any] | None = None):
         invocation = _build_invocation_config(config)
         chat_history = _load_chat_history(
             invocation.session_id,
