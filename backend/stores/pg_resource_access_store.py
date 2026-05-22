@@ -60,19 +60,36 @@ class PostgresResourceAccessStore(PostgresStoreMixin, SQLiteResourceAccessStore)
                 )
             conn.commit()
 
-    def _record_from_row(self, row: Any | None) -> ResourceGrantRecord | None:
+    @staticmethod
+    def _record_from_row(
+        row: tuple[Any, ...] | dict[str, Any] | None,
+    ) -> ResourceGrantRecord | None:
         if row is None:
             return None
-        subject_type = str(self._row_value(row, 2, "subject_type") or "").strip()
-        subject_id = str(self._row_value(row, 3, "subject_id") or "").strip()
+        subject_type = str(
+            PostgresStoreMixin._row_value(row, 2, "subject_type") or ""
+        ).strip()
+        subject_id = str(
+            PostgresStoreMixin._row_value(row, 3, "subject_id") or ""
+        ).strip()
         return ResourceGrantRecord(
-            resource_type=str(self._row_value(row, 0, "resource_type") or ""),
-            resource_id=str(self._row_value(row, 1, "resource_id") or ""),
+            resource_type=str(
+                PostgresStoreMixin._row_value(row, 0, "resource_type") or ""
+            ),
+            resource_id=str(
+                PostgresStoreMixin._row_value(row, 1, "resource_id") or ""
+            ),
             org_id=subject_id if subject_type == "org" else "",
             user_id=subject_id if subject_type == "user" else "",
-            role=normalize_identity_role(self._row_value(row, 4, "role")),
-            created_at=float(self._row_value(row, 5, "created_at") or 0),
-            updated_at=float(self._row_value(row, 6, "updated_at") or 0),
+            role=normalize_identity_role(
+                PostgresStoreMixin._row_value(row, 4, "role")
+            ),
+            created_at=float(
+                PostgresStoreMixin._row_value(row, 5, "created_at") or 0
+            ),
+            updated_at=float(
+                PostgresStoreMixin._row_value(row, 6, "updated_at") or 0
+            ),
         )
 
     def upsert_grant(
