@@ -10,6 +10,20 @@ from backend.routes.resource_access_helpers import (
     grant_resource_owner,
     require_resource_access,
 )
+from backend.schemas.api_models import (
+    CreateBookmarkRequest,
+    CreateSessionRequest,
+    CreateWorkspaceRequest,
+    ImportSessionMessagesRequest,
+    PinSessionMemoryRequest,
+    ReorderSessionsRequest,
+    SetMessageFeedbackRequest,
+    SetRetrievalFeedbackRequest,
+    TruncateSessionMessagesRequest,
+    UpdateSessionMemoryRequest,
+    UpdateSessionRequest,
+    UpdateWorkspaceRequest,
+)
 
 
 def build_session_router(
@@ -193,7 +207,9 @@ def build_session_router(
         return workspaces_payload(visible_workspaces)
 
     @router.post("/api/workspaces")
-    async def create_workspace_endpoint(http_request: Request, request: create_workspace_request_model):
+    async def create_workspace_endpoint(
+        http_request: Request, request: CreateWorkspaceRequest
+    ):
         from backend.chat_store import create_workspace
         require_remote_editor(http_request)
         try:
@@ -232,7 +248,9 @@ def build_session_router(
         return {"ok": True, "workspace": workspace}
 
     @router.patch("/api/workspaces/{workspace_id}")
-    async def update_workspace_endpoint(workspace_id: str, http_request: Request, request: update_workspace_request_model):
+    async def update_workspace_endpoint(
+        workspace_id: str, http_request: Request, request: UpdateWorkspaceRequest
+    ):
         from backend.chat_store import update_workspace
         require_workspace_access(http_request, workspace_id, "editor")
         field_set = request_field_set(request)
@@ -335,7 +353,7 @@ def build_session_router(
         return {"sessions": visible_sessions}
 
     @router.post("/api/sessions")
-    async def create_session(http_request: Request, request: create_session_request_model):
+    async def create_session(http_request: Request, request: CreateSessionRequest):
         from backend.chat_store import (
             DEFAULT_WORKSPACE_ID, SQLiteChatMessageHistory, connect_sqlite, get_session,
             get_workspace, list_workspaces, update_session_meta,
@@ -376,7 +394,9 @@ def build_session_router(
         return result
 
     @router.patch("/api/sessions/{session_id}")
-    async def update_session_endpoint(session_id: str, http_request: Request, request: update_session_request_model):
+    async def update_session_endpoint(
+        session_id: str, http_request: Request, request: UpdateSessionRequest
+    ):
         from backend.chat_store import update_session_meta
         require_session_access(http_request, session_id, "editor")
         if not session_update_requested(request):
@@ -401,7 +421,9 @@ def build_session_router(
         return {"ok": True, "session": session}
 
     @router.post("/api/sessions/reorder")
-    async def reorder_sessions_endpoint(http_request: Request, request: reorder_sessions_request_model):
+    async def reorder_sessions_endpoint(
+        http_request: Request, request: ReorderSessionsRequest
+    ):
         from backend.chat_store import DEFAULT_WORKSPACE_ID, get_all_sessions, reorder_sessions
         require_remote_editor(http_request)
         target_workspace_id = str(getattr(request, "workspace_id", "") or "").strip()
@@ -484,7 +506,9 @@ def build_session_router(
         return {"bookmarks": visible_bookmarks}
 
     @router.post("/api/bookmarks")
-    async def create_bookmark_endpoint(http_request: Request, request: create_bookmark_request_model):
+    async def create_bookmark_endpoint(
+        http_request: Request, request: CreateBookmarkRequest
+    ):
         from backend.chat_store import create_or_update_bookmark
         require_session_access(http_request, request.session_id, "editor")
         try:
@@ -563,7 +587,7 @@ def build_session_router(
     async def import_session_messages_endpoint(
         session_id: str,
         http_request: Request,
-        request: import_session_messages_request_model,
+        request: ImportSessionMessagesRequest,
     ):
         from backend.chat_store import SQLiteChatMessageHistory, replace_session_panels
         require_session_access(http_request, session_id, "editor")
@@ -623,7 +647,9 @@ def build_session_router(
         }
 
     @router.post("/api/sessions/{session_id}/messages/feedback")
-    async def set_message_feedback_endpoint(session_id: str, http_request: Request, request: set_message_feedback_request_model):
+    async def set_message_feedback_endpoint(
+        session_id: str, http_request: Request, request: SetMessageFeedbackRequest
+    ):
         from backend.chat_store import set_message_feedback
         require_session_access(http_request, session_id, "editor")
         try:
@@ -641,7 +667,11 @@ def build_session_router(
         return {"ok": True, "feedback": result}
 
     @router.post("/api/sessions/{session_id}/messages/truncate")
-    async def truncate_session_messages_endpoint(session_id: str, http_request: Request, request: truncate_session_messages_request_model):
+    async def truncate_session_messages_endpoint(
+        session_id: str,
+        http_request: Request,
+        request: TruncateSessionMessagesRequest,
+    ):
         from backend.chat_store import truncate_session_from_answer_group
         require_session_access(http_request, session_id, "editor")
         validate_chat_payload(request.content, request.images, request.files)
@@ -669,7 +699,9 @@ def build_session_router(
     # 鈹€鈹€ 妫€绱㈠弽棣?鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     @router.post("/api/sessions/{session_id}/retrieval-feedback")
-    async def set_retrieval_feedback_endpoint(session_id: str, http_request: Request, request: set_retrieval_feedback_request_model):
+    async def set_retrieval_feedback_endpoint(
+        session_id: str, http_request: Request, request: SetRetrievalFeedbackRequest
+    ):
         from backend.chat_store import set_retrieval_feedback
         require_session_access(http_request, session_id, "editor")
         try:
@@ -713,7 +745,9 @@ def build_session_router(
             raise HTTPException(status_code=404, detail="Session memory was not found.") from exc
 
     @router.post("/api/sessions/{session_id}/memory/pin")
-    async def pin_session_memory_endpoint(session_id: str, http_request: Request, request: pin_session_memory_request_model):
+    async def pin_session_memory_endpoint(
+        session_id: str, http_request: Request, request: PinSessionMemoryRequest
+    ):
         from backend.chat_store import pin_session_memory
         require_session_access(http_request, session_id, "editor")
         try:
@@ -725,7 +759,12 @@ def build_session_router(
         return pin_session_memory_payload(result)
 
     @router.patch("/api/sessions/{session_id}/memory/{memory_id}")
-    async def update_session_memory_endpoint(session_id: str, memory_id: str, http_request: Request, request: update_session_memory_request_model):
+    async def update_session_memory_endpoint(
+        session_id: str,
+        memory_id: str,
+        http_request: Request,
+        request: UpdateSessionMemoryRequest,
+    ):
         from backend.chat_store import update_session_memory
         require_session_access(http_request, session_id, "editor")
         try:
