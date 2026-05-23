@@ -9,15 +9,15 @@ from typing import Any, Callable, Optional
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
-from backend.chat_store import (
-    _build_human_message_content_for_model,
-    _build_search_preview,
-    _derive_session_title,
-    _env_int,
-)
 from backend.stores.chat_normalization import (
     DEFAULT_WORKSPACE_ID,
     normalize_message_feedback_value as _normalize_message_feedback_value,
+)
+from backend.stores.chat_messages import (
+    build_human_message_content_for_model as _build_human_message_content_for_model,
+    build_search_preview as _build_search_preview,
+    derive_session_title as _derive_session_title,
+    env_int as _env_int,
 )
 from backend.stores.chat_serialization import (
     normalize_content as _normalize_content,

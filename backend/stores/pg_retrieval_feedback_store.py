@@ -5,11 +5,11 @@ from __future__ import annotations
 import time
 from typing import Any, Callable
 
-from backend.chat_store import (
-    _build_retrieval_source_key,
-)
 from backend.stores.chat_normalization import (
     normalize_message_feedback_value as _normalize_message_feedback_value,
+)
+from backend.stores.chat_messages import (
+    build_retrieval_source_key as _build_retrieval_source_key,
 )
 from backend.stores.chat_serialization import normalize_content as _normalize_content
 from backend.stores.pg_base import PostgresStoreMixin
