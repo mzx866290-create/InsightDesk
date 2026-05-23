@@ -10,7 +10,7 @@ import logging
 import os
 import re
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import TYPE_CHECKING, List, Dict, Any, Optional, cast
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from backend.core.storage_runtime import (
@@ -19,6 +19,9 @@ from backend.core.storage_runtime import (
     database_provider,
     ensure_sqlite_parent,
 )
+
+if TYPE_CHECKING:
+    from backend.stores.protocols import RetrievalFeedbackStore, SessionMemoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +46,13 @@ def _should_use_postgres_store(db_path: str | None = None) -> bool:
     }
 
 
-def _session_memory_store():
+def _session_memory_store() -> "SessionMemoryStore":
     from backend.stores.factory import create_session_memory_store
 
     return create_session_memory_store()
 
 
-def _retrieval_feedback_store():
+def _retrieval_feedback_store() -> "RetrievalFeedbackStore":
     from backend.stores.factory import create_retrieval_feedback_store
 
     return create_retrieval_feedback_store()
@@ -1303,7 +1306,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
             exclude_ai_answer_group_id=exclude_ai_answer_group_id,
         )
 
-        messages = []
+        messages: List[BaseMessage] = []
         for (
             _,
             msg_type,
@@ -1512,15 +1515,18 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
 
     def add_user_message(
         self,
-        message: str,
+        message: HumanMessage | str,
         model_id: str = "",
         panel_id: str = "",
         answer_group_id: str = "",
         images: Optional[List[Dict[str, Any]]] = None,
         files: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
+        stored_message = (
+            message if isinstance(message, HumanMessage) else HumanMessage(content=message)
+        )
         self.add_message(
-            HumanMessage(content=message),
+            stored_message,
             model_id=model_id,
             panel_id=panel_id,
             answer_group_id=answer_group_id,
@@ -1530,7 +1536,7 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
 
     def add_ai_message(
         self,
-        message: str,
+        message: AIMessage | str,
         model_id: str = "",
         panel_id: str = "",
         answer_group_id: str = "",
@@ -1542,8 +1548,9 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
         task_type: str = "",
         token_usage: Optional[Dict[str, Any]] = None,
     ) -> None:
+        stored_message = message if isinstance(message, AIMessage) else AIMessage(content=message)
         self.add_message(
-            AIMessage(content=message),
+            stored_message,
             model_id=model_id,
             panel_id=panel_id,
             answer_group_id=answer_group_id,
@@ -1995,7 +2002,7 @@ def _fetch_session_row(
         """,
         (DEFAULT_WORKSPACE_ID, session_id),
     )
-    return cursor.fetchone()
+    return cast(tuple[Any, ...] | None, cursor.fetchone())
 
 
 def _fetch_workspace_row(
@@ -2035,7 +2042,7 @@ def _fetch_workspace_row(
         """,
         (DEFAULT_WORKSPACE_ID, workspace_id),
     )
-    return cursor.fetchone()
+    return cast(tuple[Any, ...] | None, cursor.fetchone())
 
 
 def get_all_sessions(
@@ -2493,11 +2500,14 @@ def set_message_feedback(
         from backend.stores.factory import create_chat_message_history
 
         history = create_chat_message_history(session_id)
-        return history.set_message_feedback(
-            feedback_value=normalized_feedback_value,
-            message_id=message_id,
-            panel_id=normalized_panel_id,
-            answer_group_id=normalized_answer_group_id,
+        return cast(
+            Optional[Dict[str, Any]],
+            history.set_message_feedback(
+                feedback_value=normalized_feedback_value,
+                message_id=message_id,
+                panel_id=normalized_panel_id,
+                answer_group_id=normalized_answer_group_id,
+            ),
         )
 
     with connect_sqlite(db_path) as conn:

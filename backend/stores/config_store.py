@@ -9,7 +9,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from backend.chat_store import connect_sqlite
 from backend.core.storage_runtime import app_database_path
@@ -25,6 +25,12 @@ class StoredConfigValue:
     key: str
     value: str
     updated_at: float
+
+
+class AppConfigValueStore(Protocol):
+    def get_value(self, key: str, default: str = "") -> str: ...
+
+    def set(self, key: str, value: str) -> StoredConfigValue: ...
 
 
 class SQLiteAppConfigStore:
@@ -252,7 +258,7 @@ def sanitize_mcp_runtime_health_history_item(item: Any) -> dict[str, Any] | None
 
 
 def read_mcp_runtime_health_history(
-    store: SQLiteAppConfigStore,
+    store: AppConfigValueStore,
     *,
     limit: Any = None,
     config_key: str = MCP_RUNTIME_HEALTH_HISTORY_CONFIG_KEY,
@@ -277,7 +283,7 @@ def read_mcp_runtime_health_history(
 
 
 def append_mcp_runtime_health_history(
-    store: SQLiteAppConfigStore,
+    store: AppConfigValueStore,
     snapshot: dict[str, Any],
     *,
     limit: Any = None,

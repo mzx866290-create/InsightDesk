@@ -1058,9 +1058,12 @@ async def _exchange_oidc_code(
     if response.status_code >= 400:
         raise RuntimeError("OIDC token exchange failed")
     try:
-        payload = response.json()
+        raw_payload = response.json()
     except ValueError as exc:
         raise RuntimeError("OIDC token response is not JSON") from exc
+    if not isinstance(raw_payload, dict):
+        raise RuntimeError("OIDC token response is not a JSON object")
+    payload = {str(key): value for key, value in raw_payload.items()}
     if not str(payload.get("id_token") or "").strip():
         raise RuntimeError("OIDC token response missing id_token")
     return payload
@@ -1786,7 +1789,7 @@ async def _run_integrator_scheduler_tick_once(
         prune_persisted_tasks=_prune_persisted_tasks,
         run_task=_run_task,
         enqueue_task=enqueue_task,
-        spawn_background_task=asyncio.create_task,
+        spawn_background_task=lambda coro: asyncio.ensure_future(coro),
         logger=logger,
         task_backend=lambda: TASK_BACKEND,
         enqueue_external_task=enqueue_external_task,

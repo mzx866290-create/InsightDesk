@@ -16,11 +16,11 @@ from backend.agent_mcp_helpers import (
 )
 from backend.stores.config_store import (
     MCP_RUNTIME_HEALTH_HISTORY_CONFIG_KEY,
-    SQLiteAppConfigStore,
     append_mcp_runtime_health_history,
     mcp_runtime_health_history_limit,
     read_mcp_runtime_health_history,
 )
+from backend.stores.protocols import AppConfigStore
 
 MCP_APPROVED_CONNECTORS_CONFIG_KEY = "mcp_approved_connectors"
 
@@ -35,7 +35,7 @@ def runtime_health_history_limit(raw_limit: Any = None) -> int:
 
 
 def stored_runtime_health_history(
-    store: SQLiteAppConfigStore,
+    store: AppConfigStore,
     limit: Any = None,
     *,
     config_key: str = MCP_RUNTIME_HEALTH_HISTORY_CONFIG_KEY,
@@ -48,7 +48,7 @@ def stored_runtime_health_history(
 
 
 def persist_runtime_health_history_item(
-    store: SQLiteAppConfigStore,
+    store: AppConfigStore,
     snapshot: dict[str, Any],
     history_limit: Any,
     *,
@@ -63,10 +63,10 @@ def persist_runtime_health_history_item(
 
 
 def runtime_health_history_payload(
-    store: SQLiteAppConfigStore,
+    store: AppConfigStore,
     *,
     limit: Any = 10,
-    fallback_reader: Callable[[Any], dict[str, Any]],
+    fallback_reader: Callable[[Any], Any],
     logger: Any,
     config_key: str = MCP_RUNTIME_HEALTH_HISTORY_CONFIG_KEY,
 ) -> dict[str, Any]:
@@ -98,7 +98,7 @@ def runtime_health_history_payload(
 
 
 def stored_mcp_approved_connectors(
-    store: SQLiteAppConfigStore,
+    store: AppConfigStore,
     *,
     config_key: str = MCP_APPROVED_CONNECTORS_CONFIG_KEY,
 ) -> list[str]:
@@ -107,7 +107,7 @@ def stored_mcp_approved_connectors(
 
 
 def persist_mcp_approved_connectors(
-    store: SQLiteAppConfigStore,
+    store: AppConfigStore,
     connector_names: Any,
     *,
     set_runtime_connectors: Callable[[Any], list[str]],
@@ -123,7 +123,7 @@ def persist_mcp_approved_connectors(
 
 
 def hydrate_runtime_mcp_approved_connectors(
-    store: SQLiteAppConfigStore,
+    store: AppConfigStore,
     *,
     set_runtime_connectors: Callable[[Any], list[str]],
     config_key: str = MCP_APPROVED_CONNECTORS_CONFIG_KEY,
@@ -134,7 +134,7 @@ def hydrate_runtime_mcp_approved_connectors(
 
 
 def approvals_payload_with_persistence(
-    store: SQLiteAppConfigStore,
+    store: AppConfigStore,
     *,
     runtime_payload: Callable[[], dict[str, Any]],
     set_runtime_connectors: Callable[[Any], list[str]],
@@ -155,7 +155,7 @@ def approvals_payload_with_persistence(
 
 
 def approve_persisted_runtime_mcp_connector(
-    store: SQLiteAppConfigStore,
+    store: AppConfigStore,
     connector_name: Any,
     *,
     runtime_payload: Callable[[], dict[str, Any]],
@@ -190,7 +190,7 @@ def approve_persisted_runtime_mcp_connector(
 
 
 def revoke_persisted_runtime_mcp_connector(
-    store: SQLiteAppConfigStore,
+    store: AppConfigStore,
     connector_name: Any,
     *,
     runtime_payload: Callable[[], dict[str, Any]],
