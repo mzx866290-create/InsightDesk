@@ -7,7 +7,6 @@ import json
 import sqlite3
 import time
 import logging
-import uuid
 from typing import TYPE_CHECKING, List, Dict, Any, Optional, cast
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
@@ -24,7 +23,6 @@ from backend.stores.chat_serialization import (
     normalize_metadata_list as _normalize_metadata_list,
     normalize_token_usage as _normalize_token_usage,
     parse_json_list as _parse_json_list,
-    parse_json_object as _parse_json_object,
 )
 from backend.stores.chat_schema import (
     init_bookmarks_table as _init_bookmarks_table,
@@ -38,7 +36,6 @@ from backend.stores.chat_schema import (
 )
 from backend.stores.chat_rows import (
     row_to_session as _row_to_session,
-    row_to_session_memory as _row_to_session_memory,
 )
 from backend.stores.chat_messages import (
     build_human_message_content_for_model as _build_human_message_content_for_model,
@@ -52,9 +49,6 @@ from backend.stores.chat_normalization import (
     DEFAULT_WORKSPACE_ID,
     DEFAULT_WORKSPACE_NAME as DEFAULT_WORKSPACE_NAME,
     normalize_message_feedback_value as _normalize_message_feedback_value,
-    normalize_session_memory_content as _normalize_session_memory_content,
-    normalize_session_memory_kind as _normalize_session_memory_kind,
-    normalize_session_memory_meta as _normalize_session_memory_meta,
     normalize_tags as _normalize_tags,
 )
 from backend.stores.bookmark_store import (
@@ -85,6 +79,14 @@ from backend.stores.retrieval_feedback_store import (
     list_retrieval_feedback as list_retrieval_feedback,
     set_retrieval_feedback as set_retrieval_feedback,
 )
+from backend.stores.session_memory_store import (
+    clear_session_memory as clear_session_memory,
+    create_session_memory as create_session_memory,
+    delete_session_memory as delete_session_memory,
+    list_session_memory as list_session_memory,
+    pin_session_memory as pin_session_memory,
+    update_session_memory as update_session_memory,
+)
 from backend.stores.workspace_store import (
     activate_workspace as activate_workspace,
     create_workspace as create_workspace,
@@ -102,7 +104,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DB_PATH = app_database_path()
-_UNSET = object()
 
 
 def _should_use_postgres_store(db_path: str | None = None) -> bool:
@@ -1329,345 +1330,6 @@ def reorder_sessions(
         "count": len(ordered_items),
         "orders": ordered_items,
     }
-
-
-def list_session_memory(
-    session_id: str,
-    *,
-    kind: Optional[str] = None,
-    limit: Optional[int] = None,
-    newest_first: bool = False,
-    db_path: str | None = None,
-) -> List[Dict[str, Any]]:
-    if _should_use_postgres_store(db_path):
-        return _session_memory_store().list_session_memory(
-            session_id,
-            kind=kind,
-            limit=limit,
-            newest_first=newest_first,
-        )
-
-    with connect_sqlite(db_path) as conn:
-        _init_sessions_table(conn)
-        _init_session_memory_table(conn)
-        cursor = conn.cursor()
-
-        sql = """
-            SELECT id, session_id, kind, content, COALESCE(meta_json, '{}'), created_at, updated_at
-            FROM session_memory
-            WHERE session_id = ?
-        """
-        params: List[Any] = [session_id]
-
-        if kind is not None:
-            sql += " AND kind = ?"
-            params.append(_normalize_session_memory_kind(kind))
-
-        if limit is not None and limit > 0:
-            sql += "\nORDER BY updated_at DESC, created_at DESC, id DESC\nLIMIT ?"
-            params.append(limit)
-            cursor.execute(sql, tuple(params))
-            rows = cursor.fetchall()
-            if not newest_first:
-                rows.reverse()
-        else:
-            direction = "DESC" if newest_first else "ASC"
-            sql += f"\nORDER BY updated_at {direction}, created_at {direction}, id {direction}"
-            cursor.execute(sql, tuple(params))
-            rows = cursor.fetchall()
-
-        return [_row_to_session_memory(row) for row in rows]
-
-
-def create_session_memory(
-    session_id: str,
-    *,
-    kind: str,
-    content: Any,
-    meta: Optional[Dict[str, Any]] = None,
-    db_path: str | None = None,
-) -> Optional[Dict[str, Any]]:
-    if _should_use_postgres_store(db_path):
-        return _session_memory_store().create_session_memory(
-            session_id,
-            kind=kind,
-            content=content,
-            meta=meta,
-        )
-
-    normalized_kind = _normalize_session_memory_kind(kind)
-    normalized_content = _normalize_session_memory_content(content)
-    normalized_meta = _normalize_session_memory_meta(meta)
-    now = time.time()
-    memory_id = str(uuid.uuid4())
-
-    with connect_sqlite(db_path) as conn:
-        _init_sessions_table(conn)
-        _init_session_memory_table(conn)
-        cursor = conn.cursor()
-
-        if not _session_exists(cursor, session_id):
-            return None
-
-        cursor.execute(
-            """
-            INSERT INTO session_memory (
-                id, session_id, kind, content, meta_json, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                memory_id,
-                session_id,
-                normalized_kind,
-                normalized_content,
-                json.dumps(normalized_meta, ensure_ascii=False),
-                now,
-                now,
-            ),
-        )
-        cursor.execute(
-            "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
-            (now, session_id),
-        )
-        conn.commit()
-
-    return {
-        "id": memory_id,
-        "session_id": session_id,
-        "kind": normalized_kind,
-        "content": normalized_content,
-        "meta": normalized_meta,
-        "created_at": now,
-        "updated_at": now,
-    }
-
-
-def pin_session_memory(
-    session_id: str,
-    *,
-    content: Any,
-    kind: str = "fact",
-    meta: Optional[Dict[str, Any]] = None,
-    db_path: str | None = None,
-) -> Optional[Dict[str, Any]]:
-    if _should_use_postgres_store(db_path):
-        return _session_memory_store().pin_session_memory(
-            session_id,
-            content=content,
-            kind=kind,
-            meta=meta,
-        )
-
-    normalized_kind = _normalize_session_memory_kind(kind)
-    normalized_content = _normalize_session_memory_content(content)
-    normalized_meta = _normalize_session_memory_meta(meta)
-    now = time.time()
-
-    with connect_sqlite(db_path) as conn:
-        _init_sessions_table(conn)
-        _init_session_memory_table(conn)
-        cursor = conn.cursor()
-
-        if not _session_exists(cursor, session_id):
-            return None
-
-        cursor.execute(
-            """
-            SELECT id, session_id, kind, content, COALESCE(meta_json, '{}'), created_at, updated_at
-            FROM session_memory
-            WHERE session_id = ?
-              AND kind = ?
-              AND content = ?
-            ORDER BY updated_at DESC, created_at DESC
-            LIMIT 1
-            """,
-            (session_id, normalized_kind, normalized_content),
-        )
-        existing_row = cursor.fetchone()
-
-        if existing_row:
-            existing_meta = _normalize_session_memory_meta(
-                _parse_json_object(existing_row[4])
-            )
-            merged_meta = (
-                {**existing_meta, **normalized_meta}
-                if normalized_meta
-                else existing_meta
-            )
-            cursor.execute(
-                "UPDATE session_memory SET meta_json = ?, updated_at = ? WHERE id = ?",
-                (
-                    json.dumps(merged_meta, ensure_ascii=False),
-                    now,
-                    existing_row[0],
-                ),
-            )
-            cursor.execute(
-                "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
-                (now, session_id),
-            )
-            conn.commit()
-            return {
-                "created": False,
-                "memory": {
-                    **_row_to_session_memory(existing_row),
-                    "meta": merged_meta,
-                    "updated_at": now,
-                },
-            }
-
-    created_memory = create_session_memory(
-        session_id,
-        kind=normalized_kind,
-        content=normalized_content,
-        meta=normalized_meta,
-        db_path=db_path,
-    )
-    if not created_memory:
-        return None
-
-    return {
-        "created": True,
-        "memory": created_memory,
-    }
-
-
-def update_session_memory(
-    session_id: str,
-    memory_id: str,
-    *,
-    content: Any = _UNSET,
-    kind: Any = _UNSET,
-    meta: Any = _UNSET,
-    db_path: str | None = None,
-) -> Optional[Dict[str, Any]]:
-    if _should_use_postgres_store(db_path):
-        return _session_memory_store().update_session_memory(
-            session_id,
-            memory_id,
-            content=None if content is _UNSET else content,
-            kind=None if kind is _UNSET else kind,
-            meta=None if meta is _UNSET else meta,
-            update_content=content is not _UNSET,
-            update_kind=kind is not _UNSET,
-            update_meta=meta is not _UNSET,
-        )
-
-    with connect_sqlite(db_path) as conn:
-        _init_sessions_table(conn)
-        _init_session_memory_table(conn)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT id, session_id, kind, content, COALESCE(meta_json, '{}'), created_at, updated_at
-            FROM session_memory
-            WHERE session_id = ? AND id = ?
-            """,
-            (session_id, memory_id),
-        )
-        existing_row = cursor.fetchone()
-        if not existing_row:
-            return None
-
-        updates: List[str] = []
-        params: List[Any] = []
-
-        if content is not _UNSET:
-            updates.append("content = ?")
-            params.append(_normalize_session_memory_content(content))
-
-        if kind is not _UNSET:
-            updates.append("kind = ?")
-            params.append(_normalize_session_memory_kind(kind))
-
-        if meta is not _UNSET:
-            updates.append("meta_json = ?")
-            params.append(
-                json.dumps(_normalize_session_memory_meta(meta), ensure_ascii=False)
-            )
-
-        if not updates:
-            return _row_to_session_memory(existing_row)
-
-        now = time.time()
-        updates.append("updated_at = ?")
-        params.append(now)
-        params.append(session_id)
-        params.append(memory_id)
-
-        cursor.execute(
-            f"UPDATE session_memory SET {', '.join(updates)} WHERE session_id = ? AND id = ?",
-            tuple(params),
-        )
-        cursor.execute(
-            "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
-            (now, session_id),
-        )
-        conn.commit()
-
-        cursor.execute(
-            """
-            SELECT id, session_id, kind, content, COALESCE(meta_json, '{}'), created_at, updated_at
-            FROM session_memory
-            WHERE session_id = ? AND id = ?
-            """,
-            (session_id, memory_id),
-        )
-        updated_row = cursor.fetchone()
-        return _row_to_session_memory(updated_row) if updated_row else None
-
-
-def delete_session_memory(
-    session_id: str,
-    memory_id: str,
-    *,
-    db_path: str | None = None,
-) -> bool:
-    if _should_use_postgres_store(db_path):
-        return _session_memory_store().delete_session_memory(session_id, memory_id)
-
-    with connect_sqlite(db_path) as conn:
-        _init_session_memory_table(conn)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            DELETE FROM session_memory
-            WHERE session_id = ? AND id = ?
-            """,
-            (session_id, memory_id),
-        )
-        deleted = cursor.rowcount > 0
-        if deleted:
-            cursor.execute(
-                "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
-                (time.time(), session_id),
-            )
-        conn.commit()
-        return deleted
-
-
-def clear_session_memory(
-    session_id: str,
-    *,
-    db_path: str | None = None,
-) -> None:
-    if _should_use_postgres_store(db_path):
-        _session_memory_store().clear_session_memory(session_id)
-        return
-
-    with connect_sqlite(db_path) as conn:
-        _init_session_memory_table(conn)
-        cursor = conn.cursor()
-        cursor.execute(
-            "DELETE FROM session_memory WHERE session_id = ?",
-            (session_id,),
-        )
-        cursor.execute(
-            "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
-            (time.time(), session_id),
-        )
-        conn.commit()
 
 
 def delete_session(session_id: str, db_path: str | None = None) -> None:
