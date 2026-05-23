@@ -7,10 +7,10 @@ import time
 import uuid
 from typing import Any, Callable
 
-from backend.chat_store import (
-    _normalize_session_memory_content,
-    _normalize_session_memory_kind,
-    _normalize_session_memory_meta,
+from backend.stores.chat_normalization import (
+    normalize_session_memory_content as _normalize_session_memory_content,
+    normalize_session_memory_kind as _normalize_session_memory_kind,
+    normalize_session_memory_meta as _normalize_session_memory_meta,
 )
 from backend.stores.chat_serialization import parse_json_object as _parse_json_object
 from backend.stores.pg_base import PostgresStoreMixin
