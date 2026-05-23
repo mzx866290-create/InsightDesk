@@ -74,6 +74,9 @@ from backend.stores.prompt_store import (
     update_assistant_preset as update_assistant_preset,
     update_system_prompt as update_system_prompt,
 )
+from backend.stores.message_feedback_store import (
+    set_message_feedback as _set_message_feedback,
+)
 from backend.stores.panel_answer_store import (
     promote_panel_answer as _promote_panel_answer,
 )
@@ -1021,80 +1024,15 @@ def set_message_feedback(
     answer_group_id: str = "",
     db_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
-    normalized_feedback_value = _normalize_message_feedback_value(feedback_value)
-    normalized_panel_id = str(panel_id or "").strip()
-    normalized_answer_group_id = str(answer_group_id or "").strip()
-
-    if _should_use_postgres_store(db_path):
-        from backend.stores.factory import create_chat_message_history
-
-        history = create_chat_message_history(session_id)
-        return cast(
-            Optional[Dict[str, Any]],
-            history.set_message_feedback(
-                feedback_value=normalized_feedback_value,
-                message_id=message_id,
-                panel_id=normalized_panel_id,
-                answer_group_id=normalized_answer_group_id,
-            ),
-        )
-
-    with connect_sqlite(db_path) as conn:
-        _init_messages_table(conn)
-        _init_sessions_table(conn)
-        cursor = conn.cursor()
-
-        target_row: tuple[Any, ...] | None = None
-        if message_id is not None:
-            cursor.execute(
-                """
-                SELECT id, COALESCE(panel_id, ''), COALESCE(answer_group_id, '')
-                FROM messages
-                WHERE session_id = ?
-                  AND id = ?
-                  AND type = 'ai'
-                LIMIT 1
-                """,
-                (session_id, int(message_id)),
-            )
-            target_row = cursor.fetchone()
-        else:
-            if not normalized_answer_group_id:
-                raise ValueError("未提供 message_id 时必须提供 answer_group_id")
-            cursor.execute(
-                """
-                SELECT id, COALESCE(panel_id, ''), COALESCE(answer_group_id, '')
-                FROM messages
-                WHERE session_id = ?
-                  AND type = 'ai'
-                  AND COALESCE(panel_id, '') = ?
-                  AND COALESCE(answer_group_id, '') = ?
-                ORDER BY id DESC
-                LIMIT 1
-                """,
-                (session_id, normalized_panel_id, normalized_answer_group_id),
-            )
-            target_row = cursor.fetchone()
-
-        if not target_row:
-            return None
-
-        resolved_message_id = int(target_row[0])
-        resolved_panel_id = str(target_row[1] or "")
-        resolved_answer_group_id = str(target_row[2] or "")
-
-        cursor.execute(
-            "UPDATE messages SET feedback_value = ? WHERE id = ?",
-            (normalized_feedback_value, resolved_message_id),
-        )
-        conn.commit()
-
-    return {
-        "message_id": resolved_message_id,
-        "panel_id": resolved_panel_id,
-        "answer_group_id": resolved_answer_group_id,
-        "feedback_value": normalized_feedback_value,
-    }
+    return _set_message_feedback(
+        session_id,
+        feedback_value=feedback_value,
+        message_id=message_id,
+        panel_id=panel_id,
+        answer_group_id=answer_group_id,
+        db_path=db_path,
+        connect_sqlite_fn=connect_sqlite,
+    )
 
 
 def truncate_session_from_answer_group(
