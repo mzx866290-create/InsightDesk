@@ -19,6 +19,16 @@ from backend.core.storage_runtime import (
     database_provider,
     ensure_sqlite_parent,
 )
+from backend.stores.chat_serialization import (
+    normalize_content as _normalize_content,
+    normalize_files as _normalize_files,
+    normalize_images as _normalize_images,
+    normalize_metadata_list as _normalize_metadata_list,
+    normalize_token_usage as _normalize_token_usage,
+    parse_json_list as _parse_json_list,
+    parse_json_object as _parse_json_object,
+    parse_string_list as _parse_string_list,
+)
 
 if TYPE_CHECKING:
     from backend.stores.protocols import RetrievalFeedbackStore, SessionMemoryStore
@@ -641,96 +651,6 @@ def _init_assistant_presets_table(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _normalize_content(content: Any) -> str:
-    """Convert LangChain message content to plain text."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict):
-                text = item.get("text")
-                if text:
-                    parts.append(str(text))
-            else:
-                parts.append(str(item))
-        return "\n".join(p for p in parts if p).strip()
-    return str(content)
-
-
-def _parse_json_list(raw: Any) -> List[Dict[str, Any]]:
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(str(raw))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return []
-    if not isinstance(parsed, list):
-        return []
-    return [item for item in parsed if isinstance(item, dict)]
-
-
-def _parse_string_list(raw: Any) -> List[str]:
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(str(raw))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return []
-    if not isinstance(parsed, list):
-        return []
-
-    values: List[str] = []
-    for item in parsed:
-        if not isinstance(item, str):
-            continue
-        normalized = item.strip()
-        if normalized:
-            values.append(normalized)
-    return values
-
-
-def _parse_json_object(raw: Any) -> Dict[str, Any]:
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(str(raw))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _normalize_token_usage(value: Any = None) -> Dict[str, Any]:
-    payload = value if isinstance(value, dict) else _parse_json_object(value)
-
-    def as_int(key: str) -> int:
-        try:
-            return max(0, int(payload.get(key) or 0))
-        except (TypeError, ValueError):
-            return 0
-
-    prompt_tokens = as_int("prompt_tokens")
-    completion_tokens = as_int("completion_tokens")
-    total_tokens = as_int("total_tokens") or prompt_tokens + completion_tokens
-    normalized: Dict[str, Any] = {
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": total_tokens,
-        "estimated": bool(payload.get("estimated", False)),
-    }
-    for key in (
-        "panel_id",
-        "model_id",
-        "estimation_method",
-        "call_count",
-        "real_count",
-        "estimated_count",
-    ):
-        if key in payload:
-            normalized[key] = payload[key]
-    return normalized if any((prompt_tokens, completion_tokens, total_tokens, payload)) else {}
-
-
 def _normalize_tags(tags: Optional[List[str]] = None) -> List[str]:
     normalized: List[str] = []
     seen: set[str] = set()
@@ -1014,57 +934,6 @@ def _normalize_session_memory_meta(meta: Any = None) -> Dict[str, Any]:
     except (TypeError, ValueError):
         return {}
     return normalized if isinstance(normalized, dict) else {}
-
-
-def _normalize_metadata_list(
-    items: Optional[List[Dict[str, Any]]] = None,
-) -> List[Dict[str, Any]]:
-    normalized: List[Dict[str, Any]] = []
-    for item in items or []:
-        if isinstance(item, dict):
-            normalized.append(item)
-    return normalized
-
-
-def _normalize_images(
-    images: Optional[List[Dict[str, Any]]] = None,
-) -> List[Dict[str, str]]:
-    normalized: List[Dict[str, str]] = []
-    for image in images or []:
-        if not isinstance(image, dict):
-            continue
-        data_url = str(image.get("data_url") or "").strip()
-        if not data_url:
-            continue
-        normalized.append(
-            {
-                "name": str(image.get("name") or "").strip(),
-                "media_type": str(image.get("media_type") or "image/png").strip(),
-                "data_url": data_url,
-            }
-        )
-    return normalized
-
-
-def _normalize_files(
-    files: Optional[List[Dict[str, Any]]] = None,
-) -> List[Dict[str, Any]]:
-    normalized: List[Dict[str, Any]] = []
-    for file in files or []:
-        if not isinstance(file, dict):
-            continue
-        normalized.append(
-            {
-                "name": str(file.get("name") or "").strip(),
-                "media_type": str(
-                    file.get("media_type") or "application/octet-stream"
-                ).strip(),
-                "data_url": str(file.get("data_url") or "").strip(),
-                "size_bytes": int(file.get("size_bytes") or 0),
-                "extracted_text": str(file.get("extracted_text") or "").strip(),
-            }
-        )
-    return normalized
 
 
 def _derive_session_title(

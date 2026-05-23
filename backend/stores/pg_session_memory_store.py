@@ -11,8 +11,8 @@ from backend.chat_store import (
     _normalize_session_memory_content,
     _normalize_session_memory_kind,
     _normalize_session_memory_meta,
-    _parse_json_object,
 )
+from backend.stores.chat_serialization import parse_json_object as _parse_json_object
 from backend.stores.pg_base import PostgresStoreMixin
 
 

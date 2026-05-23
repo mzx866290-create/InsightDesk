@@ -15,13 +15,15 @@ from backend.chat_store import (
     _build_search_preview,
     _derive_session_title,
     _env_int,
-    _normalize_content,
-    _normalize_files,
-    _normalize_images,
     _normalize_message_feedback_value,
-    _normalize_metadata_list,
-    _normalize_token_usage,
-    _parse_json_list,
+)
+from backend.stores.chat_serialization import (
+    normalize_content as _normalize_content,
+    normalize_files as _normalize_files,
+    normalize_images as _normalize_images,
+    normalize_metadata_list as _normalize_metadata_list,
+    normalize_token_usage as _normalize_token_usage,
+    parse_json_list as _parse_json_list,
 )
 from backend.stores.pg_base import PostgresStoreMixin
 

@@ -7,9 +7,9 @@ from typing import Any, Callable
 
 from backend.chat_store import (
     _build_retrieval_source_key,
-    _normalize_content,
     _normalize_message_feedback_value,
 )
+from backend.stores.chat_serialization import normalize_content as _normalize_content
 from backend.stores.pg_base import PostgresStoreMixin
 
 
