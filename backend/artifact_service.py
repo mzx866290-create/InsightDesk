@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from backend.chat_store import connect_sqlite
+from backend.stores.sqlite_runtime import connect_sqlite
 from backend.core.storage_runtime import app_database_path
 
 

@@ -15,8 +15,8 @@ from backend.core.storage_runtime import (
     DATABASE_PROVIDER_POSTGRES,
     app_database_path,
     database_provider,
-    ensure_sqlite_parent,
 )
+from backend.stores.sqlite_runtime import connect_sqlite
 from backend.stores.chat_serialization import (
     normalize_content as _normalize_content,
     normalize_files as _normalize_files,
@@ -79,8 +79,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DB_PATH = app_database_path()
-SQLITE_TIMEOUT_SECONDS = 5
-SQLITE_BUSY_TIMEOUT_MS = 5000
 _UNSET = object()
 
 
@@ -104,16 +102,6 @@ def _retrieval_feedback_store() -> "RetrievalFeedbackStore":
     from backend.stores.factory import create_retrieval_feedback_store
 
     return create_retrieval_feedback_store()
-
-
-def connect_sqlite(db_path: str | None = None) -> sqlite3.Connection:
-    """Create a SQLite connection with the project's default safety settings."""
-    resolved_db_path = str(db_path or app_database_path()).strip()
-    ensure_sqlite_parent(resolved_db_path)
-    conn = sqlite3.connect(resolved_db_path, timeout=SQLITE_TIMEOUT_SECONDS)
-    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
-    conn.execute("PRAGMA journal_mode = WAL")
-    return conn
 
 
 # Exported constant so api_server can return it to the frontend

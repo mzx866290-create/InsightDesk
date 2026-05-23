@@ -18,7 +18,7 @@ from langchain_core.documents import Document
 from pydantic import BaseModel, Field
 
 from backend.services.agent_core import get_llm
-from backend.chat_store import connect_sqlite
+from backend.stores.sqlite_runtime import connect_sqlite
 from backend.core.storage_runtime import app_database_path
 from backend.doc_pipeline import DocPipeline
 

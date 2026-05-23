@@ -3,31 +3,18 @@
 import json
 import logging
 import os
-import sqlite3
 import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Optional
 
-from backend.core.storage_runtime import app_database_path, ensure_sqlite_parent
+from backend.core.storage_runtime import app_database_path
+from backend.stores.sqlite_runtime import connect_sqlite
 
 logger = logging.getLogger(__name__)
 
 RESTART_FAILURE_MESSAGE = "服务已重启，任务未能继续执行，请重新发起。"
 _DISABLED_ENV_VALUES = {"0", "false", "off", "no", "disabled"}
-SQLITE_TIMEOUT_SECONDS = 5
-SQLITE_BUSY_TIMEOUT_MS = 5000
-
-
-def connect_sqlite(db_path: str | None = None) -> sqlite3.Connection:
-    """Create a SQLite connection without importing the chat-history stack."""
-
-    resolved_db_path = str(db_path or app_database_path()).strip()
-    ensure_sqlite_parent(resolved_db_path)
-    conn = sqlite3.connect(resolved_db_path, timeout=SQLITE_TIMEOUT_SECONDS)
-    conn.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
-    conn.execute("PRAGMA journal_mode = WAL")
-    return conn
 
 
 def _fail_incomplete_on_start_from_env(default: bool = True) -> bool:

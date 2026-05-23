@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from backend.chat_store import connect_sqlite
+from backend.stores.sqlite_runtime import connect_sqlite
 from backend.core.storage_runtime import app_database_path
 from backend.stores.identity_store import IDENTITY_ROLE_RANKS, normalize_identity_role
 

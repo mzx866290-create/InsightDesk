@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import re
 from typing import Any
 
-from backend.chat_store import connect_sqlite
+from backend.stores.sqlite_runtime import connect_sqlite
 from backend.core.storage_runtime import app_database_path
 
 
