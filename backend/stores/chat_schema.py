@@ -4,8 +4,149 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
+
+from backend.stores.chat_normalization import (
+    DEFAULT_WORKSPACE_ID,
+    DEFAULT_WORKSPACE_NAME,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def init_workspaces_table(conn: sqlite3.Connection) -> None:
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS workspaces (
+            workspace_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT DEFAULT '',
+            color TEXT DEFAULT 'blue',
+            default_panels_json TEXT DEFAULT '[]',
+            tool_config_json TEXT DEFAULT '{}',
+            output_preset_json TEXT DEFAULT '{}',
+            is_active INTEGER DEFAULT 0,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
+    existing_columns = {
+        row[1] for row in cursor.execute("PRAGMA table_info(workspaces)")
+    }
+    if "description" not in existing_columns:
+        cursor.execute("ALTER TABLE workspaces ADD COLUMN description TEXT DEFAULT ''")
+        logger.info("Migrated workspaces table: added 'description' column")
+    if "color" not in existing_columns:
+        cursor.execute("ALTER TABLE workspaces ADD COLUMN color TEXT DEFAULT 'blue'")
+        logger.info("Migrated workspaces table: added 'color' column")
+    if "default_panels_json" not in existing_columns:
+        cursor.execute(
+            "ALTER TABLE workspaces ADD COLUMN default_panels_json TEXT DEFAULT '[]'"
+        )
+        logger.info("Migrated workspaces table: added 'default_panels_json' column")
+    if "tool_config_json" not in existing_columns:
+        cursor.execute(
+            "ALTER TABLE workspaces ADD COLUMN tool_config_json TEXT DEFAULT '{}'"
+        )
+        logger.info("Migrated workspaces table: added 'tool_config_json' column")
+    if "output_preset_json" not in existing_columns:
+        cursor.execute(
+            "ALTER TABLE workspaces ADD COLUMN output_preset_json TEXT DEFAULT '{}'"
+        )
+        logger.info("Migrated workspaces table: added 'output_preset_json' column")
+    if "is_active" not in existing_columns:
+        cursor.execute("ALTER TABLE workspaces ADD COLUMN is_active INTEGER DEFAULT 0")
+        logger.info("Migrated workspaces table: added 'is_active' column")
+    cursor.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_workspaces_active_updated
+        ON workspaces(is_active DESC, updated_at DESC)
+        """
+    )
+    now = time.time()
+    cursor.execute(
+        """
+        INSERT OR IGNORE INTO workspaces (
+            workspace_id, name, description, color, default_panels_json, tool_config_json,
+            output_preset_json, is_active, created_at, updated_at
+        )
+        VALUES (?, ?, '', 'blue', '[]', '{}', '{}', 1, ?, ?)
+        """,
+        (
+            DEFAULT_WORKSPACE_ID,
+            DEFAULT_WORKSPACE_NAME,
+            now,
+            now,
+        ),
+    )
+    cursor.execute(
+        "UPDATE workspaces SET default_panels_json = '[]' WHERE COALESCE(default_panels_json, '') = ''"
+    )
+    cursor.execute(
+        "UPDATE workspaces SET tool_config_json = '{}' WHERE COALESCE(tool_config_json, '') = ''"
+    )
+    cursor.execute(
+        "UPDATE workspaces SET output_preset_json = '{}' WHERE COALESCE(output_preset_json, '') = ''"
+    )
+    cursor.execute(
+        "SELECT workspace_id FROM workspaces WHERE COALESCE(is_active, 0) = 1 LIMIT 1"
+    )
+    if not cursor.fetchone():
+        cursor.execute(
+            "UPDATE workspaces SET is_active = 1, updated_at = ? WHERE workspace_id = ?",
+            (now, DEFAULT_WORKSPACE_ID),
+        )
+    conn.commit()
+
+
+def init_sessions_table(conn: sqlite3.Connection) -> None:
+    init_workspaces_table(conn)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            session_id TEXT PRIMARY KEY,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            title TEXT DEFAULT '',
+            is_archived INTEGER DEFAULT 0,
+            is_favorite INTEGER DEFAULT 0,
+            is_pinned INTEGER DEFAULT 0,
+            session_order REAL DEFAULT 0,
+            tags_json TEXT DEFAULT '[]',
+            workspace_id TEXT DEFAULT 'workspace-default'
+        )
+    """)
+    existing_columns = {row[1] for row in cursor.execute("PRAGMA table_info(sessions)")}
+    if "title" not in existing_columns:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN title TEXT DEFAULT ''")
+        logger.info("Migrated sessions table: added 'title' column")
+    if "is_archived" not in existing_columns:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN is_archived INTEGER DEFAULT 0")
+        logger.info("Migrated sessions table: added 'is_archived' column")
+    if "is_favorite" not in existing_columns:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN is_favorite INTEGER DEFAULT 0")
+        logger.info("Migrated sessions table: added 'is_favorite' column")
+    if "is_pinned" not in existing_columns:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN is_pinned INTEGER DEFAULT 0")
+        logger.info("Migrated sessions table: added 'is_pinned' column")
+    if "session_order" not in existing_columns:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN session_order REAL DEFAULT 0")
+        logger.info("Migrated sessions table: added 'session_order' column")
+    if "tags_json" not in existing_columns:
+        cursor.execute("ALTER TABLE sessions ADD COLUMN tags_json TEXT DEFAULT '[]'")
+        logger.info("Migrated sessions table: added 'tags_json' column")
+    if "workspace_id" not in existing_columns:
+        cursor.execute(
+            f"ALTER TABLE sessions ADD COLUMN workspace_id TEXT DEFAULT '{DEFAULT_WORKSPACE_ID}'"
+        )
+        logger.info("Migrated sessions table: added 'workspace_id' column")
+    cursor.execute(
+        "UPDATE sessions SET workspace_id = ? WHERE COALESCE(workspace_id, '') = ''",
+        (DEFAULT_WORKSPACE_ID,),
+    )
+    conn.commit()
 
 
 def init_messages_table(conn: sqlite3.Connection) -> None:
@@ -320,7 +461,9 @@ __all__ = [
     "init_message_search_table",
     "init_messages_table",
     "init_retrieval_feedback_table",
+    "init_sessions_table",
     "init_session_memory_table",
     "init_session_panels_table",
+    "init_workspaces_table",
     "message_search_table_exists",
 ]
