@@ -272,6 +272,7 @@ class DataAnalysisAgent:
         if delimiter is None and "," not in text and "\t" not in text and ";" not in text:
             return []
         sample = text[:2048]
+        dialect: type[csv.Dialect]
         if delimiter is not None:
             dialect = csv.excel_tab if delimiter == "\t" else csv.excel
         else:
@@ -661,104 +662,6 @@ class DataAnalysisAgent:
         if any(token in text for token in ("count", "number of", "\u8ba1\u6570", "\u6570\u91cf", "\u591a\u5c11")):
             return "count"
         return "sum"
-
-    def _extract_filters(self, request: str, profile: dict[str, Any]) -> list[dict[str, Any]]:
-        text = str(request or "")
-        if not text.strip():
-            return []
-
-        columns = [str(column) for column in profile.get("columns", [])]
-        filters: list[dict[str, Any]] = []
-        for column in columns:
-            escaped = re.escape(column)
-            patterns = [
-                rf"\b{escaped}\b\s*(>=|<=|!=|=|>|<)\s*['\"]?([^,'\"\n;]+)",
-                rf"\b{escaped}\b\s+(?:is|equals?|contains|like|为|是|等于|包含)\s+['\"]?([^,'\"\n;]+)",
-            ]
-            for pattern in patterns:
-                for match in re.finditer(pattern, text, flags=re.IGNORECASE):
-                    if len(match.groups()) == 2:
-                        operator = match.group(1)
-                        value = match.group(2)
-                    else:
-                        raw_operator = match.group(0).lower()
-                        operator = "contains" if "contains" in raw_operator or "like" in raw_operator or "包含" in raw_operator else "="
-                        value = match.group(1)
-                    value = self._clean_filter_value(value)
-                    if value:
-                        filters.append({"column": column, "operator": operator, "value": value})
-
-            numeric_patterns = [
-                (rf"\b{escaped}\b\s+(?:greater than|above|over|大于|超过)\s*(-?\d+(?:\.\d+)?)", ">"),
-                (rf"\b{escaped}\b\s+(?:less than|below|under|小于|低于)\s*(-?\d+(?:\.\d+)?)", "<"),
-                (rf"\b{escaped}\b\s+(?:at least|不少于|大于等于)\s*(-?\d+(?:\.\d+)?)", ">="),
-                (rf"\b{escaped}\b\s+(?:at most|不超过|小于等于)\s*(-?\d+(?:\.\d+)?)", "<="),
-            ]
-            for pattern, operator in numeric_patterns:
-                for match in re.finditer(pattern, text, flags=re.IGNORECASE):
-                    value = self._clean_filter_value(match.group(1))
-                    if value:
-                        filters.append({"column": column, "operator": operator, "value": value})
-
-        unique_filters: list[dict[str, Any]] = []
-        seen: set[tuple[str, str, str]] = set()
-        for item in filters:
-            key = (str(item["column"]), str(item["operator"]), str(item["value"]).lower())
-            if key in seen:
-                continue
-            seen.add(key)
-            unique_filters.append(item)
-        return unique_filters
-
-    @staticmethod
-    def _clean_filter_value(value: Any) -> str:
-        text = str(value or "").strip().strip("'\"` ")
-        return re.split(r"\s+(?:and|or|by|group\s+by|按|并且|或者)\s+", text, maxsplit=1, flags=re.IGNORECASE)[0].strip()
-
-    def _apply_filters(
-        self,
-        rows: list[dict[str, Any]],
-        filters: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
-        if not filters:
-            return rows
-        return [row for row in rows if all(self._row_matches_filter(row, item) for item in filters)]
-
-    def _row_matches_filter(self, row: dict[str, Any], filter_item: dict[str, Any]) -> bool:
-        column = str(filter_item.get("column") or "")
-        operator = str(filter_item.get("operator") or "=").lower()
-        expected = str(filter_item.get("value") or "").strip()
-        actual = row.get(column)
-        actual_number = self._parse_number(actual)
-        expected_number = self._parse_number(expected)
-
-        if operator in {">", ">=", "<", "<="}:
-            if actual_number is None or expected_number is None:
-                return False
-            if operator == ">":
-                return actual_number > expected_number
-            if operator == ">=":
-                return actual_number >= expected_number
-            if operator == "<":
-                return actual_number < expected_number
-            return actual_number <= expected_number
-
-        actual_text = str(actual or "").strip().lower()
-        expected_text = expected.lower()
-        if operator in {"!=", "<>"}:
-            return actual_text != expected_text
-        if operator == "contains":
-            return expected_text in actual_text
-        return actual_text == expected_text
-
-    def _legacy_extract_query_limit(self, request: str) -> int:
-        text = str(request or "")
-        match = re.search(r"(?:top|前|末尾|bottom)\s*(\d{1,3})", text, flags=re.IGNORECASE)
-        if not match:
-            match = re.search(r"(\d{1,3})\s*(?:个|条|rows?|records?)", text, flags=re.IGNORECASE)
-        if not match:
-            return max(1, int(self.config.default_query_limit))
-        return max(1, min(int(match.group(1)), int(self.config.max_rows)))
 
     def _aggregate_by_dimension(
         self,
@@ -1332,6 +1235,10 @@ class DataAnalysisAgent:
         profile: dict[str, Any],
         fallback_output: str,
     ) -> str:
+        llm = self.llm
+        if llm is None:
+            return fallback_output
+
         prompt = (
             "You are a data analysis agent. Summarize this tabular profile in concise Markdown. "
             "Do not invent numbers beyond the profile.\n\n"
@@ -1340,7 +1247,7 @@ class DataAnalysisAgent:
             f"Deterministic analysis:\n{fallback_output}"
         )
         response = await asyncio.wait_for(
-            self.llm.ainvoke(prompt),
+            llm.ainvoke(prompt),
             timeout=max(1.0, float(self.config.timeout_seconds)),
         )
         return str(getattr(response, "content", response) or "").strip() or fallback_output
