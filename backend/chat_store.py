@@ -35,9 +35,7 @@ from backend.stores.chat_schema import (
     message_search_table_exists as _message_search_table_exists,
 )
 from backend.stores.chat_rows import (
-    row_to_assistant_preset as _row_to_assistant_preset,
     row_to_bookmark as _row_to_bookmark,
-    row_to_prompt as _row_to_prompt,
     row_to_session as _row_to_session,
     row_to_session_memory as _row_to_session_memory,
     row_to_workspace as _row_to_workspace,
@@ -52,13 +50,8 @@ from backend.stores.chat_messages import (
     group_message_ids_for_history_pruning as _group_message_ids_for_history_pruning,
 )
 from backend.stores.chat_normalization import (
-    DEFAULT_ASSISTANT_PRESET_ID,
     DEFAULT_WORKSPACE_ID,
     DEFAULT_WORKSPACE_NAME,
-    default_assistant_model_config as _default_assistant_model_config,
-    normalize_assistant_model_config as _normalize_assistant_model_config,
-    normalize_assistant_starters as _normalize_assistant_starters,
-    normalize_assistant_tool_config as _normalize_assistant_tool_config,
     normalize_bookmark_role as _normalize_bookmark_role,
     normalize_message_feedback_value as _normalize_message_feedback_value,
     normalize_session_memory_content as _normalize_session_memory_content,
@@ -71,6 +64,23 @@ from backend.stores.chat_normalization import (
     normalize_workspace_output_preset as _normalize_workspace_output_preset,
     normalize_workspace_panel_configs as _normalize_workspace_panel_configs,
     normalize_workspace_tool_config as _normalize_workspace_tool_config,
+)
+from backend.stores.prompt_store import (
+    DEFAULT_SYSTEM_PROMPT as DEFAULT_SYSTEM_PROMPT,
+    activate_assistant_preset as activate_assistant_preset,
+    activate_system_prompt as activate_system_prompt,
+    create_assistant_preset as create_assistant_preset,
+    create_system_prompt as create_system_prompt,
+    delete_assistant_preset as delete_assistant_preset,
+    delete_system_prompt as delete_system_prompt,
+    get_active_assistant_preset as get_active_assistant_preset,
+    get_active_system_prompt as get_active_system_prompt,
+    get_all_assistant_presets as get_all_assistant_presets,
+    get_all_system_prompts as get_all_system_prompts,
+    init_assistant_presets_table as _init_assistant_presets_table,
+    init_system_prompts_table as _init_system_prompts_table,
+    update_assistant_preset as update_assistant_preset,
+    update_system_prompt as update_system_prompt,
 )
 
 if TYPE_CHECKING:
@@ -106,11 +116,6 @@ def _retrieval_feedback_store() -> "RetrievalFeedbackStore":
 
 # Exported constant so api_server can return it to the frontend
 CONTEXT_HISTORY_MESSAGES: int = _env_int("CONTEXT_HISTORY_MESSAGES", 16)
-
-DEFAULT_SYSTEM_PROMPT = (
-    "你是一个企业知识库助手，可以查询内部文档和联网搜索。"
-    "请根据用户问题选择合适的工具来回答，回答时请引用信息来源。"
-)
 
 def _init_sessions_table(conn: sqlite3.Connection) -> None:
     _init_workspaces_table(conn)
@@ -243,108 +248,6 @@ def _init_workspaces_table(conn: sqlite3.Connection) -> None:
         cursor.execute(
             "UPDATE workspaces SET is_active = 1, updated_at = ? WHERE workspace_id = ?",
             (now, DEFAULT_WORKSPACE_ID),
-        )
-    conn.commit()
-
-
-def _init_system_prompts_table(conn: sqlite3.Connection) -> None:
-    """Ensure system_prompts table exists and has at least the built-in default."""
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS system_prompts (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            content TEXT NOT NULL,
-            is_default INTEGER DEFAULT 0,
-            is_active INTEGER DEFAULT 0,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL,
-            vector_store_id TEXT DEFAULT '',
-            dashboard_template TEXT DEFAULT ''
-        )
-    """)
-    conn.commit()
-    # Migration: add vector_store_id if missing
-    existing_cols = {
-        row[1] for row in cursor.execute("PRAGMA table_info(system_prompts)")
-    }
-    if "vector_store_id" not in existing_cols:
-        cursor.execute(
-            "ALTER TABLE system_prompts ADD COLUMN vector_store_id TEXT DEFAULT ''"
-        )
-        conn.commit()
-        logger.info("Migrated system_prompts table: added 'vector_store_id' column")
-    if "dashboard_template" not in existing_cols:
-        cursor.execute(
-            "ALTER TABLE system_prompts ADD COLUMN dashboard_template TEXT DEFAULT ''"
-        )
-        conn.commit()
-        logger.info("Migrated system_prompts table: added 'dashboard_template' column")
-    # Seed a built-in default if the table is empty
-    cursor.execute("SELECT COUNT(1) FROM system_prompts")
-    if cursor.fetchone()[0] == 0:
-        now = time.time()
-        builtin_id = "builtin-default"
-        cursor.execute(
-            """
-            INSERT INTO system_prompts (id, name, content, is_default, is_active, created_at, updated_at)
-            VALUES (?, ?, ?, 1, 1, ?, ?)
-            """,
-            (builtin_id, "企业知识库助手", DEFAULT_SYSTEM_PROMPT, now, now),
-        )
-        conn.commit()
-        logger.info("Seeded built-in default system prompt")
-
-
-def _init_assistant_presets_table(conn: sqlite3.Connection) -> None:
-    """Ensure assistant preset storage exists and includes one safe default."""
-    _init_system_prompts_table(conn)
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS assistant_presets (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            avatar TEXT DEFAULT '',
-            system_prompt_id TEXT DEFAULT '',
-            default_model_config_json TEXT DEFAULT '{}',
-            tool_config_json TEXT DEFAULT '{}',
-            starters_json TEXT DEFAULT '[]',
-            is_default INTEGER DEFAULT 0,
-            is_active INTEGER DEFAULT 0,
-            created_at REAL NOT NULL,
-            updated_at REAL NOT NULL
-        )
-        """
-    )
-    cursor.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_assistant_presets_active_updated
-        ON assistant_presets(is_active DESC, updated_at DESC)
-        """
-    )
-    cursor.execute("SELECT COUNT(1) FROM assistant_presets")
-    if cursor.fetchone()[0] == 0:
-        now = time.time()
-        cursor.execute(
-            """
-            INSERT INTO assistant_presets (
-                id, name, avatar, system_prompt_id, default_model_config_json,
-                tool_config_json, starters_json, is_default, is_active, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
-            """,
-            (
-                DEFAULT_ASSISTANT_PRESET_ID,
-                "企业知识库助手",
-                "🤖",
-                "builtin-default",
-                json.dumps(_default_assistant_model_config(), ensure_ascii=False),
-                json.dumps(_normalize_assistant_tool_config(), ensure_ascii=False),
-                json.dumps(["总结这份材料", "检索知识库并给出出处"], ensure_ascii=False),
-                now,
-                now,
-            ),
         )
     conn.commit()
 
@@ -2766,14 +2669,6 @@ def delete_session(session_id: str, db_path: str | None = None) -> None:
         logger.info("Deleted session: %s", session_id)
 
 
-# ── System Prompt CRUD ────────────────────────────────────────────────────────
-
-
-def _ensure_prompts_init(db_path: str = DB_PATH) -> None:
-    with connect_sqlite(db_path) as conn:
-        _init_system_prompts_table(conn)
-
-
 def replace_session_panels(
     session_id: str,
     panel_configs: List[Dict[str, Any]],
@@ -3076,321 +2971,3 @@ def promote_panel_answer(
             "task_id": source_task_id,
             "task_type": source_task_type,
         }
-
-
-def get_all_system_prompts(db_path: str = DB_PATH) -> List[Dict]:
-    _ensure_prompts_init(db_path)
-    with connect_sqlite(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, name, content, is_default, is_active, created_at, updated_at, vector_store_id, dashboard_template "
-            "FROM system_prompts ORDER BY created_at ASC"
-        )
-        return [_row_to_prompt(r) for r in cursor.fetchall()]
-
-
-def get_active_system_prompt(db_path: str = DB_PATH) -> Optional[Dict]:
-    _ensure_prompts_init(db_path)
-    with connect_sqlite(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT id, name, content, is_default, is_active, created_at, updated_at, vector_store_id, dashboard_template "
-            "FROM system_prompts WHERE is_active = 1 LIMIT 1"
-        )
-        row = cursor.fetchone()
-        return _row_to_prompt(row) if row else None
-
-
-def create_system_prompt(
-    name: str,
-    content: str,
-    db_path: str = DB_PATH,
-    vector_store_id: str = "",
-    dashboard_template: Optional[Dict[str, Any]] = None,
-) -> Dict:
-    _ensure_prompts_init(db_path)
-    now = time.time()
-    prompt_id = str(uuid.uuid4())
-    dashboard_template_json = json.dumps(dashboard_template or {}, ensure_ascii=False)
-    with connect_sqlite(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO system_prompts (id, name, content, is_default, is_active, created_at, updated_at, vector_store_id, dashboard_template) "
-            "VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?)",
-            (
-                prompt_id,
-                name,
-                content,
-                now,
-                now,
-                vector_store_id,
-                dashboard_template_json,
-            ),
-        )
-        conn.commit()
-    return {
-        "id": prompt_id,
-        "name": name,
-        "content": content,
-        "is_default": False,
-        "is_active": False,
-        "created_at": now,
-        "updated_at": now,
-        "vector_store_id": vector_store_id,
-        "dashboard_template": dashboard_template or {},
-    }
-
-
-def update_system_prompt(
-    prompt_id: str,
-    name: str,
-    content: str,
-    db_path: str = DB_PATH,
-    vector_store_id: str = "",
-    dashboard_template: Optional[Dict[str, Any]] = None,
-) -> Optional[Dict]:
-    _ensure_prompts_init(db_path)
-    now = time.time()
-    dashboard_template_json = json.dumps(dashboard_template or {}, ensure_ascii=False)
-    with connect_sqlite(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE system_prompts SET name = ?, content = ?, updated_at = ?, vector_store_id = ?, dashboard_template = ? WHERE id = ?",
-            (name, content, now, vector_store_id, dashboard_template_json, prompt_id),
-        )
-        conn.commit()
-        if cursor.rowcount == 0:
-            return None
-        cursor.execute(
-            "SELECT id, name, content, is_default, is_active, created_at, updated_at, vector_store_id, dashboard_template "
-            "FROM system_prompts WHERE id = ?",
-            (prompt_id,),
-        )
-        row = cursor.fetchone()
-        return _row_to_prompt(row) if row else None
-
-
-def delete_system_prompt(prompt_id: str, db_path: str = DB_PATH) -> bool:
-    _ensure_prompts_init(db_path)
-    with connect_sqlite(db_path) as conn:
-        cursor = conn.cursor()
-        # Prevent deleting the only remaining prompt
-        cursor.execute("SELECT COUNT(1) FROM system_prompts")
-        if cursor.fetchone()[0] <= 1:
-            return False
-        cursor.execute("DELETE FROM system_prompts WHERE id = ?", (prompt_id,))
-        conn.commit()
-        if cursor.rowcount == 0:
-            return False
-        # If we deleted the active one, activate the first remaining
-        cursor.execute("SELECT COUNT(1) FROM system_prompts WHERE is_active = 1")
-        if cursor.fetchone()[0] == 0:
-            cursor.execute(
-                "UPDATE system_prompts SET is_active = 1 WHERE id = (SELECT id FROM system_prompts LIMIT 1)"
-            )
-            conn.commit()
-        return True
-
-
-def activate_system_prompt(prompt_id: str, db_path: str = DB_PATH) -> bool:
-    _ensure_prompts_init(db_path)
-    with connect_sqlite(db_path) as conn:
-        cursor = conn.cursor()
-        # Check exists
-        cursor.execute("SELECT id FROM system_prompts WHERE id = ?", (prompt_id,))
-        if not cursor.fetchone():
-            return False
-        # Deactivate all, then activate target
-        cursor.execute("UPDATE system_prompts SET is_active = 0")
-        cursor.execute(
-            "UPDATE system_prompts SET is_active = 1 WHERE id = ?", (prompt_id,)
-        )
-        conn.commit()
-        return True
-
-
-# ── Assistant Preset CRUD ───────────────────────────────────────────────────
-
-
-def _ensure_assistant_presets_init(db_path: str = DB_PATH) -> None:
-    with connect_sqlite(db_path) as conn:
-        _init_assistant_presets_table(conn)
-
-
-def get_all_assistant_presets(db_path: str = DB_PATH) -> List[Dict[str, Any]]:
-    _ensure_assistant_presets_init(db_path)
-    with connect_sqlite(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT id, name, avatar, system_prompt_id, default_model_config_json,
-                   tool_config_json, starters_json, is_default, is_active, created_at, updated_at
-            FROM assistant_presets
-            ORDER BY is_default DESC, created_at ASC
-            """
-        )
-        return [_row_to_assistant_preset(row) for row in cursor.fetchall()]
-
-
-def get_active_assistant_preset(db_path: str = DB_PATH) -> Optional[Dict[str, Any]]:
-    _ensure_assistant_presets_init(db_path)
-    with connect_sqlite(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT id, name, avatar, system_prompt_id, default_model_config_json,
-                   tool_config_json, starters_json, is_default, is_active, created_at, updated_at
-            FROM assistant_presets
-            WHERE is_active = 1
-            LIMIT 1
-            """
-        )
-        row = cursor.fetchone()
-        return _row_to_assistant_preset(row) if row else None
-
-
-def create_assistant_preset(
-    name: str,
-    db_path: str = DB_PATH,
-    *,
-    avatar: str = "",
-    system_prompt_id: str = "",
-    default_model_config: Optional[Dict[str, Any]] = None,
-    tool_config: Optional[Dict[str, Any]] = None,
-    starters: Optional[List[str]] = None,
-) -> Dict[str, Any]:
-    _ensure_assistant_presets_init(db_path)
-    normalized_name = str(name or "").strip()
-    if not normalized_name:
-        raise ValueError("助手预设名称不能为空")
-    now = time.time()
-    preset_id = str(uuid.uuid4())
-    normalized_model_config = _normalize_assistant_model_config(default_model_config)
-    normalized_tool_config = _normalize_assistant_tool_config(tool_config)
-    normalized_starters = _normalize_assistant_starters(starters)
-    with connect_sqlite(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO assistant_presets (
-                id, name, avatar, system_prompt_id, default_model_config_json,
-                tool_config_json, starters_json, is_default, is_active, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)
-            """,
-            (
-                preset_id,
-                normalized_name[:80],
-                str(avatar or "").strip()[:16],
-                str(system_prompt_id or "").strip(),
-                json.dumps(normalized_model_config, ensure_ascii=False),
-                json.dumps(normalized_tool_config, ensure_ascii=False),
-                json.dumps(normalized_starters, ensure_ascii=False),
-                now,
-                now,
-            ),
-        )
-        conn.commit()
-    return {
-        "id": preset_id,
-        "name": normalized_name[:80],
-        "avatar": str(avatar or "").strip()[:16],
-        "system_prompt_id": str(system_prompt_id or "").strip(),
-        "default_model_config": normalized_model_config,
-        "tool_config": normalized_tool_config,
-        "starters": normalized_starters,
-        "is_default": False,
-        "is_active": False,
-        "created_at": now,
-        "updated_at": now,
-    }
-
-
-def update_assistant_preset(
-    preset_id: str,
-    name: str,
-    db_path: str = DB_PATH,
-    *,
-    avatar: str = "",
-    system_prompt_id: str = "",
-    default_model_config: Optional[Dict[str, Any]] = None,
-    tool_config: Optional[Dict[str, Any]] = None,
-    starters: Optional[List[str]] = None,
-) -> Optional[Dict[str, Any]]:
-    _ensure_assistant_presets_init(db_path)
-    normalized_name = str(name or "").strip()
-    if not normalized_name:
-        raise ValueError("助手预设名称不能为空")
-    now = time.time()
-    normalized_model_config = _normalize_assistant_model_config(default_model_config)
-    normalized_tool_config = _normalize_assistant_tool_config(tool_config)
-    normalized_starters = _normalize_assistant_starters(starters)
-    with connect_sqlite(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            UPDATE assistant_presets
-            SET name = ?, avatar = ?, system_prompt_id = ?,
-                default_model_config_json = ?, tool_config_json = ?,
-                starters_json = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                normalized_name[:80],
-                str(avatar or "").strip()[:16],
-                str(system_prompt_id or "").strip(),
-                json.dumps(normalized_model_config, ensure_ascii=False),
-                json.dumps(normalized_tool_config, ensure_ascii=False),
-                json.dumps(normalized_starters, ensure_ascii=False),
-                now,
-                preset_id,
-            ),
-        )
-        if cursor.rowcount == 0:
-            return None
-        conn.commit()
-    return next(
-        (preset for preset in get_all_assistant_presets(db_path) if preset["id"] == preset_id),
-        None,
-    )
-
-
-def delete_assistant_preset(preset_id: str, db_path: str = DB_PATH) -> bool:
-    _ensure_assistant_presets_init(db_path)
-    with connect_sqlite(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(1) FROM assistant_presets")
-        if cursor.fetchone()[0] <= 1:
-            return False
-        cursor.execute("DELETE FROM assistant_presets WHERE id = ?", (preset_id,))
-        if cursor.rowcount == 0:
-            return False
-        cursor.execute("SELECT COUNT(1) FROM assistant_presets WHERE is_active = 1")
-        if cursor.fetchone()[0] == 0:
-            cursor.execute(
-                """
-                UPDATE assistant_presets
-                SET is_active = 1
-                WHERE id = (
-                    SELECT id FROM assistant_presets ORDER BY is_default DESC, created_at ASC LIMIT 1
-                )
-                """
-            )
-        conn.commit()
-        return True
-
-
-def activate_assistant_preset(preset_id: str, db_path: str = DB_PATH) -> bool:
-    _ensure_assistant_presets_init(db_path)
-    with connect_sqlite(db_path) as conn:
-        cursor = conn.cursor()
-        cursor.execute("SELECT id FROM assistant_presets WHERE id = ?", (preset_id,))
-        if not cursor.fetchone():
-            return False
-        cursor.execute("UPDATE assistant_presets SET is_active = 0")
-        cursor.execute(
-            "UPDATE assistant_presets SET is_active = 1, updated_at = ? WHERE id = ?",
-            (time.time(), preset_id),
-        )
-        conn.commit()
-        return True
