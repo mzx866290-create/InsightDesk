@@ -43,7 +43,6 @@ from backend.stores.chat_rows import (
 from backend.stores.chat_messages import (
     build_human_message_content_for_model as _build_human_message_content_for_model,
     build_message_search_match_query as _build_message_search_match_query,
-    build_retrieval_source_key as _build_retrieval_source_key,
     build_search_preview as _build_search_preview,
     derive_session_title as _derive_session_title,
     env_int as _env_int,
@@ -81,6 +80,11 @@ from backend.stores.prompt_store import (
     update_assistant_preset as update_assistant_preset,
     update_system_prompt as update_system_prompt,
 )
+from backend.stores.retrieval_feedback_store import (
+    aggregate_retrieval_feedback_by_source as aggregate_retrieval_feedback_by_source,
+    list_retrieval_feedback as list_retrieval_feedback,
+    set_retrieval_feedback as set_retrieval_feedback,
+)
 from backend.stores.workspace_store import (
     activate_workspace as activate_workspace,
     create_workspace as create_workspace,
@@ -93,7 +97,7 @@ from backend.stores.workspace_store import (
 )
 
 if TYPE_CHECKING:
-    from backend.stores.protocols import RetrievalFeedbackStore, SessionMemoryStore
+    from backend.stores.protocols import SessionMemoryStore
 
 logger = logging.getLogger(__name__)
 
@@ -115,12 +119,6 @@ def _session_memory_store() -> "SessionMemoryStore":
     from backend.stores.factory import create_session_memory_store
 
     return create_session_memory_store()
-
-
-def _retrieval_feedback_store() -> "RetrievalFeedbackStore":
-    from backend.stores.factory import create_retrieval_feedback_store
-
-    return create_retrieval_feedback_store()
 
 
 # Exported constant so api_server can return it to the frontend
@@ -1177,202 +1175,6 @@ def truncate_session_from_answer_group(
         "anchor_message_id": anchor_message_id,
         "deleted_count": deleted_count,
     }
-
-
-def set_retrieval_feedback(
-    session_id: str,
-    *,
-    panel_id: str,
-    answer_group_id: str,
-    source: Dict[str, Any],
-    feedback_value: int,
-    db_path: str | None = None,
-) -> Dict[str, Any]:
-    if _should_use_postgres_store(db_path):
-        return _retrieval_feedback_store().set_retrieval_feedback(
-            session_id,
-            panel_id=panel_id,
-            answer_group_id=answer_group_id,
-            source=source,
-            feedback_value=feedback_value,
-        )
-
-    normalized_feedback_value = _normalize_message_feedback_value(feedback_value)
-    normalized_panel_id = str(panel_id or "").strip()
-    normalized_answer_group_id = str(answer_group_id or "").strip()
-    if not normalized_panel_id:
-        raise ValueError("必须提供 panel_id")
-    if not normalized_answer_group_id:
-        raise ValueError("必须提供 answer_group_id")
-
-    source_key = _build_retrieval_source_key(source)
-    source_type = str(source.get("type") or "").strip().lower()
-    source_title = _normalize_content(source.get("title", "")).strip()
-    source_url = _normalize_content(source.get("url", "")).strip()
-    now = time.time()
-
-    with connect_sqlite(db_path) as conn:
-        _init_sessions_table(conn)
-        _init_retrieval_feedback_table(conn)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT 1 FROM sessions WHERE session_id = ? LIMIT 1",
-            (session_id,),
-        )
-        if not cursor.fetchone():
-            raise ValueError("未找到会话")
-
-        cursor.execute(
-            """
-            INSERT INTO retrieval_feedback (
-                session_id,
-                panel_id,
-                answer_group_id,
-                source_key,
-                source_type,
-                source_title,
-                source_url,
-                feedback_value,
-                created_at,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id, panel_id, answer_group_id, source_key)
-            DO UPDATE SET
-                source_type = excluded.source_type,
-                source_title = excluded.source_title,
-                source_url = excluded.source_url,
-                feedback_value = excluded.feedback_value,
-                updated_at = excluded.updated_at
-            """,
-            (
-                session_id,
-                normalized_panel_id,
-                normalized_answer_group_id,
-                source_key,
-                source_type,
-                source_title,
-                source_url,
-                normalized_feedback_value,
-                now,
-                now,
-            ),
-        )
-        conn.commit()
-
-    return {
-        "session_id": session_id,
-        "panel_id": normalized_panel_id,
-        "answer_group_id": normalized_answer_group_id,
-        "source_key": source_key,
-        "feedback_value": normalized_feedback_value,
-        "updated_at": now,
-    }
-
-
-def list_retrieval_feedback(
-    session_id: str,
-    *,
-    panel_id: str,
-    answer_group_id: str,
-    db_path: str | None = None,
-) -> List[Dict[str, Any]]:
-    if _should_use_postgres_store(db_path):
-        return _retrieval_feedback_store().list_retrieval_feedback(
-            session_id,
-            panel_id=panel_id,
-            answer_group_id=answer_group_id,
-        )
-
-    normalized_panel_id = str(panel_id or "").strip()
-    normalized_answer_group_id = str(answer_group_id or "").strip()
-    if not normalized_panel_id:
-        raise ValueError("必须提供 panel_id")
-    if not normalized_answer_group_id:
-        raise ValueError("必须提供 answer_group_id")
-
-    with connect_sqlite(db_path) as conn:
-        _init_retrieval_feedback_table(conn)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT
-                source_key,
-                feedback_value,
-                updated_at
-            FROM retrieval_feedback
-            WHERE session_id = ?
-              AND panel_id = ?
-              AND answer_group_id = ?
-            ORDER BY updated_at DESC
-            """,
-            (session_id, normalized_panel_id, normalized_answer_group_id),
-        )
-        rows = cursor.fetchall()
-
-    return [
-        {
-            "source_key": str(row[0] or ""),
-            "feedback_value": _normalize_message_feedback_value(row[1]),
-            "updated_at": float(row[2] or 0),
-        }
-        for row in rows
-    ]
-
-
-def aggregate_retrieval_feedback_by_source(
-    *,
-    source_type: Optional[str] = None,
-    db_path: str | None = None,
-) -> List[Dict[str, Any]]:
-    if _should_use_postgres_store(db_path):
-        return _retrieval_feedback_store().aggregate_retrieval_feedback_by_source(
-            source_type=source_type,
-        )
-
-    normalized_source_type = str(source_type or "").strip().lower()
-
-    query = """
-        SELECT
-            source_type,
-            source_title,
-            source_url,
-            SUM(CASE WHEN feedback_value = 1 THEN 1 ELSE 0 END) AS positive_count,
-            SUM(CASE WHEN feedback_value = -1 THEN 1 ELSE 0 END) AS negative_count,
-            SUM(feedback_value) AS net_feedback,
-            COUNT(*) AS total_count,
-            MAX(updated_at) AS last_updated_at
-        FROM retrieval_feedback
-        WHERE feedback_value != 0
-    """
-    params: list[Any] = []
-    if normalized_source_type:
-        query += " AND source_type = ?"
-        params.append(normalized_source_type)
-    query += """
-        GROUP BY source_type, source_title, source_url
-        ORDER BY net_feedback DESC, positive_count DESC, negative_count ASC, last_updated_at DESC
-    """
-
-    with connect_sqlite(db_path) as conn:
-        _init_retrieval_feedback_table(conn)
-        cursor = conn.cursor()
-        cursor.execute(query, tuple(params))
-        rows = cursor.fetchall()
-
-    return [
-        {
-            "source_type": str(row[0] or "").strip().lower(),
-            "source_title": str(row[1] or "").strip(),
-            "source_url": str(row[2] or "").strip(),
-            "positive_count": int(row[3] or 0),
-            "negative_count": int(row[4] or 0),
-            "net_feedback": int(row[5] or 0),
-            "total_count": int(row[6] or 0),
-            "last_updated_at": float(row[7] or 0),
-        }
-        for row in rows
-    ]
 
 
 def update_session_meta(
