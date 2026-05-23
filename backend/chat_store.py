@@ -27,7 +27,6 @@ from backend.stores.chat_serialization import (
     normalize_token_usage as _normalize_token_usage,
     parse_json_list as _parse_json_list,
     parse_json_object as _parse_json_object,
-    parse_string_list as _parse_string_list,
 )
 from backend.stores.chat_schema import (
     init_bookmarks_table as _init_bookmarks_table,
@@ -36,6 +35,14 @@ from backend.stores.chat_schema import (
     init_session_memory_table as _init_session_memory_table,
     init_session_panels_table as _init_session_panels_table,
     message_search_table_exists as _message_search_table_exists,
+)
+from backend.stores.chat_rows import (
+    row_to_assistant_preset as _row_to_assistant_preset,
+    row_to_bookmark as _row_to_bookmark,
+    row_to_prompt as _row_to_prompt,
+    row_to_session as _row_to_session,
+    row_to_session_memory as _row_to_session_memory,
+    row_to_workspace as _row_to_workspace,
 )
 from backend.stores.chat_normalization import (
     DEFAULT_ASSISTANT_PRESET_ID,
@@ -53,7 +60,6 @@ from backend.stores.chat_normalization import (
     normalize_tags as _normalize_tags,
     normalize_workspace_color as _normalize_workspace_color,
     normalize_workspace_description as _normalize_workspace_description,
-    normalize_workspace_display_name as _normalize_workspace_display_name,
     normalize_workspace_name as _normalize_workspace_name,
     normalize_workspace_output_preset as _normalize_workspace_output_preset,
     normalize_workspace_panel_configs as _normalize_workspace_panel_configs,
@@ -1036,61 +1042,6 @@ class SQLiteChatMessageHistory(BaseChatMessageHistory):
             logger.info("Cleared messages for session: %s", self.session_id)
 
 
-def _row_to_session(row: tuple) -> Dict[str, Any]:
-    session = {
-        "session_id": row[0],
-        "title": row[1] or "新对话",
-        "created_at": row[2],
-        "updated_at": row[3],
-        "message_count": row[4],
-        "is_archived": bool(row[5]),
-        "is_favorite": bool(row[6]),
-        "is_pinned": bool(row[7]),
-        "session_order": float(row[8] or 0),
-        "tags": _normalize_tags(_parse_string_list(row[9])),
-        "workspace_id": str(row[10] or DEFAULT_WORKSPACE_ID),
-    }
-    if len(row) > 11 and row[11]:
-        session["search_preview"] = str(row[11])
-    if len(row) > 12 and row[12]:
-        session["search_source"] = str(row[12])
-    return session
-
-
-def _row_to_workspace(row: tuple) -> Dict[str, Any]:
-    return {
-        "workspace_id": str(row[0] or ""),
-        "name": _normalize_workspace_display_name(row[0], row[1]),
-        "description": str(row[2] or ""),
-        "color": _normalize_workspace_color(row[3]),
-        "preset": {
-            "default_panels": _normalize_workspace_panel_configs(
-                _parse_json_list(row[4])
-            ),
-            "tool_config": _normalize_workspace_tool_config(_parse_json_object(row[5])),
-            "output_preset": _normalize_workspace_output_preset(
-                _parse_json_object(row[6])
-            ),
-        },
-        "is_active": bool(row[7]),
-        "created_at": float(row[8] or 0),
-        "updated_at": float(row[9] or 0),
-        "session_count": int(row[10] or 0) if len(row) > 10 else 0,
-    }
-
-
-def _row_to_session_memory(row: tuple) -> Dict[str, Any]:
-    return {
-        "id": row[0],
-        "session_id": row[1],
-        "kind": row[2],
-        "content": row[3],
-        "meta": _normalize_session_memory_meta(_parse_json_object(row[4])),
-        "created_at": float(row[5] or 0),
-        "updated_at": float(row[6] or 0),
-    }
-
-
 def _group_message_ids_for_history_pruning(rows: List[tuple]) -> List[List[int]]:
     """
     Group persisted message ids into deletion-safe conversation units.
@@ -1190,22 +1141,6 @@ def _prune_session_messages(
         max_messages,
     )
     return len(ids_to_delete)
-
-
-def _row_to_bookmark(row: tuple) -> Dict[str, Any]:
-    return {
-        "id": str(row[0] or ""),
-        "session_id": str(row[1] or ""),
-        "message_id": int(row[2]) if row[2] is not None else None,
-        "panel_id": str(row[3] or ""),
-        "answer_group_id": str(row[4] or ""),
-        "role": _normalize_bookmark_role(row[5]),
-        "content": str(row[6] or ""),
-        "model_id": str(row[7] or ""),
-        "session_title": str(row[8] or ""),
-        "created_at": float(row[9] or 0),
-        "updated_at": float(row[10] or 0),
-    }
 
 
 def _session_exists(
@@ -3027,32 +2962,6 @@ def delete_session(session_id: str, db_path: str | None = None) -> None:
 # ── System Prompt CRUD ────────────────────────────────────────────────────────
 
 
-def _row_to_prompt(row: tuple) -> Dict:
-    raw_dashboard_template = row[8] if len(row) > 8 else ""
-    dashboard_template: Dict[str, Any] = {}
-    if raw_dashboard_template:
-        try:
-            parsed = json.loads(raw_dashboard_template)
-            if isinstance(parsed, dict):
-                dashboard_template = parsed
-        except json.JSONDecodeError:
-            logger.warning(
-                "Invalid dashboard_template JSON found in system_prompts row id=%s",
-                row[0],
-            )
-    return {
-        "id": row[0],
-        "name": row[1],
-        "content": row[2],
-        "is_default": bool(row[3]),
-        "is_active": bool(row[4]),
-        "created_at": row[5],
-        "updated_at": row[6],
-        "vector_store_id": row[7] if len(row) > 7 else "",
-        "dashboard_template": dashboard_template,
-    }
-
-
 def _ensure_prompts_init(db_path: str = DB_PATH) -> None:
     with connect_sqlite(db_path) as conn:
         _init_system_prompts_table(conn)
@@ -3494,24 +3403,6 @@ def activate_system_prompt(prompt_id: str, db_path: str = DB_PATH) -> bool:
 
 
 # ── Assistant Preset CRUD ───────────────────────────────────────────────────
-
-
-def _row_to_assistant_preset(row: tuple) -> Dict[str, Any]:
-    return {
-        "id": row[0],
-        "name": row[1],
-        "avatar": row[2] or "",
-        "system_prompt_id": row[3] or "",
-        "default_model_config": _normalize_assistant_model_config(
-            _parse_json_object(row[4])
-        ),
-        "tool_config": _normalize_assistant_tool_config(_parse_json_object(row[5])),
-        "starters": _normalize_assistant_starters(_parse_string_list(row[6])),
-        "is_default": bool(row[7]),
-        "is_active": bool(row[8]),
-        "created_at": row[9],
-        "updated_at": row[10],
-    }
 
 
 def _ensure_assistant_presets_init(db_path: str = DB_PATH) -> None:
