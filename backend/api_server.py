@@ -5,12 +5,10 @@ FastAPI 鍚庣 API 鏈嶅姟
 
 import asyncio
 from dataclasses import dataclass
-import httpx
 import logging
 import os
 from pathlib import Path
 import re
-import secrets
 import threading
 import time
 import uuid
@@ -18,6 +16,7 @@ from typing import Any, AsyncGenerator, Optional
 from backend.core import session_summary_runtime
 from backend.core import task_runtime
 from backend.core import security_runtime
+from backend.core import sso_runtime
 from backend.core import env_runtime
 from backend.core import kb_runtime
 from backend.core import mcp_runtime as mcp_runtime_helpers
@@ -53,18 +52,10 @@ from backend.delivery_templates import (
     uninstall_delivery_template_manifest_payload,
 )
 from backend.helpers.security_helpers import (
-    build_sso_login_payload as _build_sso_login_payload,
     content_hash,
     hash_secret,
-    normalize_auth_role,
-    pkce_code_challenge,
     sanitize_log_value,
     sanitize_request_path,
-    sso_callback_url_for_mode,
-    sso_session_token_hash,
-)
-from backend.helpers.identity_helpers import (
-    sync_external_identity_payload as build_sync_external_identity_payload,
 )
 from backend.helpers import delete_kb_directory
 from backend.helpers import (
@@ -424,6 +415,7 @@ _DYNAMIC_CONTEXT_DEPENDENCIES = (
     SsoCallbackResponse,
     SsoConfigResponse,
     SsoLoginResponse,
+    SyncExternalIdentityRequest,
     SyncExternalIdentityResponse,
     TruncateSessionMessagesRequest,
     UpdateArtifactRequest,
@@ -653,38 +645,28 @@ except Exception:
     logger.exception("Failed to hydrate persisted MCP connector approvals")
 
 
+_sso_runtime_context_cache = None
+
+
+def _sso_runtime_context():
+    global _sso_runtime_context_cache
+    if _sso_runtime_context_cache is None:
+        _sso_runtime_context_cache = sso_runtime.build_sso_runtime_context(
+            _api_server_context_source(sso_runtime.SSO_RUNTIME_CONTEXT_ATTRIBUTES)
+        )
+    return _sso_runtime_context_cache
+
+
 def _stored_sso_config_value(field: str) -> str | None:
-    spec = _SSO_CONFIG_FIELDS.get(field)
-    if spec is None:
-        return None
-    _, _, config_key, _ = spec
-    try:
-        record = _app_config_store.get(config_key)
-    except Exception:
-        logger.exception("Failed to read persisted SSO config field=%s", field)
-        return None
-    return record.value if record is not None else None
+    return sso_runtime.stored_sso_config_value(_sso_runtime_context(), field)
 
 
 def _effective_sso_config_value(field: str) -> str:
-    spec = _SSO_CONFIG_FIELDS[field]
-    attr_name, _, _, default = spec
-    current_value = str(globals().get(attr_name, default) or "").strip()
-    initial_value = _INITIAL_SSO_CONFIG_VALUES.get(attr_name, str(default)).strip()
-    if current_value != initial_value:
-        return current_value
-    stored_value = _stored_sso_config_value(field)
-    if stored_value is not None:
-        return str(stored_value or "").strip()
-    return current_value
+    return sso_runtime.effective_sso_config_value(_sso_runtime_context(), field)
 
 
 def _effective_sso_session_ttl_seconds() -> int:
-    raw_value = _effective_sso_config_value("session_ttl_seconds")
-    try:
-        return max(300, int(raw_value or str(8 * 60 * 60)))
-    except (TypeError, ValueError):
-        return 8 * 60 * 60
+    return sso_runtime.effective_sso_session_ttl_seconds(_sso_runtime_context())
 
 
 sync_runtime_secret_from_store(
@@ -879,147 +861,39 @@ def _security_status_payload() -> dict[str, Any]:
 
 
 def _set_sso_config_field(field: str, value: str) -> None:
-    attr_name, env_name, config_key, _ = _SSO_CONFIG_FIELDS[field]
-    if value:
-        _app_config_store.set(config_key, value)
-        os.environ[env_name] = value
-    else:
-        _app_config_store.delete(config_key)
-        os.environ.pop(env_name, None)
-    if attr_name == "SSO_SESSION_TTL_SECONDS":
-        globals()[attr_name] = int(value or str(8 * 60 * 60))
-    else:
-        globals()[attr_name] = value
+    sso_runtime.set_sso_config_field(_sso_runtime_context(), field, value)
 
 
 def _sso_callback_url(request: Request) -> str:
-    base_url = str(request.base_url).rstrip("/")
-    return f"{base_url}/api/auth/sso/callback"
+    return sso_runtime.sso_callback_url(request)
 
 
 def _prune_sso_login_states(now: float | None = None) -> None:
-    current_time = time.time() if now is None else float(now)
-    expired_before = current_time - float(SSO_LOGIN_STATE_TTL_SECONDS)
-    with _sso_login_states_lock:
-        expired = [
-            state
-            for state, record in _sso_login_states.items()
-            if float(record.get("created_at", 0.0) or 0.0) <= expired_before
-        ]
-        for state in expired:
-            _sso_login_states.pop(state, None)
+    sso_runtime.prune_sso_login_states(_sso_runtime_context(), now=now)
 
 
 def _prune_sso_sessions(now: float | None = None) -> None:
-    current_time = time.time() if now is None else float(now)
-    try:
-        _get_sso_session_store().prune(now=current_time)
-    except Exception:
-        logger.exception("Failed to prune persisted SSO sessions")
-    with _sso_sessions_lock:
-        expired = [
-            token
-            for token, record in _sso_sessions.items()
-            if float(record.get("expires_at", 0.0) or 0.0) <= current_time
-        ]
-        for token in expired:
-            _sso_sessions.pop(token, None)
+    sso_runtime.prune_sso_sessions(_sso_runtime_context(), now=now)
 
 
 def _issue_sso_session_token(*, user_id: str, role: str) -> dict[str, Any]:
-    normalized_user_id = str(user_id or "").strip()
-    if not normalized_user_id:
-        raise ValueError("user_id is required")
-    normalized_role = normalize_auth_role(
-        role,
-        role_ranks=AUTH_ROLE_RANKS,
-        default=DEFAULT_AUTH_ROLE,
+    return sso_runtime.issue_sso_session_token(
+        _sso_runtime_context(),
+        user_id=user_id,
+        role=role,
     )
-    token = f"sso_{secrets.token_urlsafe(32)}"
-    created_at = time.time()
-    expires_at = created_at + float(_effective_sso_session_ttl_seconds())
-    _prune_sso_sessions()
-    session_record = {
-        "user_id": normalized_user_id,
-        "role": normalized_role,
-        "auth_source": "sso_oidc",
-        "expires_at": expires_at,
-        "created_at": created_at,
-    }
-    try:
-        _get_sso_session_store().save(
-            token_hash=sso_session_token_hash(token),
-            user_id=normalized_user_id,
-            role=normalized_role,
-            auth_source="sso_oidc",
-            created_at=created_at,
-            expires_at=expires_at,
-        )
-    except Exception as exc:
-        raise RuntimeError("Failed to persist SSO session") from exc
-    with _sso_sessions_lock:
-        _sso_sessions[token] = session_record
-    return {
-        "token": token,
-        "expires_at": expires_at,
-        "role": normalized_role,
-    }
 
 
 def _resolve_sso_session_token(token: str) -> dict[str, str] | None:
-    normalized_token = str(token or "").strip()
-    if not normalized_token:
-        return None
-    _prune_sso_sessions()
-    token_hash = sso_session_token_hash(normalized_token)
-    try:
-        persisted = _get_sso_session_store().get_active(token_hash)
-    except Exception:
-        logger.exception("Failed to resolve persisted SSO session")
-        persisted = None
-    if persisted is not None:
-        return {
-            "user_id": str(persisted.user_id or "").strip(),
-            "role": str(persisted.role or DEFAULT_AUTH_ROLE).strip(),
-            "auth_source": str(persisted.auth_source or "sso_oidc").strip(),
-        }
-    with _sso_sessions_lock:
-        record = _sso_sessions.get(normalized_token)
-        if record is None:
-            return None
-        return {
-            "user_id": str(record.get("user_id") or "").strip(),
-            "role": str(record.get("role") or DEFAULT_AUTH_ROLE).strip(),
-            "auth_source": str(record.get("auth_source") or "sso_oidc").strip(),
-        }
+    return sso_runtime.resolve_sso_session_token(_sso_runtime_context(), token)
 
 
 def _sso_login_payload(request: Request, response_mode: str = "") -> dict[str, Any]:
-    state = secrets.token_urlsafe(24)
-    nonce = secrets.token_urlsafe(24)
-    code_verifier = secrets.token_urlsafe(48)
-    payload = _build_sso_login_payload(
-        provider=_effective_sso_config_value("provider"),
-        authorization_endpoint=_effective_sso_config_value("authorization_endpoint"),
-        client_id=_effective_sso_config_value("client_id"),
-        redirect_uri=sso_callback_url_for_mode(
-            _sso_callback_url(request),
-            response_mode,
-        ),
-        state=state,
-        nonce=nonce,
-        code_challenge=pkce_code_challenge(code_verifier),
-        scopes=_effective_sso_config_value("scopes"),
+    return sso_runtime.sso_login_payload(
+        _sso_runtime_context(),
+        request,
+        response_mode=response_mode,
     )
-    _prune_sso_login_states()
-    with _sso_login_states_lock:
-        _sso_login_states[state] = {
-            "created_at": time.time(),
-            "nonce": nonce,
-            "code_verifier": code_verifier,
-            "redirect_uri": payload["redirect_uri"],
-        }
-    return payload
 
 
 async def _exchange_oidc_code(
@@ -1028,76 +902,20 @@ async def _exchange_oidc_code(
     redirect_uri: str,
     code_verifier: str,
 ) -> dict[str, Any]:
-    normalized_code = str(code or "").strip()
-    if not normalized_code:
-        raise ValueError("authorization code is required")
-    if _effective_sso_config_value("provider").lower() != "oidc":
-        raise ValueError("SSO_PROVIDER must be oidc")
-    token_endpoint = _effective_sso_config_value("token_endpoint")
-    if not token_endpoint:
-        raise RuntimeError("OIDC_TOKEN_ENDPOINT is required")
-    data = {
-        "grant_type": "authorization_code",
-        "code": normalized_code,
-        "redirect_uri": str(redirect_uri or "").strip(),
-        "client_id": _effective_sso_config_value("client_id"),
-        "code_verifier": str(code_verifier or "").strip(),
-    }
-    client_secret = _effective_sso_config_value("client_secret")
-    if client_secret:
-        data["client_secret"] = client_secret
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                token_endpoint,
-                data=data,
-                headers={"Accept": "application/json"},
-            )
-    except httpx.HTTPError as exc:
-        raise RuntimeError("OIDC token exchange failed") from exc
-    if response.status_code >= 400:
-        raise RuntimeError("OIDC token exchange failed")
-    try:
-        raw_payload = response.json()
-    except ValueError as exc:
-        raise RuntimeError("OIDC token response is not JSON") from exc
-    if not isinstance(raw_payload, dict):
-        raise RuntimeError("OIDC token response is not a JSON object")
-    payload = {str(key): value for key, value in raw_payload.items()}
-    if not str(payload.get("id_token") or "").strip():
-        raise RuntimeError("OIDC token response missing id_token")
-    return payload
+    return await sso_runtime.exchange_oidc_code(
+        _sso_runtime_context(),
+        code=code,
+        redirect_uri=redirect_uri,
+        code_verifier=code_verifier,
+    )
 
 
 def _verify_oidc_id_token(id_token: str, *, nonce: str) -> dict[str, Any]:
-    normalized_id_token = str(id_token or "").strip()
-    if not normalized_id_token:
-        raise ValueError("id_token is required")
-    jwks_url = _effective_sso_config_value("jwks_url")
-    if not jwks_url:
-        raise RuntimeError("OIDC_JWKS_URL is required")
-    try:
-        import jwt
-        from jwt import PyJWKClient
-    except ImportError as exc:
-        raise RuntimeError("PyJWT[crypto] is required for OIDC ID token verification") from exc
-    try:
-        signing_key = PyJWKClient(jwks_url).get_signing_key_from_jwt(
-            normalized_id_token
-        )
-        claims = jwt.decode(
-            normalized_id_token,
-            signing_key.key,
-            algorithms=["RS256", "ES256"],
-            audience=_effective_sso_config_value("client_id"),
-            issuer=_effective_sso_config_value("issuer_url"),
-        )
-    except Exception as exc:
-        raise ValueError("OIDC ID token verification failed") from exc
-    expected_nonce = str(nonce or "").strip()
-    if expected_nonce and str(claims.get("nonce") or "").strip() != expected_nonce:
-        raise ValueError("OIDC nonce mismatch")
-    return dict(claims)
+    return sso_runtime.verify_oidc_id_token(
+        _sso_runtime_context(),
+        id_token,
+        nonce=nonce,
+    )
 
 
 async def _sso_callback_payload(
@@ -1106,46 +924,12 @@ async def _sso_callback_payload(
     code: str,
     state: str,
 ) -> dict[str, Any]:
-    normalized_state = str(state or "").strip()
-    if not normalized_state:
-        raise ValueError("state is required")
-    _prune_sso_login_states()
-    with _sso_login_states_lock:
-        state_record = _sso_login_states.pop(normalized_state, None)
-    if state_record is None:
-        raise ValueError("Invalid or expired SSO state")
-
-    token_payload = await _exchange_oidc_code(
+    return await sso_runtime.sso_callback_payload(
+        _sso_runtime_context(),
+        request,
         code=code,
-        redirect_uri=str(state_record.get("redirect_uri") or _sso_callback_url(request)),
-        code_verifier=str(state_record.get("code_verifier") or ""),
+        state=state,
     )
-    claims = _verify_oidc_id_token(
-        str(token_payload.get("id_token") or ""),
-        nonce=str(state_record.get("nonce") or ""),
-    )
-    sync_request = SyncExternalIdentityRequest(
-        claims=claims,
-        provider=_effective_sso_config_value("provider") or "oidc",
-    )
-    payload = build_sync_external_identity_payload(
-        sync_request,
-        identity_store=_identity_store,
-        effective_config_value=_effective_sso_config_value,
-        now=time.time,
-    )
-    payload["auth_source"] = "oidc"
-    payload["token_type"] = str(token_payload.get("token_type") or "")
-    expires_in = token_payload.get("expires_in")
-    payload["expires_in"] = int(expires_in) if expires_in is not None else None
-    session = _issue_sso_session_token(
-        user_id=str(payload["user"]["user_id"] or ""),
-        role=_effective_sso_config_value("default_role"),
-    )
-    payload["app_session_token"] = session["token"]
-    payload["app_session_expires_at"] = session["expires_at"]
-    payload["role"] = session["role"]
-    return payload
 
 
 def _get_security_audit_store() -> SQLiteSecurityAuditStore:
