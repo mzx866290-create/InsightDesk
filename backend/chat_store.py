@@ -7,7 +7,7 @@ import json
 import sqlite3
 import time
 import logging
-from typing import List, Dict, Any, Optional, cast
+from typing import List, Dict, Any, Optional
 from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 from backend.core.storage_runtime import (
@@ -32,24 +32,17 @@ from backend.stores.chat_schema import (
     init_session_memory_table as _init_session_memory_table,
     init_session_panels_table as _init_session_panels_table,
     init_workspaces_table as _init_workspaces_table,
-    message_search_table_exists as _message_search_table_exists,
-)
-from backend.stores.chat_rows import (
-    row_to_session as _row_to_session,
 )
 from backend.stores.chat_messages import (
     build_human_message_content_for_model as _build_human_message_content_for_model,
-    build_message_search_match_query as _build_message_search_match_query,
-    build_search_preview as _build_search_preview,
     derive_session_title as _derive_session_title,
     env_int as _env_int,
     group_message_ids_for_history_pruning as _group_message_ids_for_history_pruning,
 )
 from backend.stores.chat_normalization import (
-    DEFAULT_WORKSPACE_ID,
+    DEFAULT_WORKSPACE_ID as DEFAULT_WORKSPACE_ID,
     DEFAULT_WORKSPACE_NAME as DEFAULT_WORKSPACE_NAME,
     normalize_message_feedback_value as _normalize_message_feedback_value,
-    normalize_tags as _normalize_tags,
 )
 from backend.stores.bookmark_store import (
     create_or_update_bookmark as create_or_update_bookmark,
@@ -98,6 +91,17 @@ from backend.stores.session_panel_store import (
     replace_session_panels as _replace_session_panels,
     upsert_session_panel as _upsert_session_panel,
 )
+from backend.stores.session_store import (
+    collect_message_search_hits as _collect_message_search_hits_impl,
+    delete_session as _delete_session,
+    fetch_session_row as _fetch_session_row_impl,
+    get_all_sessions as _get_all_sessions,
+    get_session as _get_session,
+    reorder_sessions as _reorder_sessions,
+    session_exists as _session_exists_impl,
+    truncate_session_from_answer_group as _truncate_session_from_answer_group,
+    update_session_meta as _update_session_meta,
+)
 from backend.stores.workspace_store import (
     activate_workspace as activate_workspace,
     create_workspace as create_workspace,
@@ -106,7 +110,6 @@ from backend.stores.workspace_store import (
     get_workspace as get_workspace,
     list_workspaces as list_workspaces,
     update_workspace as update_workspace,
-    workspace_exists as _workspace_exists,
 )
 
 logger = logging.getLogger(__name__)
@@ -732,11 +735,7 @@ def _session_exists(
     cursor: sqlite3.Cursor,
     session_id: str,
 ) -> bool:
-    cursor.execute(
-        "SELECT 1 FROM sessions WHERE session_id = ?",
-        (session_id,),
-    )
-    return cursor.fetchone() is not None
+    return _session_exists_impl(cursor, session_id)
 
 
 def _collect_message_search_hits(
@@ -744,108 +743,14 @@ def _collect_message_search_hits(
     normalized_query: str,
     session_ids: set[str],
 ) -> Dict[str, str]:
-    if not normalized_query or not session_ids:
-        return {}
-
-    match_query = _build_message_search_match_query(normalized_query)
-    sorted_session_ids = sorted(session_ids)
-
-    if match_query and _message_search_table_exists(cursor):
-        placeholders = ", ".join("?" for _ in sorted_session_ids)
-        try:
-            cursor.execute(
-                f"""
-                SELECT m.session_id, m.content
-                FROM message_search
-                JOIN messages AS m ON m.id = message_search.rowid
-                WHERE message_search MATCH ?
-                  AND m.session_id IN ({placeholders})
-                ORDER BY m.id DESC
-                """,
-                (match_query, *sorted_session_ids),
-            )
-        except sqlite3.OperationalError:
-            logger.exception(
-                "FTS5 message preview lookup failed, falling back to LIKE queries"
-            )
-            cursor.execute(
-                """
-                SELECT session_id, content
-                FROM messages
-                WHERE LOWER(COALESCE(content, '')) LIKE ?
-                ORDER BY id DESC
-                """,
-                (f"%{normalized_query}%",),
-            )
-    else:
-        cursor.execute(
-            """
-            SELECT session_id, content
-            FROM messages
-            WHERE LOWER(COALESCE(content, '')) LIKE ?
-            ORDER BY id DESC
-            """,
-            (f"%{normalized_query}%",),
-        )
-
-    hits: Dict[str, str] = {}
-    for row in cursor.fetchall():
-        session_id = str(row[0] or "")
-        if session_id not in session_ids or session_id in hits:
-            continue
-        preview = _build_search_preview(row[1], normalized_query)
-        if preview:
-            hits[session_id] = preview
-    return hits
+    return _collect_message_search_hits_impl(cursor, normalized_query, session_ids)
 
 
 def _fetch_session_row(
     cursor: sqlite3.Cursor,
     session_id: str,
-) -> Optional[tuple]:
-    cursor.execute(
-        """
-        SELECT
-            s.session_id,
-            s.title,
-            s.created_at,
-            s.updated_at,
-            COALESCE(
-                SUM(
-                    CASE
-                        WHEN m.id IS NULL THEN 0
-                        WHEN m.type = 'human' THEN 1
-                        WHEN m.type = 'ai'
-                             AND (
-                                 COALESCE(m.panel_id, '') = ''
-                                 OR COALESCE(primary_panel.panel_id, '') = COALESCE(m.panel_id, '')
-                             ) THEN 1
-                        ELSE 0
-                    END
-                ),
-                0
-            ) as message_count,
-            COALESCE(s.is_archived, 0) as is_archived,
-            COALESCE(s.is_favorite, 0) as is_favorite,
-            COALESCE(s.is_pinned, 0) as is_pinned,
-            COALESCE(s.session_order, 0) as session_order,
-            COALESCE(s.tags_json, '[]') as tags_json,
-            COALESCE(s.workspace_id, ?) as workspace_id
-        FROM sessions s
-        LEFT JOIN messages m ON s.session_id = m.session_id
-        LEFT JOIN (
-            SELECT session_id, panel_id
-            FROM session_panels
-            WHERE is_primary = 1
-        ) AS primary_panel
-          ON primary_panel.session_id = s.session_id
-        WHERE s.session_id = ?
-        GROUP BY s.session_id, s.workspace_id
-        LIMIT 1
-        """,
-        (DEFAULT_WORKSPACE_ID, session_id),
-    )
-    return cast(tuple[Any, ...] | None, cursor.fetchone())
+) -> Optional[tuple[Any, ...]]:
+    return _fetch_session_row_impl(cursor, session_id)
 
 
 def get_all_sessions(
@@ -855,165 +760,26 @@ def get_all_sessions(
     favorite: Optional[bool] = None,
     tag: str = "",
     workspace_id: Optional[str] = None,
-) -> List[Dict]:
-    """
-    Get all sessions sorted by most recently updated.
-
-    Args:
-        db_path: Path to SQLite database file
-
-    Returns:
-        List of session dicts with keys: session_id, title, created_at, updated_at, message_count
-    """
-    with connect_sqlite(db_path) as conn:
-        cursor = conn.cursor()
-        _init_messages_table(conn)
-        _init_workspaces_table(conn)
-        _init_sessions_table(conn)
-        _init_session_panels_table(conn)
-
-        sql = """
-            SELECT 
-                s.session_id,
-                s.title,
-                s.created_at,
-                s.updated_at,
-                COALESCE(
-                    SUM(
-                        CASE
-                            WHEN m.id IS NULL THEN 0
-                            WHEN m.type = 'human' THEN 1
-                            WHEN m.type = 'ai'
-                                 AND (
-                                     COALESCE(m.panel_id, '') = ''
-                                     OR COALESCE(primary_panel.panel_id, '') = COALESCE(m.panel_id, '')
-                                 ) THEN 1
-                            ELSE 0
-                        END
-                    ),
-                    0
-                ) as message_count,
-                COALESCE(s.is_archived, 0) as is_archived,
-                COALESCE(s.is_favorite, 0) as is_favorite,
-                COALESCE(s.is_pinned, 0) as is_pinned,
-                COALESCE(s.session_order, 0) as session_order,
-                COALESCE(s.tags_json, '[]') as tags_json,
-                COALESCE(s.workspace_id, ?) as workspace_id
-            FROM sessions s
-            LEFT JOIN messages m ON s.session_id = m.session_id
-            LEFT JOIN (
-                SELECT session_id, panel_id
-                FROM session_panels
-                WHERE is_primary = 1
-            ) AS primary_panel
-              ON primary_panel.session_id = s.session_id
-        """
-        where_clauses: List[str] = []
-        params: List[Any] = [DEFAULT_WORKSPACE_ID]
-
-        normalized_query = query.strip().lower()
-        match_query = _build_message_search_match_query(normalized_query)
-        if normalized_query:
-            where_clauses.append(
-                """
-                (
-                    LOWER(COALESCE(s.title, '')) LIKE ?
-                    OR LOWER(COALESCE(s.tags_json, '[]')) LIKE ?
-                    OR {message_search_clause}
-                )
-                """.format(
-                    message_search_clause=(
-                        "s.session_id IN ("
-                        "SELECT session_id FROM message_search WHERE message_search MATCH ?"
-                        ")"
-                        if match_query and _message_search_table_exists(cursor)
-                        else "EXISTS ("
-                        "SELECT 1 FROM messages search_m "
-                        "WHERE search_m.session_id = s.session_id "
-                        "AND LOWER(COALESCE(search_m.content, '')) LIKE ?"
-                        ")"
-                    )
-                )
-            )
-            params.extend(
-                [
-                    f"%{normalized_query}%",
-                    f"%{normalized_query}%",
-                    match_query
-                    if match_query and _message_search_table_exists(cursor)
-                    else f"%{normalized_query}%",
-                ]
-            )
-
-        if archived is not None:
-            where_clauses.append("COALESCE(s.is_archived, 0) = ?")
-            params.append(1 if archived else 0)
-
-        if favorite is not None:
-            where_clauses.append("COALESCE(s.is_favorite, 0) = ?")
-            params.append(1 if favorite else 0)
-
-        if workspace_id is not None:
-            where_clauses.append("COALESCE(s.workspace_id, ?) = ?")
-            params.extend([DEFAULT_WORKSPACE_ID, workspace_id])
-
-        if where_clauses:
-            sql += "\nWHERE " + " AND ".join(where_clauses)
-
-        sql += """
-\nGROUP BY s.session_id, s.workspace_id
-ORDER BY
-    COALESCE(s.is_pinned, 0) DESC,
-    CASE WHEN COALESCE(s.session_order, 0) > 0 THEN 0 ELSE 1 END ASC,
-    COALESCE(s.session_order, 0) DESC,
-    s.updated_at DESC
-"""
-        cursor.execute(sql, tuple(params))
-
-        sessions = [_row_to_session(row) for row in cursor.fetchall()]
-
-        normalized_tag = tag.strip().lower()
-        if normalized_tag:
-            sessions = [
-                session
-                for session in sessions
-                if any(item.lower() == normalized_tag for item in session["tags"])
-            ]
-
-        if normalized_query and sessions:
-            search_hits = _collect_message_search_hits(
-                cursor,
-                normalized_query,
-                {str(session["session_id"]) for session in sessions},
-            )
-            for session in sessions:
-                search_preview = search_hits.get(str(session["session_id"]))
-                if search_preview:
-                    session["search_preview"] = search_preview
-                    session["search_source"] = "message"
-                elif normalized_query in str(session.get("title") or "").lower():
-                    session["search_preview"] = str(session.get("title") or "")
-                    session["search_source"] = "title"
-
-        return sessions
+) -> List[Dict[str, Any]]:
+    return _get_all_sessions(
+        db_path=db_path,
+        query=query,
+        archived=archived,
+        favorite=favorite,
+        tag=tag,
+        workspace_id=workspace_id,
+        connect_sqlite_fn=connect_sqlite,
+    )
 
 
 def get_session(
     session_id: str, db_path: str | None = None
 ) -> Optional[Dict[str, Any]]:
-    normalized_session_id = str(session_id or "").strip()
-    if not normalized_session_id:
-        return None
-
-    with connect_sqlite(db_path) as conn:
-        cursor = conn.cursor()
-        _init_messages_table(conn)
-        _init_workspaces_table(conn)
-        _init_sessions_table(conn)
-        _init_session_panels_table(conn)
-        row = _fetch_session_row(cursor, normalized_session_id)
-        return _row_to_session(row) if row else None
-
+    return _get_session(
+        session_id,
+        db_path=db_path,
+        connect_sqlite_fn=connect_sqlite,
+    )
 
 def set_message_feedback(
     session_id: str,
@@ -1044,75 +810,15 @@ def truncate_session_from_answer_group(
     files: Optional[List[Dict[str, Any]]] = None,
     db_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
-    normalized_answer_group_id = str(answer_group_id or "").strip()
-    if not normalized_answer_group_id:
-        raise ValueError("必须提供 answer_group_id")
-
-    normalized_content = _normalize_content(content)
-    normalized_images = _normalize_images(images)
-    normalized_files = _normalize_files(files)
-    now = time.time()
-
-    with connect_sqlite(db_path) as conn:
-        _init_messages_table(conn)
-        _init_sessions_table(conn)
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT id
-            FROM messages
-            WHERE session_id = ?
-              AND type = 'human'
-              AND COALESCE(panel_id, '') = ''
-              AND COALESCE(answer_group_id, '') = ?
-            ORDER BY id ASC
-            LIMIT 1
-            """,
-            (session_id, normalized_answer_group_id),
-        )
-        row = cursor.fetchone()
-        if not row:
-            return None
-
-        anchor_message_id = int(row[0])
-
-        cursor.execute(
-            """
-            UPDATE messages
-            SET content = ?, images_json = ?, files_json = ?, timestamp = ?
-            WHERE id = ?
-            """,
-            (
-                normalized_content,
-                json.dumps(normalized_images, ensure_ascii=False),
-                json.dumps(normalized_files, ensure_ascii=False),
-                now,
-                anchor_message_id,
-            ),
-        )
-
-        cursor.execute(
-            """
-            DELETE FROM messages
-            WHERE session_id = ?
-              AND id > ?
-            """,
-            (session_id, anchor_message_id),
-        )
-        deleted_count = int(cursor.rowcount or 0)
-
-        cursor.execute(
-            "UPDATE sessions SET updated_at = ? WHERE session_id = ?",
-            (now, session_id),
-        )
-        conn.commit()
-
-    return {
-        "session_id": session_id,
-        "answer_group_id": normalized_answer_group_id,
-        "anchor_message_id": anchor_message_id,
-        "deleted_count": deleted_count,
-    }
+    return _truncate_session_from_answer_group(
+        session_id,
+        answer_group_id=answer_group_id,
+        content=content,
+        images=images,
+        files=files,
+        db_path=db_path,
+        connect_sqlite_fn=connect_sqlite,
+    )
 
 
 def update_session_meta(
@@ -1126,67 +832,17 @@ def update_session_meta(
     workspace_id: Optional[str] = None,
     db_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
-    with connect_sqlite(db_path) as conn:
-        _init_workspaces_table(conn)
-        _init_sessions_table(conn)
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT 1 FROM sessions WHERE session_id = ?",
-            (session_id,),
-        )
-        if not cursor.fetchone():
-            return None
-
-        updates: List[str] = []
-        params: List[Any] = []
-
-        if title is not None:
-            normalized_title = title.strip()
-            if not normalized_title:
-                raise ValueError("会话标题不能为空")
-            updates.append("title = ?")
-            params.append(normalized_title)
-
-        if is_archived is not None:
-            updates.append("is_archived = ?")
-            params.append(1 if is_archived else 0)
-
-        if is_favorite is not None:
-            updates.append("is_favorite = ?")
-            params.append(1 if is_favorite else 0)
-
-        if is_pinned is not None:
-            updates.append("is_pinned = ?")
-            params.append(1 if is_pinned else 0)
-
-        if tags is not None:
-            normalized_tags = _normalize_tags(tags)
-            updates.append("tags_json = ?")
-            params.append(json.dumps(normalized_tags, ensure_ascii=False))
-
-        if workspace_id is not None:
-            normalized_workspace_id = str(workspace_id or "").strip()
-            if not normalized_workspace_id:
-                raise ValueError("workspace_id 不能为空")
-            if not _workspace_exists(cursor, normalized_workspace_id):
-                raise ValueError("工作区不存在")
-            updates.append("workspace_id = ?")
-            params.append(normalized_workspace_id)
-
-        if not updates:
-            return get_session(session_id, db_path=db_path)
-
-        updates.append("updated_at = ?")
-        params.append(time.time())
-        params.append(session_id)
-
-        cursor.execute(
-            f"UPDATE sessions SET {', '.join(updates)} WHERE session_id = ?",
-            tuple(params),
-        )
-        conn.commit()
-
-    return get_session(session_id, db_path=db_path)
+    return _update_session_meta(
+        session_id,
+        title=title,
+        is_archived=is_archived,
+        is_favorite=is_favorite,
+        is_pinned=is_pinned,
+        tags=tags,
+        workspace_id=workspace_id,
+        db_path=db_path,
+        connect_sqlite_fn=connect_sqlite,
+    )
 
 
 def reorder_sessions(
@@ -1195,113 +851,20 @@ def reorder_sessions(
     workspace_id: Optional[str] = None,
     db_path: str | None = None,
 ) -> Dict[str, Any]:
-    normalized_ids: List[str] = []
-    seen: set[str] = set()
-    for raw_id in session_ids:
-        session_id = str(raw_id or "").strip()
-        if not session_id or session_id in seen:
-            continue
-        seen.add(session_id)
-        normalized_ids.append(session_id)
-
-    if len(normalized_ids) < 2:
-        raise ValueError("至少需要两个会话 ID 才能排序")
-
-    normalized_workspace_id: Optional[str] = None
-    if workspace_id is not None:
-        normalized_workspace_id = str(workspace_id or "").strip()
-        if not normalized_workspace_id:
-            raise ValueError("workspace_id 不能为空")
-
-    with connect_sqlite(db_path) as conn:
-        _init_workspaces_table(conn)
-        _init_sessions_table(conn)
-        cursor = conn.cursor()
-
-        placeholders = ",".join("?" for _ in normalized_ids)
-        cursor.execute(
-            f"""
-            SELECT session_id, COALESCE(workspace_id, ?)
-            FROM sessions
-            WHERE session_id IN ({placeholders})
-            """,
-            tuple([DEFAULT_WORKSPACE_ID, *normalized_ids]),
-        )
-        rows = cursor.fetchall()
-        existing_ids = {str(row[0] or "") for row in rows}
-        missing_ids = [
-            session_id
-            for session_id in normalized_ids
-            if session_id not in existing_ids
-        ]
-        if missing_ids:
-            raise ValueError(f"未找到会话：{missing_ids[0]}")
-
-        if normalized_workspace_id is not None:
-            out_of_scope = [
-                str(row[0] or "")
-                for row in rows
-                if str(row[1] or DEFAULT_WORKSPACE_ID) != normalized_workspace_id
-            ]
-            if out_of_scope:
-                raise ValueError("所有会话都必须属于目标工作区")
-
-        total = len(normalized_ids)
-        ordered_items: List[Dict[str, Any]] = []
-        for index, session_id in enumerate(normalized_ids):
-            order_value = float(total - index)
-            cursor.execute(
-                "UPDATE sessions SET session_order = ? WHERE session_id = ?",
-                (order_value, session_id),
-            )
-            ordered_items.append(
-                {
-                    "session_id": session_id,
-                    "session_order": order_value,
-                }
-            )
-
-        conn.commit()
-
-    return {
-        "count": len(ordered_items),
-        "orders": ordered_items,
-    }
+    return _reorder_sessions(
+        session_ids,
+        workspace_id=workspace_id,
+        db_path=db_path,
+        connect_sqlite_fn=connect_sqlite,
+    )
 
 
 def delete_session(session_id: str, db_path: str | None = None) -> None:
-    """
-    Delete a session and all its messages.
-
-    Args:
-        session_id: Session ID to delete
-        db_path: Path to SQLite database file
-    """
-    with connect_sqlite(db_path) as conn:
-        _init_messages_table(conn)
-        _init_workspaces_table(conn)
-        _init_sessions_table(conn)
-        _init_session_panels_table(conn)
-        _init_session_memory_table(conn)
-        _init_retrieval_feedback_table(conn)
-        _init_bookmarks_table(conn)
-        cursor = conn.cursor()
-
-        # Delete messages
-        cursor.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
-        cursor.execute("DELETE FROM session_panels WHERE session_id = ?", (session_id,))
-        cursor.execute("DELETE FROM session_memory WHERE session_id = ?", (session_id,))
-        cursor.execute(
-            "DELETE FROM retrieval_feedback WHERE session_id = ?", (session_id,)
-        )
-        cursor.execute("DELETE FROM bookmarks WHERE session_id = ?", (session_id,))
-
-        # Delete session
-        cursor.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-
-        conn.commit()
-        logger.info("Deleted session: %s", session_id)
-
+    _delete_session(
+        session_id,
+        db_path=db_path,
+        connect_sqlite_fn=connect_sqlite,
+    )
 
 def replace_session_panels(
     session_id: str,
