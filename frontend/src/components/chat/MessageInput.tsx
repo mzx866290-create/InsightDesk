@@ -54,31 +54,31 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   }> = [
     {
       value: 'web_only',
-      label: 'Web',
-      title: 'Standard web-first deep research',
+      label: '网页',
+      title: '优先使用网页来源进行标准研究',
     },
     {
       value: 'community_first',
-      label: 'Community',
-      title: 'Community-first deep research using search-indexed social/forum leads plus independent verification',
+      label: '社区',
+      title: '优先使用可检索的社区和论坛线索，并进行独立验证',
     },
     {
       value: 'evidence_strict',
-      label: 'Strict',
-      title: 'Strict evidence mode; social and community pages stay contextual unless independently verified',
+      label: '严谨',
+      title: '严格证据模式；社区内容仅作为背景线索，除非能被独立验证',
     },
   ]
   const effectiveComposerResearchMode =
     researchSourceStrategy === 'web_only' ? researchMode : 'deep'
-  const researchModeLabel = effectiveComposerResearchMode === 'quick' ? 'Quick' : 'Deep'
+  const researchModeLabel = effectiveComposerResearchMode === 'quick' ? '快研' : '深研'
   const researchSourceStrategyLabel =
     researchSourceStrategy === 'community_first'
-      ? 'Community'
+      ? '社区'
       : researchSourceStrategy === 'evidence_strict'
-        ? 'Strict'
+        ? '严谨'
         : researchSourceStrategy === 'web_and_community'
-          ? 'Web+Community'
-          : 'Web'
+          ? '网页+社区'
+          : '网页'
   const researchRequestConfig: Record<ResearchMode, ResearchRequestConfig> = {
     quick: {
       searchDepth: 'basic',
@@ -293,8 +293,8 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       : images.length > 0 || files.length > 0
         ? '联网研究暂不支持图片或文件附件'
         : effectiveComposerResearchMode === 'deep'
-          ? '以 Deep 模式发起联网研究；若研究模型不可用会自动回退 Quick'
-          : '以 Quick 模式发起联网研究；更快返回网页摘要与来源'
+          ? '以深研模式发起联网研究；若研究模型不可用会自动回退快研'
+          : '以快研模式发起联网研究；更快返回网页摘要与来源'
   const effectiveResearchButtonTitle = hasOnlyComposerDataFiles
     ? '用多 Agent 数据分析工作流处理 CSV/TSV/JSON/Excel 文件'
     : researchButtonTitle
@@ -467,7 +467,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               >
                 {(['quick', 'deep'] as const).map((mode) => {
                   const active = researchMode === mode
-                  const label = mode === 'quick' ? 'Quick' : 'Deep'
+                  const label = mode === 'quick' ? '快研' : '深研'
                   return (
                     <button
                       key={mode}
@@ -480,7 +480,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                       }}
                       disabled={composerBusy || composerLocked}
                       data-testid={`composer-research-mode-${mode}`}
-                      className={`rounded-md px-2 py-1 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                      className={`min-h-10 rounded-md px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                         active
                           ? mode === 'deep'
                             ? 'bg-amber-400/20 text-amber-200'
@@ -501,7 +501,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
               <div
                 className="inline-flex items-center rounded-lg border border-bg-border bg-bg-primary/50 p-0.5"
-                title="Research source strategy"
+                title="来源策略"
               >
                 {researchSourceStrategyOptions.map((option) => {
                   const active = researchSourceStrategy === option.value
@@ -519,7 +519,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                       }}
                       disabled={composerBusy || composerLocked}
                       data-testid={`composer-research-source-${option.value}`}
-                      className={`rounded-md px-2 py-1 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                      className={`min-h-10 rounded-md px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                         active
                           ? isCommunity
                             ? 'bg-accent-green/20 text-accent-green'
@@ -541,7 +541,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 onClick={() => setOmitHistoryForNextSend((current) => !current)}
                 disabled={composerLocked}
                 data-testid="composer-omit-history-toggle"
-                className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs transition-colors ${
+                className={`flex min-h-10 min-w-10 items-center gap-1 rounded-lg px-3 text-xs transition-colors ${
                   omitHistoryForNextSend
                     ? 'bg-accent-purple/20 text-accent-purple'
                     : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
@@ -557,7 +557,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 onClick={() => setWebSearchEnabled(!webSearchEnabled)}
                 disabled={composerLocked}
                 data-testid="composer-web-search-toggle"
-                className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs transition-colors ${
+                className={`flex min-h-10 min-w-10 items-center justify-center gap-1 rounded-lg px-3 text-xs transition-colors ${
                   webSearchEnabled
                     ? 'bg-accent-blue/20 text-accent-blue'
                     : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
@@ -572,7 +572,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 onClick={() => setKnowledgeBaseEnabled(!knowledgeBaseEnabled)}
                 disabled={composerLocked}
                 data-testid="composer-knowledge-base-toggle"
-                className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs transition-colors ${
+                className={`flex min-h-10 min-w-10 items-center justify-center gap-1 rounded-lg px-3 text-xs transition-colors ${
                   knowledgeBaseEnabled
                     ? 'bg-accent-green/20 text-accent-green'
                     : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
@@ -587,7 +587,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 onClick={() => attachmentInputRef.current?.click()}
                 disabled={composerBusy || composerLocked}
                 data-testid="composer-attachment-button"
-                className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex min-h-10 min-w-10 items-center justify-center gap-1 rounded-lg px-3 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
                 title="附加文件"
               >
                 <Paperclip size={13} />
@@ -597,7 +597,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 type="button"
                 onClick={() => imageInputRef.current?.click()}
                 disabled={composerBusy || composerLocked}
-                className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                className="flex min-h-10 min-w-10 items-center justify-center gap-1 rounded-lg px-3 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
                 title="上传图片"
               >
                 <ImagePlus size={13} />
@@ -610,7 +610,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 }}
                 disabled={!canResearch}
                 data-testid="composer-research"
-                className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                className={`flex min-h-10 items-center gap-1 rounded-lg px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
                   canResearch
                     ? effectiveComposerResearchMode === 'deep' || hasOnlyComposerDataFiles
                       ? 'bg-amber-400/15 text-amber-300 hover:bg-amber-400/20'
@@ -631,10 +631,10 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                 <button
                   type="button"
                   onClick={activeStopHandler}
-                  className="flex h-8 w-8 items-center justify-center rounded-xl bg-accent-red/20 text-accent-red transition-colors hover:bg-accent-red/30"
+                  className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-red/20 text-accent-red transition-colors hover:bg-accent-red/30"
                   title={stopButtonTitle}
                 >
-                  <Square size={13} fill="currentColor" />
+                  <Square size={15} fill="currentColor" />
                 </button>
               ) : (
                 <button
@@ -644,10 +644,10 @@ export const MessageInput: React.FC<MessageInputProps> = ({
                   }}
                   disabled={!canSend || composerBusy || composerLocked}
                   data-testid="composer-send"
-                  className="flex h-8 w-8 items-center justify-center rounded-xl bg-accent-blue text-white transition-colors hover:bg-accent-blue-hover disabled:cursor-not-allowed disabled:opacity-30"
+                  className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-blue text-white transition-colors hover:bg-accent-blue-hover disabled:cursor-not-allowed disabled:opacity-30"
                   title="发送"
                 >
-                  <Send size={13} />
+                  <Send size={15} />
                 </button>
               )}
             </div>

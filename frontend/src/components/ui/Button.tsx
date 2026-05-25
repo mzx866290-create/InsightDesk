@@ -23,7 +23,7 @@ export const Button: React.FC<ButtonProps> = ({
   }[variant]
 
   const sizeClass = {
-    sm: 'text-xs px-2 py-1',
+    sm: 'min-h-10 min-w-10 text-xs px-3 py-1.5',
     md: '',
     lg: 'text-base px-5 py-2.5',
   }[size]

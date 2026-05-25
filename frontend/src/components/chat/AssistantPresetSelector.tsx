@@ -80,14 +80,14 @@ export function AssistantPresetSelector() {
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
-        className="flex items-center gap-1.5 rounded-lg border border-bg-border px-2 py-1 text-[11px] text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+        className="flex min-h-10 items-center gap-1.5 rounded-lg border border-bg-border px-3 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
         title="切换助手预设"
       >
-        <Sparkles size={11} className="text-accent-blue" />
+        <Sparkles size={13} className="text-accent-blue" />
         <span className="max-w-[8rem] truncate">
           {activePreset?.name ?? '助手预设'}
         </span>
-        <ChevronDown size={11} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown size={13} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
       {open && (
