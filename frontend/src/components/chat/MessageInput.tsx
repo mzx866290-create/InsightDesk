@@ -7,21 +7,20 @@ import {
   truncateSessionMessagesFromAnswerGroup,
 } from '../../api/client'
 import type { SourceItem } from '../../api/client'
-import { createAndTrackTask, createAndTrackWorkflowTask, useTaskStore } from '../../stores/taskStore'
+import { useTaskStore } from '../../stores/taskStore'
 import type { ActiveStreamControl } from './streamControl'
 import { useWorkflowStore } from '../../stores/workflowStore'
 import { dispatchChatStreamChunk } from '../../hooks/useChatStreaming'
 import {
   type ResearchRequestConfig,
   buildAnswerGroupId,
-  buildDataWorkflowPlan,
-  buildDeepResearchWorkflowPlan,
   classifyStreamFailure,
   formatFileSize,
   isWorkflowDataFile,
   mergeComposerText,
 } from './messageInputUtils'
 import { useComposerAttachments } from './useComposerAttachments'
+import { useComposerResearchSubmit } from './useComposerResearchSubmit'
 import { useComposerSession } from './useComposerSession'
 import { useComposerSuggestions } from './useComposerSuggestions'
 
@@ -52,11 +51,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     setResearchSourceStrategy,
     enabledMcpServers,
     addUserMessage,
-    appendChunk,
-    setAssistantMessage,
     setAssistantStreaming,
-    setSources,
-    setTaskId,
     addErrorMessage,
     replaceAssistantMessageByAnswerGroup,
     addSession,
@@ -120,7 +115,6 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const [isResearchStarting, setIsResearchStarting] = useState(false)
   const [pendingEditAnswerGroupId, setPendingEditAnswerGroupId] = useState<string | null>(null)
   const [omitHistoryForNextSend, setOmitHistoryForNextSend] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -279,6 +273,26 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     }
   }
 
+  const {
+    isResearchStarting,
+    handleStartResearch,
+  } = useComposerResearchSubmit({
+    input,
+    images,
+    files,
+    pendingEditAnswerGroupId,
+    isInteractionLocked,
+    isSendLoading: isLoading,
+    effectiveComposerResearchMode,
+    researchModeLabel,
+    researchSourceStrategyLabel,
+    researchSourceStrategy,
+    researchRequestConfig,
+    ensureActiveSession,
+    syncSessionMetaFromPanels,
+    resetComposer,
+  })
+
   const hasVisibleAssistantState = (panelId: string, msgId: string): boolean => {
     const panel = useChatStore.getState().panels.find((item) => item.id === panelId)
     const message = panel?.messages.find((item) => item.id === msgId && item.role === 'assistant')
@@ -312,132 +326,6 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     const activeSessionId = currentSessionId ?? useChatStore.getState().currentSessionId
     if (activeSessionId) {
       syncSessionMetaFromPanels(activeSessionId)
-    }
-  }
-
-  const handleStartResearch = async () => {
-    const query = input.trim()
-    const effectiveResearchMode = effectiveComposerResearchMode
-    const requestConfig = researchRequestConfig[effectiveResearchMode]
-    const pendingImages = [...images]
-    const pendingFiles = [...files]
-    const pendingDataFiles = pendingFiles.filter(isWorkflowDataFile)
-    const hasWorkflowDataFiles = pendingDataFiles.length > 0 && pendingDataFiles.length === pendingFiles.length
-    const shouldUseWorkflow =
-      effectiveResearchMode === 'deep' || hasWorkflowDataFiles
-    if (
-      query.length === 0 ||
-      pendingImages.length > 0 ||
-      (pendingFiles.length > 0 && !hasWorkflowDataFiles) ||
-      pendingEditAnswerGroupId ||
-      isLoading ||
-      isResearchStarting ||
-      isInteractionLocked
-    ) {
-      return
-    }
-
-    setIsResearchStarting(true)
-    const sessionTitleSeed = query
-    const sessionId = await ensureActiveSession(sessionTitleSeed)
-    if (!sessionId) {
-      setIsResearchStarting(false)
-      return
-    }
-
-    const currentSession = sessions.find((session) => session.session_id === sessionId)
-    const answerGroupId = buildAnswerGroupId()
-    const primaryPanelId = panels[0]?.id
-    const assistantMessageId = `assistant-research-${Date.now()}`
-    const researchModelId = shouldUseWorkflow ? 'multi_agent_workflow' : 'web_research'
-
-    try {
-      const task =
-        shouldUseWorkflow
-          ? await createAndTrackWorkflowTask({
-              user_request: query,
-              session_id: sessionId,
-              panel_id: primaryPanelId ?? '',
-              answer_group_id: answerGroupId,
-              model_id: researchModelId,
-              panel_config: panels[0]?.modelConfig,
-              research_mode: effectiveResearchMode,
-              research_source_strategy: researchSourceStrategy,
-              max_rounds: requestConfig.maxRounds,
-              max_results_per_query: requestConfig.maxResultsPerQuery,
-              context: hasWorkflowDataFiles
-                ? {
-                    workflow_origin: 'composer_data_files',
-                    data_file_count: pendingDataFiles.length,
-                  }
-                : undefined,
-              data_files: hasWorkflowDataFiles ? pendingDataFiles : undefined,
-              plan: hasWorkflowDataFiles
-                ? buildDataWorkflowPlan(query)
-                : buildDeepResearchWorkflowPlan(query, requestConfig, researchSourceStrategy),
-            })
-          : await createAndTrackTask(
-              'web_research',
-              {
-                query,
-                research_mode: effectiveResearchMode,
-                research_source_strategy: researchSourceStrategy,
-                search_depth: requestConfig.searchDepth,
-                max_results: requestConfig.maxResults,
-                max_results_per_query: requestConfig.maxResultsPerQuery,
-                max_rounds: requestConfig.maxRounds,
-                panel_config: panels[0]?.modelConfig,
-                panel_id: primaryPanelId ?? '',
-                answer_group_id: answerGroupId,
-                model_id: researchModelId,
-              },
-              sessionId,
-            )
-
-      addUserMessage(query, [], hasWorkflowDataFiles ? pendingDataFiles : [], answerGroupId)
-
-      if (primaryPanelId) {
-        appendChunk(primaryPanelId, assistantMessageId, '', {
-          answerGroupId,
-          modelId: researchModelId,
-        })
-        setAssistantMessage(
-          primaryPanelId,
-          assistantMessageId,
-          `已发起联网研究任务（${researchModeLabel}），系统会整理实时网页来源并在任务完成后显示摘要。`,
-          false,
-        )
-        if (researchSourceStrategy !== 'web_only') {
-          setAssistantMessage(
-            primaryPanelId,
-            assistantMessageId,
-            `已启用 ${researchSourceStrategyLabel} 情报模式，系统会优先收集社区线索并要求独立来源复核。`,
-            false,
-          )
-        }
-        if (hasWorkflowDataFiles) {
-          setAssistantMessage(
-            primaryPanelId,
-            assistantMessageId,
-            `已发起数据分析工作流（${pendingDataFiles.length} 个文件），系统会先解析表格并生成摘要、图表和审核结果。`,
-            false,
-          )
-        }
-        setTaskId(primaryPanelId, assistantMessageId, task.task_id, task.task_type)
-      }
-
-      syncSessionMetaFromPanels(sessionId)
-
-      if (currentSession && currentSession.message_count === 0 && sessionTitleSeed) {
-        updateSessionTitle(sessionId, sessionTitleSeed.slice(0, 40))
-      }
-
-      resetComposer()
-    } catch (error) {
-      console.error('Failed to create web research task', error)
-      window.alert((error as Error).message || '联网研究任务创建失败，请稍后重试。')
-    } finally {
-      setIsResearchStarting(false)
     }
   }
 
