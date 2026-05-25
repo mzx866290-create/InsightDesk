@@ -5,19 +5,15 @@ import type { ResearchMode, ResearchSourceStrategy } from '../../stores/chatStor
 import {
   streamChat,
   createSession as apiCreateSession,
-  getSystemPrompts,
   truncateSessionMessagesFromAnswerGroup,
 } from '../../api/client'
-import type { ChatFile, ChatImage, SourceItem, SystemPrompt } from '../../api/client'
+import type { ChatFile, ChatImage, SourceItem } from '../../api/client'
 import { createAndTrackTask, createAndTrackWorkflowTask, useTaskStore } from '../../stores/taskStore'
 import type { ActiveStreamControl } from './streamControl'
 import { useWorkflowStore } from '../../stores/workflowStore'
 import { dispatchChatStreamChunk } from '../../hooks/useChatStreaming'
 import {
-  SLASH_TEMPLATES,
   MAX_ATTACHMENT_COUNT,
-  type ComposerSuggestion,
-  type TriggerRange,
   type ResearchRequestConfig,
   buildDataWorkflowPlan,
   buildDeepResearchWorkflowPlan,
@@ -30,6 +26,7 @@ import {
   mergeUniqueImages,
   validateAttachmentFile,
 } from './messageInputUtils'
+import { useComposerSuggestions } from './useComposerSuggestions'
 
 interface MessageInputProps {
   onStreamingChange: (panelId: string, streaming: boolean) => void
@@ -130,10 +127,6 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const [isLoading, setIsLoading] = useState(false)
   const [isResearchStarting, setIsResearchStarting] = useState(false)
   const [pendingEditAnswerGroupId, setPendingEditAnswerGroupId] = useState<string | null>(null)
-  const [systemPrompts, setSystemPrompts] = useState<SystemPrompt[]>([])
-  const [suggestions, setSuggestions] = useState<ComposerSuggestion[]>([])
-  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0)
-  const [triggerRange, setTriggerRange] = useState<TriggerRange | null>(null)
   const [omitHistoryForNextSend, setOmitHistoryForNextSend] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
@@ -141,6 +134,27 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const abortControllerRef = useRef<AbortController | null>(null)
   const streamingMsgIds = useRef<Map<string, string>>(new Map())
   const syncedResearchTaskSignaturesRef = useRef<Map<string, string>>(new Map())
+
+  const adjustHeight = () => {
+    const ta = textareaRef.current
+    if (!ta) return
+    ta.style.height = 'auto'
+    ta.style.height = `${Math.min(ta.scrollHeight, 180)}px`
+  }
+
+  const {
+    suggestions,
+    activeSuggestionIndex,
+    setActiveSuggestionIndex,
+    closeSuggestions,
+    updateSuggestions,
+    applySuggestion,
+  } = useComposerSuggestions({
+    input,
+    setInput,
+    textareaRef,
+    adjustHeight,
+  })
 
   useEffect(() => {
     if (composerSeed.token === 0) return
@@ -155,20 +169,6 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       textareaRef.current?.focus()
     })
   }, [composerSeed])
-
-  useEffect(() => {
-    let disposed = false
-    getSystemPrompts()
-      .then((list) => {
-        if (!disposed) setSystemPrompts(list)
-      })
-      .catch(() => {
-        if (!disposed) setSystemPrompts([])
-      })
-    return () => {
-      disposed = true
-    }
-  }, [])
 
   useEffect(() => {
     const taskRecords = Object.values(tasksMap)
@@ -242,98 +242,6 @@ export const MessageInput: React.FC<MessageInputProps> = ({
       }
     }
   }, [currentSessionId, panels, replaceAssistantMessageByAnswerGroup, tasksMap])
-
-  const adjustHeight = () => {
-    const ta = textareaRef.current
-    if (!ta) return
-    ta.style.height = 'auto'
-    ta.style.height = `${Math.min(ta.scrollHeight, 180)}px`
-  }
-
-  const closeSuggestions = () => {
-    setSuggestions([])
-    setActiveSuggestionIndex(0)
-    setTriggerRange(null)
-  }
-
-  const updateSuggestions = (nextInput: string, caretPosition: number | null) => {
-    if (caretPosition === null) {
-      closeSuggestions()
-      return
-    }
-
-    const textBeforeCaret = nextInput.slice(0, caretPosition)
-    const triggerMatch = textBeforeCaret.match(/(?:^|\s)([@/][^\s@/]*)$/)
-    if (!triggerMatch) {
-      closeSuggestions()
-      return
-    }
-
-    const triggerToken = triggerMatch[1]
-    const trigger = triggerToken[0] as '/' | '@'
-    const query = triggerToken.slice(1).trim().toLowerCase()
-    const start = caretPosition - triggerToken.length
-
-    let nextSuggestions: ComposerSuggestion[] = []
-    if (trigger === '/') {
-      nextSuggestions = SLASH_TEMPLATES
-        .filter((item) =>
-          query.length === 0 ||
-          item.label.toLowerCase().includes(query) ||
-          item.description.toLowerCase().includes(query),
-        )
-        .slice(0, 8)
-    } else {
-      nextSuggestions = systemPrompts
-        .map((prompt) => {
-          const normalizedContent = prompt.content.trim()
-          return {
-            id: `prompt-${prompt.id}`,
-            trigger: '@' as const,
-            label: prompt.name,
-            description:
-              normalizedContent.replace(/\s+/g, ' ').slice(0, 72) ||
-              'System prompt template',
-            insertText: normalizedContent ? `${normalizedContent}\n` : `@${prompt.name} `,
-          }
-        })
-        .filter((item) =>
-          query.length === 0 ||
-          item.label.toLowerCase().includes(query) ||
-          item.description.toLowerCase().includes(query),
-        )
-        .slice(0, 8)
-    }
-
-    if (nextSuggestions.length === 0) {
-      closeSuggestions()
-      return
-    }
-
-    setSuggestions(nextSuggestions)
-    setActiveSuggestionIndex(0)
-    setTriggerRange({ start, end: caretPosition })
-  }
-
-  const applySuggestion = (suggestion: ComposerSuggestion) => {
-    if (!triggerRange) return
-
-    const before = input.slice(0, triggerRange.start)
-    const after = input.slice(triggerRange.end)
-    const nextInput = `${before}${suggestion.insertText}${after}`
-    const nextCaret = before.length + suggestion.insertText.length
-
-    setInput(nextInput)
-    closeSuggestions()
-
-    window.requestAnimationFrame(() => {
-      const textarea = textareaRef.current
-      if (!textarea) return
-      textarea.focus()
-      textarea.setSelectionRange(nextCaret, nextCaret)
-      adjustHeight()
-    })
-  }
 
   const resetComposer = () => {
     setInput('')
