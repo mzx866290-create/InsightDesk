@@ -7,25 +7,20 @@ import {
   createSession as apiCreateSession,
   truncateSessionMessagesFromAnswerGroup,
 } from '../../api/client'
-import type { ChatFile, ChatImage, SourceItem } from '../../api/client'
+import type { SourceItem } from '../../api/client'
 import { createAndTrackTask, createAndTrackWorkflowTask, useTaskStore } from '../../stores/taskStore'
 import type { ActiveStreamControl } from './streamControl'
 import { useWorkflowStore } from '../../stores/workflowStore'
 import { dispatchChatStreamChunk } from '../../hooks/useChatStreaming'
 import {
-  MAX_ATTACHMENT_COUNT,
   type ResearchRequestConfig,
   buildDataWorkflowPlan,
   buildDeepResearchWorkflowPlan,
-  filesToChatFiles,
-  filesToChatImages,
   formatFileSize,
   isWorkflowDataFile,
   mergeComposerText,
-  mergeUniqueFiles,
-  mergeUniqueImages,
-  validateAttachmentFile,
 } from './messageInputUtils'
+import { useComposerAttachments } from './useComposerAttachments'
 import { useComposerSuggestions } from './useComposerSuggestions'
 
 interface MessageInputProps {
@@ -122,8 +117,6 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   }
 
   const [input, setInput] = useState('')
-  const [images, setImages] = useState<ChatImage[]>([])
-  const [files, setFiles] = useState<ChatFile[]>([])
   const [isLoading, setIsLoading] = useState(false)
   const [isResearchStarting, setIsResearchStarting] = useState(false)
   const [pendingEditAnswerGroupId, setPendingEditAnswerGroupId] = useState<string | null>(null)
@@ -134,6 +127,19 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const abortControllerRef = useRef<AbortController | null>(null)
   const streamingMsgIds = useRef<Map<string, string>>(new Map())
   const syncedResearchTaskSignaturesRef = useRef<Map<string, string>>(new Map())
+
+  const {
+    images,
+    files,
+    mergeAttachments,
+    clearAttachments,
+    restoreAttachments,
+    handleSelectImages,
+    handleRemoveImage,
+    handleSelectFiles,
+    handleRemoveFile,
+    handlePaste,
+  } = useComposerAttachments()
 
   const adjustHeight = () => {
     const ta = textareaRef.current
@@ -160,8 +166,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     if (composerSeed.token === 0) return
 
     setInput((current) => mergeComposerText(current, composerSeed.text))
-    setImages((current) => mergeUniqueImages(current, composerSeed.images))
-    setFiles((current) => mergeUniqueFiles(current, composerSeed.files).slice(0, MAX_ATTACHMENT_COUNT))
+    mergeAttachments(composerSeed.images, composerSeed.files)
     setPendingEditAnswerGroupId(composerSeed.editAnswerGroupId ?? null)
 
     window.requestAnimationFrame(() => {
@@ -245,8 +250,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
   const resetComposer = () => {
     setInput('')
-    setImages([])
-    setFiles([])
+    clearAttachments()
     setPendingEditAnswerGroupId(null)
     setOmitHistoryForNextSend(false)
     closeSuggestions()
@@ -258,84 +262,6 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     }
     if (attachmentInputRef.current) {
       attachmentInputRef.current.value = ''
-    }
-  }
-
-  const handleSelectImages = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? [])
-    if (files.length === 0) return
-
-    try {
-      const nextImages = await filesToChatImages(files)
-      setImages((current) => [...current, ...nextImages])
-    } catch (error) {
-      console.error('Failed to load selected images', error)
-      window.alert('图片读取失败，请重试。')
-    } finally {
-      event.target.value = ''
-    }
-  }
-
-  const handleRemoveImage = (index: number) => {
-    setImages((current) => current.filter((_, currentIndex) => currentIndex !== index))
-  }
-
-  const handleSelectFiles = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFiles = Array.from(event.target.files ?? [])
-    if (selectedFiles.length === 0) return
-
-    const errors = selectedFiles
-      .map((file) => validateAttachmentFile(file))
-      .filter((error): error is string => Boolean(error))
-    const validFiles = selectedFiles.filter((file) => validateAttachmentFile(file) === null)
-
-    if (validFiles.length === 0) {
-      window.alert(errors[0] ?? '没有选择支持的文件类型。')
-      event.target.value = ''
-      return
-    }
-
-    if (files.length + validFiles.length > MAX_ATTACHMENT_COUNT) {
-      window.alert(`每条消息最多附加 ${MAX_ATTACHMENT_COUNT} 个文件。`)
-      event.target.value = ''
-      return
-    }
-
-    try {
-      const nextFiles = await filesToChatFiles(validFiles)
-      setFiles((current) => [...current, ...nextFiles])
-      if (errors.length > 0) {
-        window.alert(errors[0])
-      }
-    } catch (error) {
-      console.error('Failed to load selected files', error)
-      window.alert('文件读取失败，请重试。')
-    } finally {
-      event.target.value = ''
-    }
-  }
-
-  const handleRemoveFile = (index: number) => {
-    setFiles((current) => current.filter((_, currentIndex) => currentIndex !== index))
-  }
-
-  const handlePaste = async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const items = Array.from(event.clipboardData?.items ?? [])
-    const imageFiles = items
-      .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
-      .map((item) => item.getAsFile())
-      .filter((file): file is File => file !== null)
-
-    if (imageFiles.length === 0) return
-
-    event.preventDefault()
-
-    try {
-      const pastedImages = await filesToChatImages(imageFiles)
-      setImages((current) => [...current, ...pastedImages])
-    } catch (error) {
-      console.error('Failed to paste images', error)
-      window.alert('粘贴图片失败，请重试。')
     }
   }
 
@@ -606,8 +532,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
 
     const restoreComposerAfterFailure = () => {
       setInput(msg)
-      setImages(pendingImages)
-      setFiles(pendingFiles)
+      restoreAttachments(pendingImages, pendingFiles)
       setPendingEditAnswerGroupId(isEditRegenerationRequested ? editingAnswerGroupId : null)
       setOmitHistoryForNextSend(omitHistoryForRequest)
       window.requestAnimationFrame(() => {
