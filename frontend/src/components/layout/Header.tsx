@@ -1,41 +1,38 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import {
-  Check,
   PanelLeftOpen,
   Plus,
   Minus,
   Globe,
-  History,
   Menu,
   Monitor,
-  MoreHorizontal,
   Settings,
   SquarePen,
   UserCog,
-  FileText,
   Paperclip,
-  RotateCcw,
   Database,
   Brain,
   Moon,
   Sun,
-  Share2,
 } from 'lucide-react'
 import { useChatStore } from '../../stores/chatStore'
 import { useResolvedTheme } from '../../hooks/useResolvedTheme'
 import { useI18n } from '../../i18n'
 import { Button } from '../ui/Button'
 import { InlineNotice } from '../ui/InlineNotice'
-import { createSession, createSessionShareLink, getDeck, getSystemPrompts, resetSession } from '../../api/client'
+import { createSession, createSessionShareLink, getDeck, resetSession } from '../../api/client'
 import { DeckEditorModal } from '../reports/DeckEditorModal'
 import { DeckGenerationModal } from '../reports/DeckGenerationModal'
 import { TaskProgressCard } from '../cards/TaskProgressCard'
 import { TaskCenterModal } from '../tasks/TaskCenterModal'
 import { KnowledgeBaseModal } from '../settings/KnowledgeBaseModal'
-import { Modal } from '../ui/Modal'
-import type { DeckSpec, SystemPrompt } from '../../api/client'
+import type { DeckSpec } from '../../api/client'
 import { createAndTrackTask, useTaskStore } from '../../stores/taskStore'
 import { AssistantPresetSelector } from '../chat/AssistantPresetSelector'
+import { HeaderMobileActionsModal } from './header/HeaderMobileActionsModal'
+import { HeaderMoreMenu } from './header/HeaderMoreMenu'
+import { useHeaderActivePrompt } from './header/useHeaderActivePrompt'
+import { useHeaderViewport } from './header/useHeaderViewport'
 
 export const Header: React.FC = () => {
   const {
@@ -74,7 +71,7 @@ export const Header: React.FC = () => {
   const [deckTaskId, setDeckTaskId] = useState<string | null>(null)
   const [handledDeckTaskId, setHandledDeckTaskId] = useState<string | null>(null)
   const deckTask = useTaskStore((s) => (deckTaskId ? s.tasks[deckTaskId] : undefined))
-  const [activePrompt, setActivePrompt] = useState<SystemPrompt | null>(null)
+  const activePrompt = useHeaderActivePrompt(activePromptId)
   const [deckConfigOpen, setDeckConfigOpen] = useState(false)
   const [deckOpen, setDeckOpen] = useState(false)
   const [deckData, setDeckData] = useState<DeckSpec | null>(null)
@@ -90,21 +87,12 @@ export const Header: React.FC = () => {
     message: string
   } | null>(null)
   const [moreMenuOpen, setMoreMenuOpen] = useState(false)
-  const moreMenuRef = React.useRef<HTMLDivElement>(null)
-  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 768)
+  const moreMenuRef = useRef<HTMLDivElement>(null)
+  const isMobile = useHeaderViewport()
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false)
   const hasAnyMessages = panels.some((panel) => panel.messages.length > 0)
   const showAdvancedDesktopActions = hasAnyMessages
   const isDeckTaskActive = deckTask?.status === 'pending' || deckTask?.status === 'running'
-
-  useEffect(() => {
-    getSystemPrompts()
-      .then((list) => {
-        const active = list.find((p) => p.is_active) ?? list[0] ?? null
-        setActivePrompt(active)
-      })
-      .catch(() => {})
-  }, [activePromptId])
 
   useEffect(() => {
     if (!moreMenuOpen) return
@@ -118,24 +106,10 @@ export const Header: React.FC = () => {
   }, [moreMenuOpen])
 
   useEffect(() => {
-    const media = window.matchMedia('(max-width: 767px)')
-
-    const applyViewport = (matches: boolean) => {
-      setIsMobile(matches)
-      if (!matches) {
-        setMobileActionsOpen(false)
-      }
+    if (!isMobile) {
+      setMobileActionsOpen(false)
     }
-
-    applyViewport(media.matches)
-
-    const handleChange = (event: MediaQueryListEvent) => {
-      applyViewport(event.matches)
-    }
-
-    media.addEventListener('change', handleChange)
-    return () => media.removeEventListener('change', handleChange)
-  }, [])
+  }, [isMobile])
 
   useEffect(() => {
     if (!actionFeedback) return
@@ -535,86 +509,51 @@ export const Header: React.FC = () => {
 
               {showAdvancedDesktopActions && (
                 <>
-              <button
-                onClick={toggleAttachmentWorkspace}
-                disabled={!currentSessionId}
-                className={`flex min-h-10 items-center gap-1.5 rounded-lg px-3 text-xs transition-colors ${
-                  attachmentWorkspaceOpen
-                    ? 'bg-accent-blue/20 text-accent-blue'
-                    : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-                } disabled:opacity-40`}
-                title="附件工作区"
-              >
-                <Paperclip size={14} />
-                <span className="hidden sm:inline">附件</span>
-              </button>
+                  <button
+                    onClick={toggleAttachmentWorkspace}
+                    disabled={!currentSessionId}
+                    className={`flex min-h-10 items-center gap-1.5 rounded-lg px-3 text-xs transition-colors ${
+                      attachmentWorkspaceOpen
+                        ? 'bg-accent-blue/20 text-accent-blue'
+                        : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+                    } disabled:opacity-40`}
+                    title="附件工作区"
+                  >
+                    <Paperclip size={14} />
+                    <span className="hidden sm:inline">附件</span>
+                  </button>
 
-              <button
-                onClick={toggleMemoryWorkspace}
-                disabled={!currentSessionId}
-                className={`flex min-h-10 items-center gap-1.5 rounded-lg px-3 text-xs transition-colors ${
-                  memoryWorkspaceOpen
-                    ? 'bg-accent-green/20 text-accent-green'
-                    : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-                } disabled:opacity-40`}
-                title="记忆工作区"
-              >
-                <Brain size={14} />
-                <span className="hidden sm:inline">记忆</span>
-              </button>
+                  <button
+                    onClick={toggleMemoryWorkspace}
+                    disabled={!currentSessionId}
+                    className={`flex min-h-10 items-center gap-1.5 rounded-lg px-3 text-xs transition-colors ${
+                      memoryWorkspaceOpen
+                        ? 'bg-accent-green/20 text-accent-green'
+                        : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+                    } disabled:opacity-40`}
+                    title="记忆工作区"
+                  >
+                    <Brain size={14} />
+                    <span className="hidden sm:inline">记忆</span>
+                  </button>
 
-              {/* 更多操作下拉菜单 */}
-              <div className="relative" ref={moreMenuRef}>
-                <button
-                  onClick={() => setMoreMenuOpen((v) => !v)}
-                  data-testid="header-more-menu"
-                  className={`flex h-10 w-10 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary ${
-                    moreMenuOpen ? 'bg-bg-hover text-text-primary' : ''
-                  }`}
-                  title="更多操作"
-                >
-                  <MoreHorizontal size={16} />
-                </button>
-                {moreMenuOpen && (
-                  <div className="absolute right-0 top-full z-30 mt-1 min-w-[160px] overflow-hidden rounded-xl border border-bg-border bg-bg-primary shadow-xl">
-                    <button
-                      onClick={() => { void handleShareSession(); setMoreMenuOpen(false) }}
-                      disabled={!currentSessionId || sharingSession}
-                      className="flex w-full items-center gap-2 px-3 py-2 text-xs text-text-primary transition-colors hover:bg-bg-hover disabled:opacity-40"
-                    >
-                      {sessionShareCopied ? <Check size={13} className="text-accent-green" /> : <Share2 size={13} />}
-                      {sessionShareCopied ? '已复制链接' : '分享会话'}
-                    </button>
-                    <button
-                      onClick={() => { void handleGenerateReport(); setMoreMenuOpen(false) }}
-                      disabled={generatingDeck || isDeckTaskActive || !currentSessionId}
-                      className="flex w-full items-center gap-2 px-3 py-2 text-xs text-text-primary transition-colors hover:bg-bg-hover disabled:opacity-40"
-                    >
-                      <FileText size={13} />
-                      生成演示稿
-                    </button>
-                    <button
-                      onClick={() => { setTaskCenterOpen(true); setMoreMenuOpen(false) }}
-                      data-testid="header-open-task-center"
-                      className="flex w-full items-center gap-2 px-3 py-2 text-xs text-text-primary transition-colors hover:bg-bg-hover"
-                    >
-                      <History size={13} />
-                      任务中心
-                    </button>
-                    <div className="mx-2 border-t border-bg-border" />
-                    <button
-                      onClick={() => { void handleResetSession(); setMoreMenuOpen(false) }}
-                      disabled={resetting || !currentSessionId}
-                      className={`flex w-full items-center gap-2 px-3 py-2 text-xs transition-colors hover:bg-bg-hover disabled:opacity-40 ${
-                        resetConfirm ? 'text-accent-red' : 'text-text-primary'
-                      }`}
-                    >
-                      <RotateCcw size={13} />
-                      {resetConfirm ? '确认重置？' : '重置会话'}
-                    </button>
-                  </div>
-                )}
-              </div>
+                  <HeaderMoreMenu
+                    open={moreMenuOpen}
+                    menuRef={moreMenuRef}
+                    currentSessionId={currentSessionId}
+                    sharingSession={sharingSession}
+                    sessionShareCopied={sessionShareCopied}
+                    generatingDeck={generatingDeck}
+                    isDeckTaskActive={isDeckTaskActive}
+                    resetting={resetting}
+                    resetConfirm={resetConfirm}
+                    onToggle={() => setMoreMenuOpen((value) => !value)}
+                    onClose={() => setMoreMenuOpen(false)}
+                    onShareSession={handleShareSession}
+                    onGenerateReport={handleGenerateReport}
+                    onOpenTaskCenter={() => setTaskCenterOpen(true)}
+                    onResetSession={handleResetSession}
+                  />
                 </>
               )}
 
@@ -660,130 +599,29 @@ export const Header: React.FC = () => {
         </div>
       )}
 
-      <Modal open={mobileActionsOpen} onClose={() => setMobileActionsOpen(false)} title="快捷操作" width="max-w-md">
-        <div className="space-y-4">
-          <div>
-            <div className="mb-2 text-xs font-medium text-text-secondary">布局与工具</div>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => {
-                  handleAddPanel()
-                  setMobileActionsOpen(false)
-                }}
-                disabled={panels.length >= 6}
-                className="rounded-xl border border-bg-border bg-bg-primary px-3 py-2 text-sm text-text-primary transition-colors hover:bg-bg-hover disabled:opacity-40"
-              >
-                增加面板
-              </button>
-              <button
-                onClick={() => {
-                  handleRemovePanel()
-                  setMobileActionsOpen(false)
-                }}
-                disabled={panels.length <= 1}
-                className="rounded-xl border border-bg-border bg-bg-primary px-3 py-2 text-sm text-text-primary transition-colors hover:bg-bg-hover disabled:opacity-40"
-              >
-                减少面板
-              </button>
-              <button
-                onClick={() => {
-                  setTaskCenterOpen(true)
-                  setMobileActionsOpen(false)
-                }}
-                className="rounded-xl border border-bg-border bg-bg-primary px-3 py-2 text-sm text-text-primary transition-colors hover:bg-bg-hover"
-              >
-                任务中心
-              </button>
-              <button
-                onClick={() => {
-                  setKbManageOpen(true)
-                  setMobileActionsOpen(false)
-                }}
-                className="rounded-xl border border-bg-border bg-bg-primary px-3 py-2 text-sm text-text-primary transition-colors hover:bg-bg-hover"
-              >
-                知识库管理
-              </button>
-              <button
-                onClick={() => {
-                  setSettingsOpen(true)
-                  setMobileActionsOpen(false)
-                }}
-                className="rounded-xl border border-bg-border bg-bg-primary px-3 py-2 text-sm text-text-primary transition-colors hover:bg-bg-hover"
-              >
-                设置
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <div className="mb-2 text-xs font-medium text-text-secondary">会话操作</div>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => {
-                  void handleShareSession()
-                  setMobileActionsOpen(false)
-                }}
-                disabled={!currentSessionId || sharingSession}
-                className="rounded-xl border border-bg-border bg-bg-primary px-3 py-2 text-sm text-text-primary transition-colors hover:bg-bg-hover disabled:opacity-40"
-              >
-                {sessionShareCopied ? '已复制链接' : '分享会话'}
-              </button>
-              <button
-                onClick={() => {
-                  void handleGenerateReport()
-                  setMobileActionsOpen(false)
-                }}
-                disabled={!currentSessionId || generatingDeck || isDeckTaskActive}
-                className="rounded-xl border border-bg-border bg-bg-primary px-3 py-2 text-sm text-text-primary transition-colors hover:bg-bg-hover disabled:opacity-40"
-              >
-                生成演示稿
-              </button>
-              <button
-                onClick={() => {
-                  void handleResetSession()
-                  setMobileActionsOpen(false)
-                }}
-                disabled={!currentSessionId || resetting}
-                className="rounded-xl border border-accent-red/20 bg-bg-primary px-3 py-2 text-sm text-accent-red transition-colors hover:bg-accent-red/5 disabled:opacity-40"
-              >
-                {resetConfirm ? '确认重置？' : '重置会话'}
-              </button>
-              <button
-                onClick={() => {
-                  void handleNewChat()
-                  setMobileActionsOpen(false)
-                }}
-                className="rounded-xl border border-bg-border bg-bg-primary px-3 py-2 text-sm text-text-primary transition-colors hover:bg-bg-hover"
-              >
-                新建对话
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <div className="mb-2 text-xs font-medium text-text-secondary">主题</div>
-            <div className="grid grid-cols-3 gap-2">
-              {([
-                ['dark', '深色'],
-                ['light', '浅色'],
-                ['system', '跟随系统'],
-              ] as const).map(([value, label]) => (
-                <button
-                  key={value}
-                  onClick={() => setTheme(value)}
-                  className={`rounded-xl border px-3 py-2 text-sm transition-colors ${
-                    theme === value
-                      ? 'border-accent-blue/40 bg-accent-blue/15 text-accent-blue'
-                      : 'border-bg-border bg-bg-primary text-text-primary hover:bg-bg-hover'
-                  }`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      </Modal>
+      <HeaderMobileActionsModal
+        open={mobileActionsOpen}
+        panelsCount={panels.length}
+        currentSessionId={currentSessionId}
+        sharingSession={sharingSession}
+        sessionShareCopied={sessionShareCopied}
+        generatingDeck={generatingDeck}
+        isDeckTaskActive={isDeckTaskActive}
+        resetting={resetting}
+        resetConfirm={resetConfirm}
+        theme={theme}
+        onClose={() => setMobileActionsOpen(false)}
+        onAddPanel={handleAddPanel}
+        onRemovePanel={handleRemovePanel}
+        onOpenTaskCenter={() => setTaskCenterOpen(true)}
+        onOpenKnowledgeBase={() => setKbManageOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onShareSession={handleShareSession}
+        onGenerateReport={handleGenerateReport}
+        onResetSession={handleResetSession}
+        onNewChat={handleNewChat}
+        onSetTheme={setTheme}
+      />
 
       <DeckGenerationModal
         open={deckConfigOpen}
