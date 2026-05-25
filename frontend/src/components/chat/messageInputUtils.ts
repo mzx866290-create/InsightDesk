@@ -243,6 +243,30 @@ export const mergeComposerText = (currentText: string, incomingText: string): st
   return `${currentText.replace(/\s+$/, '')}\n\n${nextText}`
 }
 
+export const buildAnswerGroupId = (preferredAnswerGroupId?: string | null): string =>
+  preferredAnswerGroupId?.trim() ||
+  (globalThis.crypto?.randomUUID?.() ?? `grp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+
+export const classifyStreamFailure = (error: string) => {
+  const normalizedError = error.trim() || 'Request failed while processing.'
+  const isNetworkError = /failed to fetch|network|backend returned an empty response body/i.test(
+    normalizedError,
+  )
+  const isTimeoutError = /timeout|timed out|504|超时/i.test(normalizedError)
+
+  return {
+    content: isNetworkError
+      ? 'Network connection failed. Unable to reach the backend service.'
+      : isTimeoutError
+        ? 'The request timed out before the model finished responding.'
+        : normalizedError,
+    errorCode: isNetworkError ? 'NETWORK_ERROR' : isTimeoutError ? 'TIMEOUT' : 'REQUEST_FAILED',
+    suggestion: isNetworkError || isTimeoutError
+      ? undefined
+      : 'Please adjust the message or attachments and try again.',
+  }
+}
+
 const imageAttachmentKey = (image: ChatImage): string =>
   `${image.name}::${image.media_type}::${image.data_url.slice(0, 64)}`
 

@@ -4,7 +4,6 @@ import { useChatStore } from '../../stores/chatStore'
 import type { ResearchMode, ResearchSourceStrategy } from '../../stores/chatStore'
 import {
   streamChat,
-  createSession as apiCreateSession,
   truncateSessionMessagesFromAnswerGroup,
 } from '../../api/client'
 import type { SourceItem } from '../../api/client'
@@ -14,13 +13,16 @@ import { useWorkflowStore } from '../../stores/workflowStore'
 import { dispatchChatStreamChunk } from '../../hooks/useChatStreaming'
 import {
   type ResearchRequestConfig,
+  buildAnswerGroupId,
   buildDataWorkflowPlan,
   buildDeepResearchWorkflowPlan,
+  classifyStreamFailure,
   formatFileSize,
   isWorkflowDataFile,
   mergeComposerText,
 } from './messageInputUtils'
 import { useComposerAttachments } from './useComposerAttachments'
+import { useComposerSession } from './useComposerSession'
 import { useComposerSuggestions } from './useComposerSuggestions'
 
 interface MessageInputProps {
@@ -162,6 +164,18 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     adjustHeight,
   })
 
+  const {
+    ensureActiveSession,
+    syncSessionMetaFromPanels,
+  } = useComposerSession({
+    currentSessionId,
+    currentWorkspaceId,
+    setCurrentSession,
+    addSession,
+    updateSession,
+    adjustWorkspaceSessionCount,
+  })
+
   useEffect(() => {
     if (composerSeed.token === 0) return
 
@@ -278,26 +292,6 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     )
   }
 
-  const classifyStreamFailure = (error: string) => {
-    const normalizedError = error.trim() || 'Request failed while processing.'
-    const isNetworkError = /failed to fetch|network|backend returned an empty response body/i.test(
-      normalizedError,
-    )
-    const isTimeoutError = /timeout|timed out|504|超时/i.test(normalizedError)
-
-    return {
-      content: isNetworkError
-        ? 'Network connection failed. Unable to reach the backend service.'
-        : isTimeoutError
-          ? 'The request timed out before the model finished responding.'
-          : normalizedError,
-      errorCode: isNetworkError ? 'NETWORK_ERROR' : isTimeoutError ? 'TIMEOUT' : 'REQUEST_FAILED',
-      suggestion: isNetworkError || isTimeoutError
-        ? undefined
-        : 'Please adjust the message or attachments and try again.',
-    }
-  }
-
   const handleStop = () => {
     abortControllerRef.current?.abort()
     setIsLoading(false)
@@ -318,56 +312,6 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     const activeSessionId = currentSessionId ?? useChatStore.getState().currentSessionId
     if (activeSessionId) {
       syncSessionMetaFromPanels(activeSessionId)
-    }
-  }
-
-  const syncSessionMetaFromPanels = (sessionId: string) => {
-    const now = Date.now() / 1000
-    const firstPanel = useChatStore.getState().panels[0]
-    const messageCount = firstPanel
-      ? firstPanel.messages.filter((message) => message.role !== 'error').length
-      : 0
-
-    updateSession(sessionId, {
-      updated_at: now,
-      message_count: messageCount,
-    })
-  }
-
-  const buildAnswerGroupId = (preferredAnswerGroupId?: string | null): string =>
-    preferredAnswerGroupId?.trim() ||
-    (globalThis.crypto?.randomUUID?.() ?? `grp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
-
-  const ensureActiveSession = async (sessionTitleSeed: string): Promise<string | null> => {
-    if (currentSessionId) return currentSessionId
-
-    try {
-      const session = await apiCreateSession(sessionTitleSeed.slice(0, 40), {
-        workspace_id: currentWorkspaceId ?? undefined,
-      })
-      const nextSessionId = session.session_id
-      setCurrentSession(nextSessionId)
-      addSession({
-        session_id: nextSessionId,
-        title: session.title,
-        created_at: Date.now() / 1000,
-        updated_at: Date.now() / 1000,
-        message_count: 0,
-        is_archived: false,
-        is_favorite: false,
-        is_pinned: false,
-        session_order: 0,
-        tags: [],
-        workspace_id: session.workspace_id ?? currentWorkspaceId ?? 'workspace-default',
-      })
-      adjustWorkspaceSessionCount(
-        session.workspace_id ?? currentWorkspaceId ?? 'workspace-default',
-        1,
-      )
-      return nextSessionId
-    } catch (error) {
-      console.error('Failed to create session', error)
-      return null
     }
   }
 
