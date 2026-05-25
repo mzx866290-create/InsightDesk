@@ -20,18 +20,18 @@ import { useResolvedTheme } from '../../hooks/useResolvedTheme'
 import { useI18n } from '../../i18n'
 import { Button } from '../ui/Button'
 import { InlineNotice } from '../ui/InlineNotice'
-import { createSession, createSessionShareLink, getDeck, resetSession } from '../../api/client'
 import { DeckEditorModal } from '../reports/DeckEditorModal'
 import { DeckGenerationModal } from '../reports/DeckGenerationModal'
 import { TaskProgressCard } from '../cards/TaskProgressCard'
 import { TaskCenterModal } from '../tasks/TaskCenterModal'
 import { KnowledgeBaseModal } from '../settings/KnowledgeBaseModal'
-import type { DeckSpec } from '../../api/client'
-import { createAndTrackTask, useTaskStore } from '../../stores/taskStore'
 import { AssistantPresetSelector } from '../chat/AssistantPresetSelector'
 import { HeaderMobileActionsModal } from './header/HeaderMobileActionsModal'
 import { HeaderMoreMenu } from './header/HeaderMoreMenu'
+import type { HeaderActionFeedback } from './header/headerTypes'
 import { useHeaderActivePrompt } from './header/useHeaderActivePrompt'
+import { useHeaderDeckActions } from './header/useHeaderDeckActions'
+import { useHeaderSessionActions } from './header/useHeaderSessionActions'
 import { useHeaderViewport } from './header/useHeaderViewport'
 
 export const Header: React.FC = () => {
@@ -68,31 +68,51 @@ export const Header: React.FC = () => {
     workspaces.find((workspace) => workspace.workspace_id === currentWorkspaceId) ?? null
   const toggleTheme = useChatStore((s) => s.toggleTheme)
   const { language, toggleLanguage, t } = useI18n()
-  const [deckTaskId, setDeckTaskId] = useState<string | null>(null)
-  const [handledDeckTaskId, setHandledDeckTaskId] = useState<string | null>(null)
-  const deckTask = useTaskStore((s) => (deckTaskId ? s.tasks[deckTaskId] : undefined))
   const activePrompt = useHeaderActivePrompt(activePromptId)
-  const [deckConfigOpen, setDeckConfigOpen] = useState(false)
-  const [deckOpen, setDeckOpen] = useState(false)
-  const [deckData, setDeckData] = useState<DeckSpec | null>(null)
-  const [generatingDeck, setGeneratingDeck] = useState(false)
-  const [resetting, setResetting] = useState(false)
-  const [resetConfirm, setResetConfirm] = useState(false)
   const [taskCenterOpen, setTaskCenterOpen] = useState(false)
   const [kbManageOpen, setKbManageOpen] = useState(false)
-  const [sharingSession, setSharingSession] = useState(false)
-  const [sessionShareCopied, setSessionShareCopied] = useState(false)
-  const [actionFeedback, setActionFeedback] = useState<{
-    tone: 'error' | 'success'
-    message: string
-  } | null>(null)
+  const [actionFeedback, setActionFeedback] = useState<HeaderActionFeedback | null>(null)
   const [moreMenuOpen, setMoreMenuOpen] = useState(false)
   const moreMenuRef = useRef<HTMLDivElement>(null)
   const isMobile = useHeaderViewport()
   const [mobileActionsOpen, setMobileActionsOpen] = useState(false)
   const hasAnyMessages = panels.some((panel) => panel.messages.length > 0)
   const showAdvancedDesktopActions = hasAnyMessages
-  const isDeckTaskActive = deckTask?.status === 'pending' || deckTask?.status === 'running'
+  const {
+    deckTaskId,
+    deckConfigOpen,
+    setDeckConfigOpen,
+    deckOpen,
+    setDeckOpen,
+    deckData,
+    setDeckData,
+    generatingDeck,
+    isDeckTaskActive,
+    handleGenerateReport,
+    handleGenerateDeck,
+  } = useHeaderDeckActions({
+    currentSessionId,
+    knowledgeBaseEnabled,
+    setActionFeedback,
+  })
+  const {
+    resetting,
+    resetConfirm,
+    sharingSession,
+    sessionShareCopied,
+    handleNewChat,
+    handleResetSession,
+    handleShareSession,
+  } = useHeaderSessionActions({
+    currentSessionId,
+    currentWorkspaceId,
+    addSession,
+    adjustWorkspaceSessionCount,
+    setCurrentSession,
+    clearMessages,
+    updateSession,
+    setActionFeedback,
+  })
 
   useEffect(() => {
     if (!moreMenuOpen) return
@@ -117,81 +137,6 @@ export const Header: React.FC = () => {
     return () => window.clearTimeout(timer)
   }, [actionFeedback])
 
-  useEffect(() => {
-    if (!deckTaskId || !deckTask || handledDeckTaskId === deckTaskId) return
-
-    if (deckTask.status === 'completed') {
-      const nextDeckId =
-        typeof deckTask.params?.deck_id === 'string' ? deckTask.params.deck_id : ''
-      if (!nextDeckId) {
-        setActionFeedback({
-          tone: 'error',
-          message: 'Deck 任务已完成，但没有返回可打开的 deck_id。',
-        })
-        setHandledDeckTaskId(deckTaskId)
-        return
-      }
-
-      void getDeck(nextDeckId)
-        .then((deck) => {
-          setDeckData(deck)
-          setDeckOpen(true)
-          setActionFeedback(null)
-          setHandledDeckTaskId(deckTaskId)
-        })
-        .catch((error) => {
-          setActionFeedback({
-            tone: 'error',
-            message: `打开生成后的 Deck 失败：${(error as Error).message}`,
-          })
-          setHandledDeckTaskId(deckTaskId)
-        })
-      return
-    }
-
-    if (deckTask.status === 'failed') {
-      setActionFeedback({
-        tone: 'error',
-        message: deckTask.error || '生成演示稿失败，请稍后重试。',
-      })
-      setHandledDeckTaskId(deckTaskId)
-    }
-  }, [deckTask, deckTaskId, handledDeckTaskId])
-
-  const handleNewChat = async () => {
-    try {
-      const s = await createSession('新建对话', {
-        workspace_id: currentWorkspaceId ?? undefined,
-      })
-      addSession({
-        session_id: s.session_id,
-        title: s.title,
-        created_at: Date.now() / 1000,
-        updated_at: Date.now() / 1000,
-        message_count: 0,
-        is_archived: false,
-        is_favorite: false,
-        is_pinned: false,
-        session_order: 0,
-        tags: [],
-        workspace_id: s.workspace_id ?? currentWorkspaceId ?? 'workspace-default',
-      })
-      adjustWorkspaceSessionCount(
-        s.workspace_id ?? currentWorkspaceId ?? 'workspace-default',
-        1,
-      )
-      setCurrentSession(s.session_id)
-      clearMessages()
-    } catch {
-      // sidebar will show error
-    }
-  }
-
-  const handleGenerateReport = async () => {
-    if (!currentSessionId || generatingDeck || isDeckTaskActive) return
-    setDeckConfigOpen(true)
-  }
-
   const handleAddPanel = () => {
     setWelcomeGuideDismissed(true)
     addPanel()
@@ -200,96 +145,6 @@ export const Header: React.FC = () => {
   const handleRemovePanel = () => {
     if (panels.length <= 1) return
     removePanel(panels[panels.length - 1].id)
-  }
-
-  const handleGenerateDeck = async (payload: {
-    panel_config: (typeof panels)[number]['modelConfig']
-    target_slide_count: number
-    theme: 'default' | 'midnight' | 'sunrise'
-    template_id?: string
-    template_options?: Record<string, unknown>
-  }) => {
-    if (!currentSessionId) return
-    setGeneratingDeck(true)
-    try {
-      const task = await createAndTrackTask(
-        'generate_deck',
-        {
-          panel_config: payload.panel_config,
-          knowledge_base_enabled: knowledgeBaseEnabled,
-          target_slide_count: payload.target_slide_count,
-          theme: payload.theme,
-          template_id: payload.template_id,
-          template_options: payload.template_options,
-        },
-        currentSessionId,
-      )
-      setDeckTaskId(task.task_id)
-      setHandledDeckTaskId(null)
-      setActionFeedback({
-        tone: 'success',
-        message: '演示稿生成任务已加入任务中心，完成后会自动打开。',
-      })
-    } catch (e) {
-      setActionFeedback({
-        tone: 'error',
-        message: `生成演示稿失败：${(e as Error).message}`,
-      })
-    } finally {
-      setGeneratingDeck(false)
-    }
-  }
-
-  const handleResetSession = async () => {
-    if (!resetConfirm) {
-      setResetConfirm(true)
-      setTimeout(() => setResetConfirm(false), 3000)
-      return
-    }
-    if (!currentSessionId) return
-    setResetting(true)
-    setResetConfirm(false)
-    try {
-      await resetSession(currentSessionId)
-      updateSession(currentSessionId, {
-        message_count: 0,
-        updated_at: Date.now() / 1000,
-      })
-      clearMessages()
-      setActionFeedback({
-        tone: 'success',
-        message: '会话已重置。',
-      })
-    } catch (e) {
-      setActionFeedback({
-        tone: 'error',
-        message: `重置会话失败：${(e as Error).message}`,
-      })
-    } finally {
-      setResetting(false)
-    }
-  }
-
-  const handleShareSession = async () => {
-    if (!currentSessionId || sharingSession) return
-    setSharingSession(true)
-    try {
-      const payload = await createSessionShareLink(currentSessionId)
-      await navigator.clipboard.writeText(payload.share_url)
-      setSessionShareCopied(true)
-      setActionFeedback({
-        tone: 'success',
-        message: '分享链接已复制到剪贴板。',
-      })
-      window.setTimeout(() => setSessionShareCopied(false), 2000)
-    } catch (e) {
-      setActionFeedback({
-        tone: 'error',
-        message: `创建分享链接失败：${(e as Error).message}`,
-      })
-    } finally {
-      setSharingSession(false)
-    }
   }
 
   const kbStatus = activePrompt?.vector_store_id ? 'bound' : 'default'
