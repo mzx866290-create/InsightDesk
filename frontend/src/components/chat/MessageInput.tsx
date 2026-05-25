@@ -2,10 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { Send, Globe, Square, Database, ImagePlus, Paperclip, Sparkles, Loader2, X, Eraser } from 'lucide-react'
 import { useChatStore } from '../../stores/chatStore'
 import type { ResearchMode, ResearchSourceStrategy } from '../../stores/chatStore'
-import type { SourceItem } from '../../api/client'
-import { useTaskStore } from '../../stores/taskStore'
 import type { ActiveStreamControl } from './streamControl'
-import { useWorkflowStore } from '../../stores/workflowStore'
 import {
   type ResearchRequestConfig,
   formatFileSize,
@@ -17,6 +14,7 @@ import { useComposerResearchSubmit } from './useComposerResearchSubmit'
 import { useComposerSendSubmit } from './useComposerSendSubmit'
 import { useComposerSession } from './useComposerSession'
 import { useComposerSuggestions } from './useComposerSuggestions'
+import { useComposerTaskSync } from './useComposerTaskSync'
 
 interface MessageInputProps {
   onStreamingChange: (panelId: string, streaming: boolean) => void
@@ -32,7 +30,6 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   setActiveStreamControl,
 }) => {
   const {
-    panels,
     currentSessionId,
     currentWorkspaceId,
     webSearchEnabled,
@@ -43,14 +40,12 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     setResearchMode,
     researchSourceStrategy,
     setResearchSourceStrategy,
-    replaceAssistantMessageByAnswerGroup,
     addSession,
     setCurrentSession,
     updateSession,
     composerSeed,
     adjustWorkspaceSessionCount,
   } = useChatStore()
-  const tasksMap = useTaskStore((state) => state.tasks)
 
   const researchSourceStrategyOptions: Array<{
     value: ResearchSourceStrategy
@@ -105,7 +100,6 @@ export const MessageInput: React.FC<MessageInputProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const attachmentInputRef = useRef<HTMLInputElement>(null)
-  const syncedResearchTaskSignaturesRef = useRef<Map<string, string>>(new Map())
 
   const {
     images,
@@ -166,78 +160,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     })
   }, [composerSeed])
 
-  useEffect(() => {
-    const taskRecords = Object.values(tasksMap)
-
-    for (const panel of panels) {
-      for (const message of panel.messages) {
-        if (
-          message.role !== 'assistant' ||
-          message.taskType !== 'web_research' ||
-          !message.answerGroupId
-        ) {
-          continue
-        }
-
-        const task = taskRecords
-          .filter((item) => {
-            if (item.task_type !== 'web_research') return false
-            if ((item.session_id ?? '') !== (currentSessionId ?? '')) return false
-            const params = item.params ?? {}
-            return (
-              params.answer_group_id === message.answerGroupId &&
-              params.panel_id === panel.id
-            )
-          })
-          .sort((a, b) => (b.updated_at ?? b.created_at) - (a.updated_at ?? a.created_at))[0]
-        if (!task) continue
-
-        if (task.status === 'completed' && typeof task.result === 'string' && task.result.trim()) {
-          const signature = `completed:${task.updated_at ?? task.created_at}:${task.result}`
-          if (syncedResearchTaskSignaturesRef.current.get(task.task_id) === signature) {
-            continue
-          }
-
-          const taskSources = Array.isArray(task.params?.research_sources)
-            ? task.params.research_sources
-            : undefined
-          const taskWorkflowNodes = Array.isArray(task.params?.research_workflow_nodes)
-            ? task.params.research_workflow_nodes
-            : undefined
-
-          replaceAssistantMessageByAnswerGroup(panel.id, message.answerGroupId, {
-            content: task.result,
-            streaming: false,
-            sources: taskSources as SourceItem[] | undefined,
-            workflowNodes: taskWorkflowNodes as any,
-            taskId: task.task_id,
-            taskType: task.task_type,
-          })
-          if (taskWorkflowNodes && taskWorkflowNodes.length > 0) {
-            useWorkflowStore.getState().hydrateWorkflow(panel.id, taskWorkflowNodes as any)
-          }
-          syncedResearchTaskSignaturesRef.current.set(task.task_id, signature)
-          continue
-        }
-
-        if (task.status === 'failed' && typeof task.error === 'string' && task.error.trim()) {
-          const failureContent = `联网研究任务失败：${task.error}`
-          const signature = `failed:${task.updated_at ?? task.created_at}:${failureContent}`
-          if (syncedResearchTaskSignaturesRef.current.get(task.task_id) === signature) {
-            continue
-          }
-
-          replaceAssistantMessageByAnswerGroup(panel.id, message.answerGroupId, {
-            content: failureContent,
-            streaming: false,
-            taskId: task.task_id,
-            taskType: task.task_type,
-          })
-          syncedResearchTaskSignaturesRef.current.set(task.task_id, signature)
-        }
-      }
-    }
-  }, [currentSessionId, panels, replaceAssistantMessageByAnswerGroup, tasksMap])
+  useComposerTaskSync()
 
   const resetComposer = () => {
     setInput('')
