@@ -10,6 +10,16 @@ import { useChatStore } from '../../stores/chatStore'
 import { useWorkflowStore } from '../../stores/workflowStore'
 import type { ActiveStreamControl } from './streamControl'
 import {
+  createAssistantMessageIds,
+  finishComposerPanelStreams,
+  markPanelStreamComplete,
+  replaceStreamingMessageIds,
+  reportComposerStreamError,
+  resetPanelWorkflows,
+  setAllPanelsStreaming,
+  stopComposerPanelStreams,
+} from './composerStreamLifecycle'
+import {
   buildAnswerGroupId,
   classifyStreamFailure,
 } from './messageInputUtils'
@@ -32,19 +42,6 @@ interface UseComposerSendSubmitOptions {
   syncSessionMetaFromPanels: (sessionId: string) => void
   onStreamingChange: (panelId: string, streaming: boolean) => void
   setActiveStreamControl: (control: ActiveStreamControl | null) => void
-}
-
-const hasVisibleAssistantState = (panelId: string, msgId: string): boolean => {
-  const panel = useChatStore.getState().panels.find((item) => item.id === panelId)
-  const message = panel?.messages.find((item) => item.id === msgId && item.role === 'assistant')
-  return Boolean(
-    message &&
-    (
-      message.content.trim().length > 0 ||
-      (message.sources?.length ?? 0) > 0 ||
-      message.taskId
-    ),
-  )
 }
 
 export const useComposerSendSubmit = ({
@@ -88,18 +85,13 @@ export const useComposerSendSubmit = ({
   const handleStop = () => {
     abortControllerRef.current?.abort()
     setIsLoading(false)
-    panels.forEach((panel) => {
-      const msgId = streamingMsgIds.current.get(panel.id)
-      if (msgId) {
-        if (hasVisibleAssistantState(panel.id, msgId)) {
-          setAssistantStreaming(panel.id, msgId, false)
-        } else {
-          removeMessage(panel.id, msgId)
-        }
-      }
-      onStreamingChange(panel.id, false)
+    stopComposerPanelStreams({
+      panels: useChatStore.getState().panels,
+      streamingMessageIds: streamingMsgIds.current,
+      setAssistantStreaming,
+      removeMessage,
+      onStreamingChange,
     })
-    streamingMsgIds.current.clear()
     abortControllerRef.current = null
     setActiveStreamControl(null)
     const activeSessionId = currentSessionId ?? useChatStore.getState().currentSessionId
@@ -186,19 +178,25 @@ export const useComposerSendSubmit = ({
       updateSessionTitle(sessionId, sessionTitleSeed.slice(0, 40))
     }
 
-    panels.forEach((panel) => onStreamingChange(panel.id, true))
+    setAllPanelsStreaming(panels, true, onStreamingChange)
     const workflowStore = useWorkflowStore.getState()
-    panels.forEach((panel) => {
-      workflowStore.resetWorkflow(panel.id)
-    })
-    const assistantMsgIds = new Map<string, string>()
-    panels.forEach((panel) => {
-      const messageId = `assistant-${panel.id}-${Date.now()}`
-      assistantMsgIds.set(panel.id, messageId)
-      streamingMsgIds.current.set(panel.id, messageId)
-    })
+    resetPanelWorkflows(panels, workflowStore.resetWorkflow)
+    const assistantMsgIds = createAssistantMessageIds(panels)
+    replaceStreamingMessageIds(streamingMsgIds.current, assistantMsgIds)
 
     const donePanels = new Set<string>()
+    const markPanelComplete = (panelId: string) => {
+      markPanelStreamComplete({
+        panelId,
+        totalPanelCount: panels.length,
+        completedPanelIds: donePanels,
+        onStreamingChange,
+        onAllPanelsComplete: () => {
+          syncSessionMetaFromPanels(sessionId)
+          setIsLoading(false)
+        },
+      })
+    }
 
     const controller = streamChat(
       sessionId,
@@ -231,53 +229,40 @@ export const useComposerSendSubmit = ({
           },
           clearAssistantOnError: true,
           onDone: () => {
-            onStreamingChange(chunk.panel_id, false)
-            donePanels.add(chunk.panel_id)
-            if (donePanels.size === panels.length) {
-              syncSessionMetaFromPanels(sessionId)
-              setIsLoading(false)
-            }
+            markPanelComplete(chunk.panel_id)
           },
           onError: () => {
-            onStreamingChange(chunk.panel_id, false)
-            donePanels.add(chunk.panel_id)
-            if (donePanels.size === panels.length) {
-              syncSessionMetaFromPanels(sessionId)
-              setIsLoading(false)
-            }
+            markPanelComplete(chunk.panel_id)
           },
         })
       },
       () => {
         syncSessionMetaFromPanels(sessionId)
         setIsLoading(false)
-        panels.forEach((panel) => onStreamingChange(panel.id, false))
-        streamingMsgIds.current.clear()
+        finishComposerPanelStreams({
+          panels,
+          streamingMessageIds: streamingMsgIds.current,
+          onStreamingChange,
+        })
         abortControllerRef.current = null
         setActiveStreamControl(null)
       },
       (err) => {
         const failure = classifyStreamFailure(err ?? '')
-        panels.forEach((panel) => {
-          const msgId = streamingMsgIds.current.get(panel.id)
-          if (msgId) {
-            setAssistantStreaming(panel.id, msgId, false)
-          }
-          addErrorMessage(
-            panel.id,
-            failure.content,
-            failure.errorCode,
-            failure.suggestion,
-            {
-              answerGroupId,
-              retryMode: 'rerun',
-            },
-          )
-          onStreamingChange(panel.id, false)
+        reportComposerStreamError({
+          panels,
+          streamingMessageIds: streamingMsgIds.current,
+          failure,
+          errorMeta: {
+            answerGroupId,
+            retryMode: 'rerun',
+          },
+          setAssistantStreaming,
+          addErrorMessage,
+          onStreamingChange,
         })
         syncSessionMetaFromPanels(sessionId)
         setIsLoading(false)
-        streamingMsgIds.current.clear()
         abortControllerRef.current = null
         setActiveStreamControl(null)
         console.error('Stream error:', err)
