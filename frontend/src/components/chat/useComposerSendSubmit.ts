@@ -20,6 +20,10 @@ import {
   stopComposerPanelStreams,
 } from './composerStreamLifecycle'
 import {
+  createComposerSendPayload,
+  restoreComposerDraftAfterFailure,
+} from './composerSendPayload'
+import {
   buildAnswerGroupId,
   classifyStreamFailure,
 } from './messageInputUtils'
@@ -101,32 +105,26 @@ export const useComposerSendSubmit = ({
   }
 
   const handleSend = async () => {
-    const msg = input.trim()
-    const pendingImages = [...images]
-    const pendingFiles = [...files]
-    const editingAnswerGroupId = pendingEditAnswerGroupId?.trim() || ''
-    const isEditRegenerationRequested = Boolean(editingAnswerGroupId && currentSessionId)
-    const omitHistoryForRequest = omitHistoryForNextSend
-    if (
-      (msg.length === 0 && pendingImages.length === 0 && pendingFiles.length === 0) ||
-      isLoading ||
-      isInteractionLocked
-    ) {
-      return
-    }
-    const answerGroupId = buildAnswerGroupId(isEditRegenerationRequested ? editingAnswerGroupId : '')
+    const payload = createComposerSendPayload({
+      input,
+      images,
+      files,
+      pendingEditAnswerGroupId,
+      currentSessionId,
+      omitHistoryForNextSend,
+      isLoading,
+      isInteractionLocked,
+      createAnswerGroupId: buildAnswerGroupId,
+    })
+    if (!payload) return
 
     resetComposer()
     setIsLoading(true)
 
     let sessionId = currentSessionId
-    const sessionTitleSeed =
-      msg ||
-      (pendingFiles.length > 0 ? pendingFiles[0].name : '') ||
-      (pendingImages.length > 0 ? 'Image chat' : '')
 
     if (!sessionId) {
-      sessionId = await ensureActiveSession(sessionTitleSeed)
+      sessionId = await ensureActiveSession(payload.sessionTitleSeed)
       if (!sessionId) {
         setIsLoading(false)
         return
@@ -135,30 +133,35 @@ export const useComposerSendSubmit = ({
 
     // The composer is cleared before persistence work; keep the payload recoverable on failure.
     const restoreComposerAfterFailure = () => {
-      setInput(msg)
-      restoreAttachments(pendingImages, pendingFiles)
-      setPendingEditAnswerGroupId(isEditRegenerationRequested ? editingAnswerGroupId : null)
-      setOmitHistoryForNextSend(omitHistoryForRequest)
-      window.requestAnimationFrame(() => {
-        adjustHeight()
-        textareaRef.current?.focus()
+      restoreComposerDraftAfterFailure({
+        payload,
+        setInput,
+        restoreAttachments,
+        setPendingEditAnswerGroupId,
+        setOmitHistoryForNextSend,
+        afterRestore: () => {
+          window.requestAnimationFrame(() => {
+            adjustHeight()
+            textareaRef.current?.focus()
+          })
+        },
       })
     }
 
-    const isEditRegeneration = Boolean(isEditRegenerationRequested && sessionId)
+    const isEditRegeneration = Boolean(payload.isEditRegenerationRequested && sessionId)
 
     if (isEditRegeneration) {
       try {
         await truncateSessionMessagesFromAnswerGroup(sessionId, {
-          answer_group_id: answerGroupId,
-          content: msg,
-          images: pendingImages,
-          files: pendingFiles,
+          answer_group_id: payload.answerGroupId,
+          content: payload.message,
+          images: payload.pendingImages,
+          files: payload.pendingFiles,
         })
-        truncateMessagesFromAnswerGroup(answerGroupId, {
-          content: msg,
-          images: pendingImages,
-          files: pendingFiles,
+        truncateMessagesFromAnswerGroup(payload.answerGroupId, {
+          content: payload.message,
+          images: payload.pendingImages,
+          files: payload.pendingFiles,
           timestamp: Date.now() / 1000,
         })
       } catch (error) {
@@ -168,14 +171,24 @@ export const useComposerSendSubmit = ({
         return
       }
     } else {
-      addUserMessage(msg, pendingImages, pendingFiles, answerGroupId)
+      addUserMessage(
+        payload.message,
+        payload.pendingImages,
+        payload.pendingFiles,
+        payload.answerGroupId,
+      )
     }
 
     syncSessionMetaFromPanels(sessionId)
 
     const currentSession = sessions.find((session) => session.session_id === sessionId)
-    if (!isEditRegeneration && currentSession && currentSession.message_count === 0 && sessionTitleSeed) {
-      updateSessionTitle(sessionId, sessionTitleSeed.slice(0, 40))
+    if (
+      !isEditRegeneration &&
+      currentSession &&
+      currentSession.message_count === 0 &&
+      payload.sessionTitleSeed
+    ) {
+      updateSessionTitle(sessionId, payload.sessionTitleSeed.slice(0, 40))
     }
 
     setAllPanelsStreaming(panels, true, onStreamingChange)
@@ -200,31 +213,31 @@ export const useComposerSendSubmit = ({
 
     const controller = streamChat(
       sessionId,
-      msg,
+      payload.message,
       panels.map((panel) => panel.modelConfig),
       webSearchEnabled,
       knowledgeBaseEnabled,
       enabledMcpServers,
-      pendingImages,
-      pendingFiles,
-      answerGroupId,
+      payload.pendingImages,
+      payload.pendingFiles,
+      payload.answerGroupId,
       (chunk) => {
         const msgId = assistantMsgIds.get(chunk.panel_id)
         if (!msgId) return
         const panel = panels.find((item) => item.id === chunk.panel_id)
         const assistantMeta = {
-          answerGroupId,
+          answerGroupId: payload.answerGroupId,
           modelId: panel?.modelConfig.model,
         }
 
         dispatchChatStreamChunk({
           chunk,
           messageId: msgId,
-          answerGroupId,
+          answerGroupId: payload.answerGroupId,
           assistantMeta,
           errorFallback: 'Request failed while processing.',
           errorMeta: {
-            answerGroupId,
+            answerGroupId: payload.answerGroupId,
             retryMode: 'rerun',
           },
           clearAssistantOnError: true,
@@ -254,7 +267,7 @@ export const useComposerSendSubmit = ({
           streamingMessageIds: streamingMsgIds.current,
           failure,
           errorMeta: {
-            answerGroupId,
+            answerGroupId: payload.answerGroupId,
             retryMode: 'rerun',
           },
           setAssistantStreaming,
@@ -267,7 +280,7 @@ export const useComposerSendSubmit = ({
         setActiveStreamControl(null)
         console.error('Stream error:', err)
       },
-      omitHistoryForRequest,
+      payload.omitHistoryForRequest,
     )
 
     abortControllerRef.current = controller
