@@ -1,11 +1,18 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { Send, Globe, Square, Database, ImagePlus, Paperclip, Sparkles, Loader2, X, Eraser } from 'lucide-react'
 import { useChatStore } from '../../stores/chatStore'
 import type { ResearchMode, ResearchSourceStrategy } from '../../stores/chatStore'
 import type { ActiveStreamControl } from './streamControl'
+import { ComposerAttachmentTray } from './ComposerAttachmentTray'
+import { ComposerSuggestionMenu } from './ComposerSuggestionMenu'
+import { ComposerToolbar } from './ComposerToolbar'
 import {
-  type ResearchRequestConfig,
-  formatFileSize,
+  RESEARCH_REQUEST_CONFIG,
+  RESEARCH_SOURCE_STRATEGY_OPTIONS,
+  getEffectiveComposerResearchMode,
+  getResearchModeLabel,
+  getResearchSourceStrategyLabel,
+} from './composerResearchConfig'
+import {
   isWorkflowDataFile,
   mergeComposerText,
 } from './messageInputUtils'
@@ -47,52 +54,12 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     adjustWorkspaceSessionCount,
   } = useChatStore()
 
-  const researchSourceStrategyOptions: Array<{
-    value: ResearchSourceStrategy
-    label: string
-    title: string
-  }> = [
-    {
-      value: 'web_only',
-      label: '网页',
-      title: '优先使用网页来源进行标准研究',
-    },
-    {
-      value: 'community_first',
-      label: '社区',
-      title: '优先使用可检索的社区和论坛线索，并进行独立验证',
-    },
-    {
-      value: 'evidence_strict',
-      label: '严谨',
-      title: '严格证据模式；社区内容仅作为背景线索，除非能被独立验证',
-    },
-  ]
-  const effectiveComposerResearchMode =
-    researchSourceStrategy === 'web_only' ? researchMode : 'deep'
-  const researchModeLabel = effectiveComposerResearchMode === 'quick' ? '快研' : '深研'
-  const researchSourceStrategyLabel =
-    researchSourceStrategy === 'community_first'
-      ? '社区'
-      : researchSourceStrategy === 'evidence_strict'
-        ? '严谨'
-        : researchSourceStrategy === 'web_and_community'
-          ? '网页+社区'
-          : '网页'
-  const researchRequestConfig: Record<ResearchMode, ResearchRequestConfig> = {
-    quick: {
-      searchDepth: 'basic',
-      maxResults: 5,
-      maxRounds: 1,
-      maxResultsPerQuery: 2,
-    },
-    deep: {
-      searchDepth: 'advanced',
-      maxResults: 8,
-      maxRounds: 2,
-      maxResultsPerQuery: 4,
-    },
-  }
+  const effectiveComposerResearchMode = getEffectiveComposerResearchMode(
+    researchMode,
+    researchSourceStrategy,
+  )
+  const researchModeLabel = getResearchModeLabel(effectiveComposerResearchMode)
+  const researchSourceStrategyLabel = getResearchSourceStrategyLabel(researchSourceStrategy)
 
   const [input, setInput] = useState('')
   const [pendingEditAnswerGroupId, setPendingEditAnswerGroupId] = useState<string | null>(null)
@@ -217,7 +184,7 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     researchModeLabel,
     researchSourceStrategyLabel,
     researchSourceStrategy,
-    researchRequestConfig,
+    researchRequestConfig: RESEARCH_REQUEST_CONFIG,
     ensureActiveSession,
     syncSessionMetaFromPanels,
     resetComposer,
@@ -299,6 +266,20 @@ export const MessageInput: React.FC<MessageInputProps> = ({
     ? '用多 Agent 数据分析工作流处理 CSV/TSV/JSON/Excel 文件'
     : researchButtonTitle
 
+  const handleSelectResearchMode = (mode: ResearchMode) => {
+    setResearchMode(mode)
+    if (mode === 'quick') {
+      setResearchSourceStrategy('web_only')
+    }
+  }
+
+  const handleSelectResearchSourceStrategy = (strategy: ResearchSourceStrategy) => {
+    setResearchSourceStrategy(strategy)
+    if (strategy !== 'web_only') {
+      setResearchMode('deep')
+    }
+  }
+
   return (
     <div
       className="sticky bottom-0 z-10 shrink-0 border-t border-bg-border bg-bg-primary/95 px-4 py-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] backdrop-blur-sm"
@@ -318,93 +299,22 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           </div>
         )}
 
-        {images.length > 0 && (
-          <div className="mb-2 flex flex-wrap gap-2">
-            {images.map((image, index) => (
-              <div
-                key={`${image.name}-${index}`}
-                className="group relative overflow-hidden rounded-xl border border-bg-border bg-bg-secondary"
-              >
-                <img
-                  src={image.data_url}
-                  alt={image.name}
-                  className="h-20 w-20 object-cover"
-                />
-                <button
-                  type="button"
-                  onClick={() => handleRemoveImage(index)}
-                  disabled={composerLocked}
-                  className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white opacity-90 transition-opacity group-hover:opacity-100"
-                  title="Remove image"
-                >
-                  <X size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {files.length > 0 && (
-          <div className="mb-2 flex flex-wrap gap-2">
-            {files.map((file, index) => (
-              <div
-                key={`${file.name}-${index}`}
-                className="group flex items-center gap-2 rounded-xl border border-bg-border bg-bg-secondary px-3 py-2 text-xs text-text-primary"
-              >
-                <Paperclip size={12} className="shrink-0 text-text-secondary" />
-                <div className="flex min-w-0 flex-col">
-                  <span className="max-w-[180px] truncate">{file.name}</span>
-                  <span className="text-[10px] text-text-secondary">
-                    {formatFileSize(file.size_bytes)}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleRemoveFile(index)}
-                  disabled={composerLocked}
-                  className="flex h-5 w-5 items-center justify-center rounded-full text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-                  title="Remove file"
-                >
-                  <X size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+        <ComposerAttachmentTray
+          images={images}
+          files={files}
+          disabled={composerLocked}
+          onRemoveImage={handleRemoveImage}
+          onRemoveFile={handleRemoveFile}
+        />
 
         <div className="rounded-2xl border border-bg-border bg-bg-secondary px-4 py-3 transition-colors focus-within:border-accent-blue/50">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
             <div className="relative w-full flex-1">
-              {suggestions.length > 0 && (
-                <div className="absolute bottom-full left-0 right-0 z-20 mb-2 overflow-hidden rounded-xl border border-bg-border bg-bg-primary shadow-xl">
-                  <div className="max-h-56 overflow-y-auto py-1">
-                    {suggestions.map((suggestion, index) => (
-                      <button
-                        key={suggestion.id}
-                        type="button"
-                        className={`w-full px-3 py-2 text-left transition-colors ${
-                          index === activeSuggestionIndex
-                            ? 'bg-accent-blue/15'
-                            : 'hover:bg-bg-hover'
-                        }`}
-                        onMouseDown={(event) => {
-                          event.preventDefault()
-                          applySuggestion(suggestion)
-                        }}
-                      >
-                        <div className="flex items-center gap-2 text-xs font-medium text-text-primary">
-                          <span className="rounded-md bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-text-secondary">
-                            {suggestion.trigger}
-                          </span>
-                          <span>{suggestion.label}</span>
-                        </div>
-                        <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-text-secondary">
-                          {suggestion.description}
-                        </p>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
+              <ComposerSuggestionMenu
+                suggestions={suggestions}
+                activeSuggestionIndex={activeSuggestionIndex}
+                onApplySuggestion={applySuggestion}
+              />
 
               <textarea
                 ref={textareaRef}
@@ -460,197 +370,38 @@ export const MessageInput: React.FC<MessageInputProps> = ({
               }}
             />
 
-            <div className="flex flex-wrap items-center justify-end gap-2 sm:pb-0.5">
-              <div
-                className="inline-flex items-center rounded-lg border border-bg-border bg-bg-primary/50 p-0.5"
-                title="研究模式"
-              >
-                {(['quick', 'deep'] as const).map((mode) => {
-                  const active = researchMode === mode
-                  const label = mode === 'quick' ? '快研' : '深研'
-                  return (
-                    <button
-                      key={mode}
-                      type="button"
-                      onClick={() => {
-                        setResearchMode(mode)
-                        if (mode === 'quick') {
-                          setResearchSourceStrategy('web_only')
-                        }
-                      }}
-                      disabled={composerBusy || composerLocked}
-                      data-testid={`composer-research-mode-${mode}`}
-                      className={`min-h-10 rounded-md px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                        active
-                          ? mode === 'deep'
-                            ? 'bg-amber-400/20 text-amber-200'
-                            : 'bg-accent-blue/20 text-accent-blue'
-                          : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-                      }`}
-                      title={
-                        mode === 'deep'
-                          ? '深度研究：多轮检索与综合，成本更高'
-                          : '快速研究：更快返回摘要与主要来源'
-                      }
-                    >
-                      {label}
-                    </button>
-                  )
-                })}
-              </div>
-
-              <div
-                className="inline-flex items-center rounded-lg border border-bg-border bg-bg-primary/50 p-0.5"
-                title="来源策略"
-              >
-                {researchSourceStrategyOptions.map((option) => {
-                  const active = researchSourceStrategy === option.value
-                  const isCommunity = option.value === 'community_first'
-                  const isStrict = option.value === 'evidence_strict'
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      onClick={() => {
-                        setResearchSourceStrategy(option.value)
-                        if (option.value !== 'web_only') {
-                          setResearchMode('deep')
-                        }
-                      }}
-                      disabled={composerBusy || composerLocked}
-                      data-testid={`composer-research-source-${option.value}`}
-                      className={`min-h-10 rounded-md px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                        active
-                          ? isCommunity
-                            ? 'bg-accent-green/20 text-accent-green'
-                            : isStrict
-                              ? 'bg-amber-400/20 text-amber-200'
-                              : 'bg-accent-blue/20 text-accent-blue'
-                          : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-                      }`}
-                      title={option.title}
-                    >
-                      {option.label}
-                    </button>
-                  )
-                })}
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setOmitHistoryForNextSend((current) => !current)}
-                disabled={composerLocked}
-                data-testid="composer-omit-history-toggle"
-                className={`flex min-h-10 min-w-10 items-center gap-1 rounded-lg px-3 text-xs transition-colors ${
-                  omitHistoryForNextSend
-                    ? 'bg-accent-purple/20 text-accent-purple'
-                    : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-                }`}
-                title="本次发送不带历史上下文，历史对话仍会保留"
-              >
-                <Eraser size={13} />
-                <span className="hidden sm:inline">清上下文</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setWebSearchEnabled(!webSearchEnabled)}
-                disabled={composerLocked}
-                data-testid="composer-web-search-toggle"
-                className={`flex min-h-10 min-w-10 items-center justify-center gap-1 rounded-lg px-3 text-xs transition-colors ${
-                  webSearchEnabled
-                    ? 'bg-accent-blue/20 text-accent-blue'
-                    : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-                }`}
-                title="联网搜索"
-              >
-                <Globe size={13} />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setKnowledgeBaseEnabled(!knowledgeBaseEnabled)}
-                disabled={composerLocked}
-                data-testid="composer-knowledge-base-toggle"
-                className={`flex min-h-10 min-w-10 items-center justify-center gap-1 rounded-lg px-3 text-xs transition-colors ${
-                  knowledgeBaseEnabled
-                    ? 'bg-accent-green/20 text-accent-green'
-                    : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-                }`}
-                title="知识库"
-              >
-                <Database size={13} />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => attachmentInputRef.current?.click()}
-                disabled={composerBusy || composerLocked}
-                data-testid="composer-attachment-button"
-                className="flex min-h-10 min-w-10 items-center justify-center gap-1 rounded-lg px-3 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
-                title="附加文件"
-              >
-                <Paperclip size={13} />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => imageInputRef.current?.click()}
-                disabled={composerBusy || composerLocked}
-                className="flex min-h-10 min-w-10 items-center justify-center gap-1 rounded-lg px-3 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
-                title="上传图片"
-              >
-                <ImagePlus size={13} />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  void handleStartResearch()
-                }}
-                disabled={!canResearch}
-                data-testid="composer-research"
-                className={`flex min-h-10 items-center gap-1 rounded-lg px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                  canResearch
-                    ? effectiveComposerResearchMode === 'deep' || hasOnlyComposerDataFiles
-                      ? 'bg-amber-400/15 text-amber-300 hover:bg-amber-400/20'
-                      : 'bg-accent-blue/15 text-accent-blue hover:bg-accent-blue/20'
-                    : 'text-text-secondary'
-                }`}
-                title={effectiveResearchButtonTitle}
-              >
-                {isResearchStarting ? (
-                  <Loader2 size={13} className="animate-spin" />
-                ) : (
-                  <Sparkles size={13} />
-                )}
-                <span>{researchButtonLabel}</span>
-              </button>
-
-              {activeStopHandler ? (
-                <button
-                  type="button"
-                  onClick={activeStopHandler}
-                  className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-red/20 text-accent-red transition-colors hover:bg-accent-red/30"
-                  title={stopButtonTitle}
-                >
-                  <Square size={15} fill="currentColor" />
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    void handleSend()
-                  }}
-                  disabled={!canSend || composerBusy || composerLocked}
-                  data-testid="composer-send"
-                  className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-blue text-white transition-colors hover:bg-accent-blue-hover disabled:cursor-not-allowed disabled:opacity-30"
-                  title="发送"
-                >
-                  <Send size={15} />
-                </button>
-              )}
-            </div>
+            <ComposerToolbar
+              researchMode={researchMode}
+              researchSourceStrategy={researchSourceStrategy}
+              researchSourceStrategyOptions={RESEARCH_SOURCE_STRATEGY_OPTIONS}
+              omitHistoryForNextSend={omitHistoryForNextSend}
+              webSearchEnabled={webSearchEnabled}
+              knowledgeBaseEnabled={knowledgeBaseEnabled}
+              composerBusy={composerBusy}
+              composerLocked={composerLocked}
+              canResearch={canResearch}
+              canSend={canSend}
+              hasOnlyComposerDataFiles={hasOnlyComposerDataFiles}
+              effectiveComposerResearchMode={effectiveComposerResearchMode}
+              researchButtonLabel={researchButtonLabel}
+              researchButtonTitle={effectiveResearchButtonTitle}
+              isResearchStarting={isResearchStarting}
+              activeStopHandler={activeStopHandler}
+              stopButtonTitle={stopButtonTitle}
+              onSelectResearchMode={handleSelectResearchMode}
+              onSelectResearchSourceStrategy={handleSelectResearchSourceStrategy}
+              onToggleOmitHistory={() => setOmitHistoryForNextSend((current) => !current)}
+              onToggleWebSearch={() => setWebSearchEnabled(!webSearchEnabled)}
+              onToggleKnowledgeBase={() => setKnowledgeBaseEnabled(!knowledgeBaseEnabled)}
+              onChooseAttachment={() => attachmentInputRef.current?.click()}
+              onChooseImage={() => imageInputRef.current?.click()}
+              onStartResearch={() => {
+                void handleStartResearch()
+              }}
+              onSend={() => {
+                void handleSend()
+              }}
+            />
           </div>
         </div>
 
