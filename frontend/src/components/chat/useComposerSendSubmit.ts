@@ -19,6 +19,7 @@ import {
   setAllPanelsStreaming,
   stopComposerPanelStreams,
 } from './composerStreamLifecycle'
+import { applyComposerEditRegeneration } from './composerEditRegeneration'
 import {
   createComposerSendPayload,
   restoreComposerDraftAfterFailure,
@@ -152,17 +153,11 @@ export const useComposerSendSubmit = ({
 
     if (isEditRegeneration) {
       try {
-        await truncateSessionMessagesFromAnswerGroup(sessionId, {
-          answer_group_id: payload.answerGroupId,
-          content: payload.message,
-          images: payload.pendingImages,
-          files: payload.pendingFiles,
-        })
-        truncateMessagesFromAnswerGroup(payload.answerGroupId, {
-          content: payload.message,
-          images: payload.pendingImages,
-          files: payload.pendingFiles,
-          timestamp: Date.now() / 1000,
+        await applyComposerEditRegeneration({
+          sessionId,
+          payload,
+          truncateSessionMessagesFromAnswerGroup,
+          truncateMessagesFromAnswerGroup,
         })
       } catch (error) {
         console.error('Failed to truncate session for edited message', error)
