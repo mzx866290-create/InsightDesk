@@ -26,6 +26,7 @@ from backend.helpers.deck_route_helpers import (
     create_deck_artifact_result,
     grant_created_deck_artifact_access,
 )
+from backend.helpers.artifact_export_route_helpers import export_artifact_response
 from backend.helpers.research_archive_helpers import (
     artifact_content,
     compact_text,
@@ -1138,104 +1139,19 @@ def build_content_router(
             artifact = store.get(artifact_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Artifact was not found.") from exc
-        if artifact.artifact_type == "report":
-            export_format = str(format or "md").strip().lower() or "md"
-            if export_format == "md":
-                filename = f"{safe_report_filename(artifact.title)}.md"
-                return Response(
-                    content=str(artifact.content.get("markdown") or ""),
-                    media_type="text/markdown; charset=utf-8",
-                    headers={"Content-Disposition": build_download_content_disposition(filename)},
-                )
-            if export_format == "docx":
-                try:
-                    from backend.artifact_service import export_report_to_docx
-                except ImportError as exc:
-                    raise HTTPException(status_code=500, detail="python-docx is not installed.") from exc
-                filename = f"{safe_report_filename(artifact.title)}.docx"
-                try:
-                    content = export_report_to_docx(artifact)
-                except RuntimeError as exc:
-                    raise HTTPException(status_code=500, detail=str(exc)) from exc
-                return Response(
-                    content=content,
-                    media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                    headers={"Content-Disposition": build_download_content_disposition(filename)},
-                )
-            if export_format == "xlsx":
-                try:
-                    from backend.artifact_service import report_has_tables, export_report_to_xlsx
-                except ImportError as exc:
-                    raise HTTPException(status_code=500, detail="openpyxl is not installed.") from exc
-                if not report_has_tables(artifact):
-                    raise HTTPException(status_code=400, detail="Report artifact has no table content to export as xlsx.")
-                filename = f"{safe_report_filename(artifact.title)}.xlsx"
-                try:
-                    content = export_report_to_xlsx(artifact)
-                except RuntimeError as exc:
-                    raise HTTPException(status_code=500, detail=str(exc)) from exc
-                return Response(
-                    content=content,
-                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    headers={"Content-Disposition": build_download_content_disposition(filename)},
-                )
-            if export_format != "pptx":
-                raise HTTPException(status_code=400, detail="Report artifact only supports md / docx / xlsx / pptx.")
-            try:
-                from pptx import Presentation
-                from pptx.util import Pt
-            except ImportError as exc:
-                raise HTTPException(status_code=500, detail="python-pptx is not installed.") from exc
-            raw_pairs = (
-                artifact.content.get("qa_pairs")
-                if isinstance(artifact.content.get("qa_pairs"), list)
-                else []
-            )
-            qa_pairs = [
-                (str(item.get("question") or "").strip(), str(item.get("answer") or "").strip())
-                for item in raw_pairs
-                if isinstance(item, dict)
-                and (str(item.get("question") or "").strip() or str(item.get("answer") or "").strip())
-            ]
-            if not qa_pairs:
-                raise HTTPException(status_code=400, detail="Report artifact has no exportable content.")
-            presentation = Presentation()
-            populate_chat_report_presentation(presentation, title=artifact.title, qa_pairs=qa_pairs, body_font_size=Pt(12))
-            buffer = io.BytesIO()
-            presentation.save(buffer)
-            buffer.seek(0)
-            filename = f"{safe_report_filename(artifact.title)}.pptx"
-            return Response(
-                content=buffer.read(),
-                media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                headers={"Content-Disposition": build_download_content_disposition(filename)},
-            )
-        if artifact.artifact_type == "deck":
-            if str(format or "pptx").strip().lower() != "pptx":
-                raise HTTPException(status_code=400, detail="Deck artifact only supports pptx.")
-            deck_id = str(artifact.linked_resource_id or artifact.content.get("deck_id") or "").strip()
-            if not deck_id:
-                raise HTTPException(status_code=400, detail="Deck artifact is missing deck_id.")
-            try:
-                deck = resolve_deck_store().get(deck_id)
-            except KeyError as exc:
-                raise HTTPException(status_code=404, detail="Deck was not found.") from exc
-            try:
-                ep = export_deck_payload(
-                    deck,
-                    export_deck_to_pptx=export_deck_to_pptx,
-                    build_export_filename=build_export_filename,
-                    allow_unsafe_export=allow_unsafe_export,
-                    override_reason=override_reason,
-                )
-            except DeckExportGateError as exc:
-                raise HTTPException(status_code=409, detail=exc.payload) from exc
-            return Response(
-                content=ep["content"],
-                media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                headers={"Content-Disposition": build_download_content_disposition(ep["filename"])},
-            )
-        raise HTTPException(status_code=400, detail="Unsupported artifact type.")
+        return export_artifact_response(
+            artifact=artifact,
+            export_format=format,
+            get_deck=resolve_deck_store().get,
+            export_deck_payload=export_deck_payload,
+            export_deck_to_pptx=export_deck_to_pptx,
+            build_export_filename=build_export_filename,
+            build_download_content_disposition=build_download_content_disposition,
+            safe_report_filename=safe_report_filename,
+            populate_chat_report_presentation=populate_chat_report_presentation,
+            allow_unsafe_export=allow_unsafe_export,
+            override_reason=override_reason,
+        )
 
     @router.post("/api/artifacts/generate")
     async def generate_artifact(http_request: Request, request: GenerateArtifactRequest):
