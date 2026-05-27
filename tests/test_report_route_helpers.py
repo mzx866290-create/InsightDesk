@@ -1,8 +1,13 @@
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
+from pptx import Presentation
 
-from backend.helpers.report_route_helpers import create_report_artifact_result
+from backend.helpers.report_route_helpers import (
+    build_report_download_response,
+    create_report_artifact_result,
+)
 
 
 def _request(**overrides):
@@ -66,3 +71,44 @@ def test_create_report_artifact_result_validates_template_before_building():
         )
 
     assert build_called is False
+
+
+def test_build_report_download_response_returns_pptx_download():
+    response = build_report_download_response(
+        ["message"],
+        report_download_payload=lambda messages, **kwargs: {
+            "presentation": Presentation(),
+            "filename": "Board_Update.pptx",
+        },
+        ensure_deckable_chat=lambda messages: [("Question", "Answer")],
+        build_chat_report_title=lambda messages: "Board Update",
+        populate_chat_report_presentation=lambda *args, **kwargs: None,
+        safe_report_filename=lambda title: title.replace(" ", "_"),
+        build_download_content_disposition=lambda filename: (
+            f'attachment; filename="{filename}"'
+        ),
+    )
+
+    assert response.status_code == 200
+    assert response.media_type.endswith("presentationml.presentation")
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="Board_Update.pptx"'
+    )
+    assert response.body
+
+
+def test_build_report_download_response_maps_invalid_messages_to_http_400():
+    with pytest.raises(HTTPException) as exc_info:
+        build_report_download_response(
+            ["message"],
+            report_download_payload=lambda messages, **kwargs: {},
+            ensure_deckable_chat=lambda messages: (_ for _ in ()).throw(
+                ValueError("No deckable messages")
+            ),
+            build_chat_report_title=lambda messages: "Board Update",
+            populate_chat_report_presentation=lambda *args, **kwargs: None,
+            safe_report_filename=lambda title: title,
+            build_download_content_disposition=lambda filename: filename,
+        )
+
+    assert exc_info.value.status_code == 400

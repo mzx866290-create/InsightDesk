@@ -1,6 +1,5 @@
 """Content route utilities."""
 
-import io
 import logging
 import time
 from typing import Any, Awaitable, Callable, Coroutine, Optional, cast
@@ -26,7 +25,10 @@ from backend.helpers.deck_route_helpers import (
     grant_created_deck_artifact_access,
 )
 from backend.helpers.artifact_export_route_helpers import export_artifact_response
-from backend.helpers.report_route_helpers import create_report_artifact_result
+from backend.helpers.report_route_helpers import (
+    build_report_download_response,
+    create_report_artifact_result,
+)
 from backend.helpers.research_archive_helpers import (
     artifact_content,
     compact_text,
@@ -875,41 +877,19 @@ def build_content_router(
     ):
         from backend.stores.factory import create_chat_message_history
         require_session_access(request, session_id, "viewer")
-        try:
-            from pptx import Presentation
-            from pptx.util import Pt
-        except ImportError:
-            raise HTTPException(
-                status_code=500,
-                detail="python-pptx is not installed. Please install it and try again.",
-            )
         history = create_chat_message_history(session_id=session_id)
         try:
             msgs = resolve_report_messages_fn(history, answer_group_id=answer_group_id, panel_id=panel_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Requested report scope was not found.") from exc
-        try:
-            ensure_deckable_chat(msgs)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if not msgs:
-            raise HTTPException(status_code=400, detail="No messages were found in this session.")
-        rp = report_download_payload(
+        return build_report_download_response(
             msgs,
+            report_download_payload=report_download_payload,
             ensure_deckable_chat=ensure_deckable_chat,
             build_chat_report_title=build_chat_report_title,
-            presentation_factory=Presentation,
-            body_font_size=Pt(12),
             populate_chat_report_presentation=populate_chat_report_presentation,
             safe_report_filename=safe_report_filename,
-        )
-        buf = io.BytesIO()
-        rp["presentation"].save(buf)
-        buf.seek(0)
-        return Response(
-            content=buf.read(),
-            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            headers={"Content-Disposition": build_download_content_disposition(rp["filename"])},
+            build_download_content_disposition=build_download_content_disposition,
         )
 
     # 鈹€鈹€ Artifacts 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
