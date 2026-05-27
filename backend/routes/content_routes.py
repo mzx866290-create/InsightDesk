@@ -36,10 +36,7 @@ from backend.helpers.task_approval_policy_helpers import (
     load_task_approval_policy_payload,
     save_task_approval_policy_payload,
 )
-from backend.helpers.workflow_data_helpers import (
-    enrich_workflow_data_context,
-    ensure_data_analysis_plan_step,
-)
+from backend.helpers.workflow_task_payload_helpers import build_multi_agent_workflow_task_params
 from backend.schemas.api_models import (
     ApprovalPolicyRequest,
     ApprovalTaskBatchDecisionRequest,
@@ -434,55 +431,13 @@ def build_content_router(
         http_request: Request,
         request: CreateMultiAgentWorkflowTaskRequest,
     ):
-        user_request = str(request.user_request or "").strip()
-        if not user_request:
-            raise HTTPException(status_code=400, detail="Workflow user_request cannot be empty.")
-
-        context = dict(request.context or {})
-        context, data_file_summaries = enrich_workflow_data_context(
-            context,
-            list(request.data_files or []),
-        )
-        if request.session_id and not str(context.get("session_id") or "").strip():
-            context["session_id"] = request.session_id
-        task_approval_policy = approval_policy_payload()
-        if task_approval_policy.get("enabled"):
-            context["task_approval_policy"] = task_approval_policy
-        plan = ensure_data_analysis_plan_step(
-            [dict(step) for step in request.plan if isinstance(step, dict)],
-            user_request=user_request,
-            has_data_rows=bool(context.get("rows")),
-        )
-
-        params: dict[str, Any] = {
-            "user_request": user_request,
-            "panel_id": str(request.panel_id or "").strip(),
-            "answer_group_id": str(request.answer_group_id or "").strip(),
-            "model_id": str(request.model_id or "multi_agent_workflow").strip()
-            or "multi_agent_workflow",
-            "context": context,
-            "plan": plan,
-            "research_mode": str(request.research_mode or "deep").strip().lower() or "deep",
-            "research_source_strategy": str(request.research_source_strategy or "web_only").strip().lower() or "web_only",
-            "providers": [str(item).strip() for item in request.providers if str(item).strip()],
-            "max_rounds": max(1, int(request.max_rounds or 2)),
-            "max_results_per_query": max(1, int(request.max_results_per_query or 4)),
-            "max_fetch_pages": max(1, int(request.max_fetch_pages or 3)),
-            "time_range": str(request.time_range or "").strip(),
-            "use_kb_context": bool(request.use_kb_context),
-            "vector_store_path": str(request.vector_store_path or "").strip(),
-            "allow_quick_fallback": bool(request.allow_quick_fallback),
-        }
-        if data_file_summaries:
-            params["data_files"] = data_file_summaries
-        if request.panel_config is not None:
-            params["panel_config"] = (
-                request.panel_config.model_dump(mode="json")
-                if hasattr(request.panel_config, "model_dump")
-                else request.panel_config.dict()
-                if hasattr(request.panel_config, "dict")
-                else request.panel_config
+        try:
+            params = build_multi_agent_workflow_task_params(
+                request,
+                task_approval_policy_loader=approval_policy_payload,
             )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         return await create_background_task_payload(
             http_request=http_request,
