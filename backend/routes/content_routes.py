@@ -23,6 +23,8 @@ from backend.helpers.deck_report_helpers import (
 from backend.helpers.deck_route_helpers import (
     create_deck_artifact_result,
     grant_created_deck_artifact_access,
+    update_deck_block_refs_result,
+    update_deck_result,
 )
 from backend.helpers.artifact_export_route_helpers import export_artifact_response
 from backend.helpers.report_route_helpers import (
@@ -658,12 +660,14 @@ def build_content_router(
             deck = resolve_deck_store().get(deck_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Deck was not found.") from exc
-        if request.slides is not None and not request.slides:
-            raise HTTPException(status_code=400, detail="Deck must keep at least one slide.")
-        apply_deck_update(deck, request, normalize_deck_theme=normalize_deck_theme)
-        resolve_deck_store().save(deck)
-        sync_deck_artifacts(deck)
-        return deck.model_dump(mode="json")
+        return update_deck_result(
+            deck=deck,
+            request=request,
+            apply_deck_update=apply_deck_update,
+            normalize_deck_theme=normalize_deck_theme,
+            save_deck=resolve_deck_store().save,
+            sync_deck_artifacts=sync_deck_artifacts,
+        )
 
     @router.patch("/api/decks/{deck_id}/slides/{slide_id}/blocks/{block_id}/refs")
     async def update_saved_deck_block_refs(
@@ -679,23 +683,18 @@ def build_content_router(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Deck was not found.") from exc
         try:
-            result = update_deck_block_refs(deck, slide_id, block_id, payload)
+            return update_deck_block_refs_result(
+                deck=deck,
+                slide_id=slide_id,
+                block_id=block_id,
+                payload=payload,
+                update_deck_block_refs=update_deck_block_refs,
+                save_deck=resolve_deck_store().save,
+                sync_deck_artifacts=sync_deck_artifacts,
+            )
         except KeyError as exc:
             missing_id = str(exc.args[0] if exc.args else "")
             raise HTTPException(status_code=404, detail=f"Slide or block was not found: {missing_id}") from exc
-        resolve_deck_store().save(deck)
-        sync_deck_artifacts(deck)
-        block = result["block"]
-        return {
-            "deck": deck.model_dump(mode="json"),
-            "slide_id": result["slide_id"],
-            "block_id": result["block_id"],
-            "block": block.model_dump(mode="json") if hasattr(block, "model_dump") else block,
-            "citation_validation": result["citation_validation"],
-            "evidence_review": result["evidence_review"],
-            "export_gate": result["export_gate"],
-            "slide_delivery": result["slide_delivery"],
-        }
 
     @router.post("/api/decks/{deck_id}/slides/{slide_id}/regenerate")
     async def regenerate_saved_deck_slide(
