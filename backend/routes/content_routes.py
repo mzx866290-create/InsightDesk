@@ -8,7 +8,6 @@ from typing import Any, Awaitable, Callable, Coroutine, Optional, cast
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 
-from backend.delivery_templates import validate_delivery_template_selection
 from backend.routes.resource_access_helpers import (
     filter_visible_resources,
     grant_derived_resource_access,
@@ -18,7 +17,6 @@ from backend.routes.resource_access_helpers import (
 )
 from backend.helpers.deck_report_helpers import (
     DeckExportGateError,
-    apply_report_template_metadata,
     attach_deck_delivery_audit,
     build_deck_delivery_response,
     update_deck_block_refs,
@@ -28,6 +26,7 @@ from backend.helpers.deck_route_helpers import (
     grant_created_deck_artifact_access,
 )
 from backend.helpers.artifact_export_route_helpers import export_artifact_response
+from backend.helpers.report_route_helpers import create_report_artifact_result
 from backend.helpers.research_archive_helpers import (
     artifact_content,
     compact_text,
@@ -248,38 +247,6 @@ def build_content_router(
             identity_store=identity_store,
             audit_security_event=audit_security_event,
         )
-
-    def create_report_artifact_for_messages(
-        *,
-        session_id: str,
-        messages: list[Any],
-        answer_group_id: str = "",
-        panel_id: str = "",
-        template_id: str = "",
-        template_options: dict[str, Any] | None = None,
-    ) -> tuple[Any, str, str]:
-        qa_pairs = ensure_deckable_chat(messages)
-        title = build_chat_report_title(messages)
-        clean_template_id = str(template_id or "").strip()
-        clean_template_options = dict(template_options or {})
-        validate_delivery_template_selection(clean_template_id, artifact_type="report")
-        markdown = apply_report_template_metadata(
-            build_report_markdown(messages, title),
-            template_id=clean_template_id,
-            template_options=clean_template_options,
-        )
-        artifact = build_report_artifact(
-            session_id=session_id,
-            title=title,
-            markdown=markdown,
-            qa_pairs=qa_pairs,
-            answer_group_id=answer_group_id,
-            panel_id=panel_id,
-            template_id=clean_template_id,
-            template_options=clean_template_options,
-        )
-        resolve_artifact_store().save(artifact)
-        return artifact, title, markdown
 
     def create_deck_artifact_for_deck(deck: Any) -> Any:
         artifact = build_deck_artifact(deck)
@@ -871,13 +838,14 @@ def build_content_router(
         if not msgs:
             raise HTTPException(status_code=400, detail="No messages were found in this session.")
         try:
-            artifact, title, markdown = create_report_artifact_for_messages(
-                session_id=request.session_id,
+            report_created = create_report_artifact_result(
+                request=request,
                 messages=msgs,
-                answer_group_id=str(request.answer_group_id or "").strip(),
-                panel_id=str(request.panel_id or "").strip(),
-                template_id=str(getattr(request, "template_id", "") or "").strip(),
-                template_options=dict(getattr(request, "template_options", {}) or {}),
+                ensure_deckable_chat=ensure_deckable_chat,
+                build_chat_report_title=build_chat_report_title,
+                build_report_markdown=build_report_markdown,
+                build_report_artifact=build_report_artifact,
+                save_artifact=resolve_artifact_store().save,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -886,13 +854,17 @@ def build_content_router(
             source_resource_type="session",
             source_resource_id=request.session_id,
             target_resource_type="artifact",
-            target_resource_id=artifact.artifact_id,
+            target_resource_id=report_created.artifact_id,
             access_store=access_store,
             require_remote_role=require_remote_editor,
             now=time.time,
             audit_security_event=audit_security_event,
         )
-        return {"markdown": markdown, "title": title, "artifact_id": artifact.artifact_id}
+        return {
+            "markdown": report_created.markdown,
+            "title": report_created.title,
+            "artifact_id": report_created.artifact_id,
+        }
 
     @router.get("/api/reports/download/{session_id}")
     async def download_report_pptx(
@@ -1151,13 +1123,14 @@ def build_content_router(
             raise HTTPException(status_code=400, detail="No usable messages were found for artifact generation.")
         if request.artifact_type == "report":
             try:
-                artifact, _, _ = create_report_artifact_for_messages(
-                    session_id=request.session_id,
+                report_created = create_report_artifact_result(
+                    request=request,
                     messages=messages,
-                    answer_group_id=str(request.answer_group_id or "").strip(),
-                    panel_id=str(request.panel_id or "").strip(),
-                    template_id=str(getattr(request, "template_id", "") or "").strip(),
-                    template_options=dict(getattr(request, "template_options", {}) or {}),
+                    ensure_deckable_chat=ensure_deckable_chat,
+                    build_chat_report_title=build_chat_report_title,
+                    build_report_markdown=build_report_markdown,
+                    build_report_artifact=build_report_artifact,
+                    save_artifact=resolve_artifact_store().save,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1166,18 +1139,18 @@ def build_content_router(
                 source_resource_type="session",
                 source_resource_id=request.session_id,
                 target_resource_type="artifact",
-                target_resource_id=artifact.artifact_id,
+                target_resource_id=report_created.artifact_id,
                 access_store=access_store,
                 require_remote_role=require_remote_editor,
                 now=time.time,
                 audit_security_event=audit_security_event,
             )
-            return artifact_payload(artifact)
+            return artifact_payload(report_created.artifact)
         if request.artifact_type == "deck":
             if request.panel_config is None:
                 raise HTTPException(status_code=400, detail="Deck artifact requires panel_config.")
             try:
-                created = await create_deck_artifact_result(
+                deck_created = await create_deck_artifact_result(
                     request=request,
                     messages=messages,
                     build_deck=resolve_build_deck(),
@@ -1192,8 +1165,8 @@ def build_content_router(
             grant_created_deck_artifact_access(
                 request=http_request,
                 session_id=request.session_id,
-                deck_id=created.deck_id,
-                artifact_id=created.artifact_id,
+                deck_id=deck_created.deck_id,
+                artifact_id=deck_created.artifact_id,
                 access_store=access_store,
                 require_remote_editor=require_remote_editor,
                 audit_security_event=audit_security_event,
@@ -1201,7 +1174,7 @@ def build_content_router(
                 grant_resource_owner=grant_resource_owner,
                 now=time.time,
             )
-            return artifact_payload(created.artifact)
+            return artifact_payload(deck_created.artifact)
         raise HTTPException(status_code=400, detail="Unsupported artifact type.")
 
     # 鈹€鈹€ 鍒嗕韩閾炬帴 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
