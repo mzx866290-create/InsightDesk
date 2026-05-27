@@ -43,6 +43,7 @@ from backend.helpers.task_approval_policy_helpers import (
     save_task_approval_policy_payload,
 )
 from backend.helpers.workflow_task_payload_helpers import build_multi_agent_workflow_task_params
+from backend.helpers.task_route_helpers import filter_visible_task_records
 from backend.schemas.api_models import (
     ApprovalPolicyRequest,
     ApprovalTaskBatchDecisionRequest,
@@ -421,30 +422,18 @@ def build_content_router(
             in_memory_tasks = list(task_state.values())
         prune_persisted_tasks()
         persisted_tasks = get_task_store().list_recent(limit=max(limit, task_history_limit))
-        filtered_in_memory_tasks = []
-        for record in in_memory_tasks:
-            if getattr(record, "session_id", None):
-                try:
-                    require_session_access(request, str(record.session_id), "viewer")
-                except HTTPException as exc:
-                    if exc.status_code == 403:
-                        continue
-                    raise
-            else:
-                require_remote_viewer(request)
-            filtered_in_memory_tasks.append(record)
-        filtered_persisted_tasks = []
-        for record in persisted_tasks:
-            if getattr(record, "session_id", None):
-                try:
-                    require_session_access(request, str(record.session_id), "viewer")
-                except HTTPException as exc:
-                    if exc.status_code == 403:
-                        continue
-                    raise
-            else:
-                require_remote_viewer(request)
-            filtered_persisted_tasks.append(record)
+        filtered_in_memory_tasks = filter_visible_task_records(
+            in_memory_tasks,
+            request,
+            require_session_access=require_session_access,
+            require_remote_viewer=require_remote_viewer,
+        )
+        filtered_persisted_tasks = filter_visible_task_records(
+            persisted_tasks,
+            request,
+            require_session_access=require_session_access,
+            require_remote_viewer=require_remote_viewer,
+        )
         queue_health = None
         if resolve_task_backend() in {"arq", "redis"} and arq_queue_health_payload is not None:
             queue_health = await arq_queue_health_payload()
