@@ -22,7 +22,10 @@ from backend.helpers.deck_report_helpers import (
     build_deck_delivery_response,
     update_deck_block_refs,
 )
-from backend.helpers.deck_route_helpers import create_deck_artifact_result
+from backend.helpers.deck_route_helpers import (
+    create_deck_artifact_result,
+    grant_created_deck_artifact_access,
+)
 from backend.helpers.research_archive_helpers import (
     artifact_content,
     compact_text,
@@ -673,43 +676,17 @@ def build_content_router(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        inherit_resource_grants(
-            source_resource_type="session",
-            source_resource_id=request.session_id,
-            target_resource_type="deck",
-            target_resource_id=created.deck_id,
-            access_store=access_store,
-            now=time.time,
-            audit_security_event=audit_security_event,
+        grant_created_deck_artifact_access(
             request=http_request,
-        )
-        inherit_resource_grants(
-            source_resource_type="session",
-            source_resource_id=request.session_id,
-            target_resource_type="artifact",
-            target_resource_id=created.artifact_id,
+            session_id=request.session_id,
+            deck_id=created.deck_id,
+            artifact_id=created.artifact_id,
             access_store=access_store,
-            now=time.time,
+            require_remote_editor=require_remote_editor,
             audit_security_event=audit_security_event,
-            request=http_request,
-        )
-        grant_resource_owner(
-            http_request,
-            resource_type="deck",
-            resource_id=created.deck_id,
-            require_remote_role=require_remote_editor,
-            access_store=access_store,
+            inherit_resource_grants=inherit_resource_grants,
+            grant_resource_owner=grant_resource_owner,
             now=time.time,
-            audit_security_event=audit_security_event,
-        )
-        grant_resource_owner(
-            http_request,
-            resource_type="artifact",
-            resource_id=created.artifact_id,
-            require_remote_role=require_remote_editor,
-            access_store=access_store,
-            now=time.time,
-            audit_security_event=audit_security_event,
         )
         return created.deck_payload
 
@@ -1319,43 +1296,17 @@ def build_content_router(
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            inherit_resource_grants(
-                source_resource_type="session",
-                source_resource_id=request.session_id,
-                target_resource_type="deck",
-                target_resource_id=created.deck_id,
-                access_store=access_store,
-                now=time.time,
-                audit_security_event=audit_security_event,
+            grant_created_deck_artifact_access(
                 request=http_request,
-            )
-            inherit_resource_grants(
-                source_resource_type="session",
-                source_resource_id=request.session_id,
-                target_resource_type="artifact",
-                target_resource_id=created.artifact_id,
+                session_id=request.session_id,
+                deck_id=created.deck_id,
+                artifact_id=created.artifact_id,
                 access_store=access_store,
-                now=time.time,
+                require_remote_editor=require_remote_editor,
                 audit_security_event=audit_security_event,
-                request=http_request,
-            )
-            grant_resource_owner(
-                http_request,
-                resource_type="deck",
-                resource_id=created.deck_id,
-                require_remote_role=require_remote_editor,
-                access_store=access_store,
+                inherit_resource_grants=inherit_resource_grants,
+                grant_resource_owner=grant_resource_owner,
                 now=time.time,
-                audit_security_event=audit_security_event,
-            )
-            grant_resource_owner(
-                http_request,
-                resource_type="artifact",
-                resource_id=created.artifact_id,
-                require_remote_role=require_remote_editor,
-                access_store=access_store,
-                now=time.time,
-                audit_security_event=audit_security_event,
             )
             return artifact_payload(created.artifact)
         raise HTTPException(status_code=400, detail="Unsupported artifact type.")

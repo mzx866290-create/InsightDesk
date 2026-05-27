@@ -63,3 +63,41 @@ async def create_deck_artifact_result(
         artifact=artifact,
         deck_payload=deck_payload,
     )
+
+
+def grant_created_deck_artifact_access(
+    *,
+    request: Any,
+    session_id: str,
+    deck_id: str,
+    artifact_id: str,
+    access_store: Any,
+    require_remote_editor: Callable[[Any], Any],
+    audit_security_event: Callable[..., Any],
+    inherit_resource_grants: Callable[..., Any],
+    grant_resource_owner: Callable[..., Any],
+    now: Callable[[], float],
+) -> None:
+    for resource_type, resource_id in (
+        ("deck", deck_id),
+        ("artifact", artifact_id),
+    ):
+        inherit_resource_grants(
+            source_resource_type="session",
+            source_resource_id=session_id,
+            target_resource_type=resource_type,
+            target_resource_id=resource_id,
+            access_store=access_store,
+            now=now,
+            audit_security_event=audit_security_event,
+            request=request,
+        )
+        grant_resource_owner(
+            request,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            require_remote_role=require_remote_editor,
+            access_store=access_store,
+            now=now,
+            audit_security_event=audit_security_event,
+        )

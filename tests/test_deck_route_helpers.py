@@ -6,6 +6,7 @@ import pytest
 import backend.deck_service as deck_service
 from backend.helpers.deck_report_helpers import build_create_deck_kwargs
 from backend.helpers.deck_route_helpers import create_deck_artifact_result
+from backend.helpers.deck_route_helpers import grant_created_deck_artifact_access
 
 
 def _deck(deck_id: str = "deck-helper") -> deck_service.DeckSpec:
@@ -124,3 +125,40 @@ def test_create_deck_artifact_result_validates_template_before_building():
         )
 
     assert build_called is False
+
+
+def test_grant_created_deck_artifact_access_inherits_and_grants_owner():
+    inherited = []
+    owners = []
+
+    def inherit_resource_grants(**kwargs):
+        inherited.append(kwargs)
+
+    def grant_resource_owner(request, **kwargs):
+        owners.append({"request": request, **kwargs})
+
+    request = SimpleNamespace(user="editor")
+    access_store = object()
+
+    grant_created_deck_artifact_access(
+        request=request,
+        session_id="session-1",
+        deck_id="deck-1",
+        artifact_id="artifact-1",
+        access_store=access_store,
+        require_remote_editor=lambda req: {"role": "editor"},
+        audit_security_event=lambda *args, **kwargs: None,
+        inherit_resource_grants=inherit_resource_grants,
+        grant_resource_owner=grant_resource_owner,
+        now=lambda: 123.0,
+    )
+
+    assert [
+        (item["target_resource_type"], item["target_resource_id"])
+        for item in inherited
+    ] == [("deck", "deck-1"), ("artifact", "artifact-1")]
+    assert all(item["source_resource_type"] == "session" for item in inherited)
+    assert all(item["source_resource_id"] == "session-1" for item in inherited)
+    assert [item["resource_type"] for item in owners] == ["deck", "artifact"]
+    assert [item["resource_id"] for item in owners] == ["deck-1", "artifact-1"]
+    assert all(item["request"] is request for item in owners)
