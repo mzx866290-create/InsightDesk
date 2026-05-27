@@ -17,12 +17,12 @@ from backend.routes.resource_access_helpers import (
 )
 from backend.helpers.deck_report_helpers import (
     DeckExportGateError,
-    apply_deck_template_metadata,
     apply_report_template_metadata,
     attach_deck_delivery_audit,
     build_deck_delivery_response,
     update_deck_block_refs,
 )
+from backend.helpers.deck_route_helpers import create_deck_artifact_result
 from backend.helpers.research_archive_helpers import (
     artifact_content,
     compact_text,
@@ -660,38 +660,24 @@ def build_content_router(
             raise HTTPException(status_code=404, detail="Requested deck scope was not found.") from exc
         if not messages:
             raise HTTPException(status_code=400, detail="No messages were found in this session.")
-        template_id = str(getattr(request, "template_id", "") or "").strip()
-        template_options = dict(getattr(request, "template_options", {}) or {})
         try:
-            validate_delivery_template_selection(template_id, artifact_type="deck")
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        try:
-            deck = await resolve_build_deck()(
+            created = await create_deck_artifact_result(
+                request=request,
                 messages=messages,
-                **build_create_deck_kwargs(
-                    request,
-                    resolve_active_prompt_runtime=resolve_active_prompt_runtime,
-                    normalize_deck_theme=normalize_deck_theme,
-                ),
+                build_deck=resolve_build_deck(),
+                build_create_deck_kwargs=build_create_deck_kwargs,
+                resolve_active_prompt_runtime=resolve_active_prompt_runtime,
+                normalize_deck_theme=normalize_deck_theme,
+                save_deck=resolve_deck_store().save,
+                create_deck_artifact=create_deck_artifact_for_deck,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        apply_deck_template_metadata(
-            deck,
-            template_id=template_id,
-            template_options=template_options,
-        )
-        attach_deck_delivery_audit(deck)
-        resolve_deck_store().save(deck)
-        art = create_deck_artifact_for_deck(deck)
-        payload = deck.model_dump(mode="json")
-        payload["artifact_id"] = art.artifact_id
         inherit_resource_grants(
             source_resource_type="session",
             source_resource_id=request.session_id,
             target_resource_type="deck",
-            target_resource_id=deck.deck_id,
+            target_resource_id=created.deck_id,
             access_store=access_store,
             now=time.time,
             audit_security_event=audit_security_event,
@@ -701,7 +687,7 @@ def build_content_router(
             source_resource_type="session",
             source_resource_id=request.session_id,
             target_resource_type="artifact",
-            target_resource_id=art.artifact_id,
+            target_resource_id=created.artifact_id,
             access_store=access_store,
             now=time.time,
             audit_security_event=audit_security_event,
@@ -710,7 +696,7 @@ def build_content_router(
         grant_resource_owner(
             http_request,
             resource_type="deck",
-            resource_id=deck.deck_id,
+            resource_id=created.deck_id,
             require_remote_role=require_remote_editor,
             access_store=access_store,
             now=time.time,
@@ -719,13 +705,13 @@ def build_content_router(
         grant_resource_owner(
             http_request,
             resource_type="artifact",
-            resource_id=art.artifact_id,
+            resource_id=created.artifact_id,
             require_remote_role=require_remote_editor,
             access_store=access_store,
             now=time.time,
             audit_security_event=audit_security_event,
         )
-        return payload
+        return created.deck_payload
 
     @router.get("/api/decks")
     async def list_decks(request: Request, limit: int = 100):
@@ -1320,36 +1306,24 @@ def build_content_router(
         if request.artifact_type == "deck":
             if request.panel_config is None:
                 raise HTTPException(status_code=400, detail="Deck artifact requires panel_config.")
-            template_id = str(getattr(request, "template_id", "") or "").strip()
-            template_options = dict(getattr(request, "template_options", {}) or {})
             try:
-                validate_delivery_template_selection(template_id, artifact_type="deck")
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            try:
-                deck = await resolve_build_deck()(
+                created = await create_deck_artifact_result(
+                    request=request,
                     messages=messages,
-                    **build_create_deck_kwargs(
-                        request,
-                        resolve_active_prompt_runtime=resolve_active_prompt_runtime,
-                        normalize_deck_theme=normalize_deck_theme,
-                    ),
+                    build_deck=resolve_build_deck(),
+                    build_create_deck_kwargs=build_create_deck_kwargs,
+                    resolve_active_prompt_runtime=resolve_active_prompt_runtime,
+                    normalize_deck_theme=normalize_deck_theme,
+                    save_deck=resolve_deck_store().save,
+                    create_deck_artifact=create_deck_artifact_for_deck,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            apply_deck_template_metadata(
-                deck,
-                template_id=template_id,
-                template_options=template_options,
-            )
-            attach_deck_delivery_audit(deck)
-            resolve_deck_store().save(deck)
-            artifact = create_deck_artifact_for_deck(deck)
             inherit_resource_grants(
                 source_resource_type="session",
                 source_resource_id=request.session_id,
                 target_resource_type="deck",
-                target_resource_id=deck.deck_id,
+                target_resource_id=created.deck_id,
                 access_store=access_store,
                 now=time.time,
                 audit_security_event=audit_security_event,
@@ -1359,7 +1333,7 @@ def build_content_router(
                 source_resource_type="session",
                 source_resource_id=request.session_id,
                 target_resource_type="artifact",
-                target_resource_id=artifact.artifact_id,
+                target_resource_id=created.artifact_id,
                 access_store=access_store,
                 now=time.time,
                 audit_security_event=audit_security_event,
@@ -1368,7 +1342,7 @@ def build_content_router(
             grant_resource_owner(
                 http_request,
                 resource_type="deck",
-                resource_id=deck.deck_id,
+                resource_id=created.deck_id,
                 require_remote_role=require_remote_editor,
                 access_store=access_store,
                 now=time.time,
@@ -1377,13 +1351,13 @@ def build_content_router(
             grant_resource_owner(
                 http_request,
                 resource_type="artifact",
-                resource_id=artifact.artifact_id,
+                resource_id=created.artifact_id,
                 require_remote_role=require_remote_editor,
                 access_store=access_store,
                 now=time.time,
                 audit_security_event=audit_security_event,
             )
-            return artifact_payload(artifact)
+            return artifact_payload(created.artifact)
         raise HTTPException(status_code=400, detail="Unsupported artifact type.")
 
     # 鈹€鈹€ 鍒嗕韩閾炬帴 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
