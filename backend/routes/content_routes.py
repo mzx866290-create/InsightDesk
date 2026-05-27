@@ -42,6 +42,17 @@ from backend.helpers.task_approval_policy_helpers import (
     load_task_approval_policy_payload,
     save_task_approval_policy_payload,
 )
+from backend.helpers.task_approval_route_helpers import (
+    TASK_NOT_FOUND_DETAIL,
+    apply_approval_decision_to_record,
+    approval_decision_value,
+    build_task_approval_batch_payload,
+    ensure_task_accepts_approval_decision,
+    normalize_task_approval_id,
+    task_approval_batch_error_result,
+    task_approval_batch_id_required_result,
+    task_approval_batch_success_result,
+)
 from backend.helpers.workflow_task_payload_helpers import build_multi_agent_workflow_task_params
 from backend.helpers.task_route_helpers import filter_visible_task_records
 from backend.schemas.api_models import (
@@ -508,27 +519,14 @@ def build_content_router(
             prune_persisted_tasks()
             record = get_task_store().get(task_id)
         if record is None:
-            raise HTTPException(status_code=404, detail="Task was not found.")
-        if record.task_type != "multi_agent_workflow":
-            raise HTTPException(status_code=400, detail="Task does not support approval decisions.")
-        if record.status != getattr(type(record.status), "WAITING_APPROVAL", record.status):
-            if str(getattr(record.status, "value", record.status)) != "waiting_approval":
-                raise HTTPException(status_code=400, detail="Task is not waiting for approval.")
+            raise HTTPException(status_code=404, detail=TASK_NOT_FOUND_DETAIL)
+        ensure_task_accepts_approval_decision(record)
         if getattr(record, "session_id", None):
             require_session_access(http_request, str(record.session_id), "editor")
         else:
             require_remote_admin(http_request)
 
-        params = dict(record.params or {})
-        params["approval_decision"] = str(request.decision or "").strip().lower()
-        params["approval_reviewer"] = str(request.reviewer or "").strip()
-        params["approval_comment"] = str(request.comment or "").strip()
-        record.params = params
-        record.status = getattr(type(record.status), "PENDING", record.status)
-        record.progress = min(100, max(10, int(getattr(record, "progress", 0) or 0)))
-        record.error = None
-        record.result = ""
-        record.updated_at = time.time()
+        apply_approval_decision_to_record(record, request, updated_at=time.time())
 
         async with tasks_lock:
             task_state[task_id] = record
@@ -540,7 +538,7 @@ def build_content_router(
             "task_approval_decision",
             http_request,
             details=(
-                f"task_id={task_id} decision={params['approval_decision']} "
+                f"task_id={task_id} decision={approval_decision_value(request)} "
                 f"session_id={getattr(record, 'session_id', '') or '<none>'}"
             ),
         )
@@ -556,11 +554,9 @@ def build_content_router(
         results: list[dict[str, Any]] = []
         succeeded = 0
         for task_id in request.task_ids:
-            normalized_task_id = str(task_id or "").strip()
+            normalized_task_id = normalize_task_approval_id(task_id)
             if not normalized_task_id:
-                results.append(
-                    {"task_id": normalized_task_id, "ok": False, "error": "Task id is required."}
-                )
+                results.append(task_approval_batch_id_required_result(normalized_task_id))
                 continue
             try:
                 task_payload = await apply_task_approval_decision(
@@ -569,38 +565,20 @@ def build_content_router(
                     request,
                 )
             except HTTPException as exc:
-                results.append(
-                    {
-                        "task_id": normalized_task_id,
-                        "ok": False,
-                        "error": str(exc.detail),
-                    }
-                )
+                results.append(task_approval_batch_error_result(normalized_task_id, exc.detail))
                 continue
             succeeded += 1
-            results.append(
-                {
-                    "task_id": normalized_task_id,
-                    "ok": True,
-                    "task": task_payload,
-                }
-            )
+            results.append(task_approval_batch_success_result(normalized_task_id, task_payload))
 
-        failed = len(results) - succeeded
         audit_security_event(
             "task_approval_batch_decision",
             http_request,
             details=(
-                f"total={len(results)} succeeded={succeeded} failed={failed} "
-                f"decision={str(request.decision or '').strip().lower()}"
+                f"total={len(results)} succeeded={succeeded} "
+                f"failed={len(results) - succeeded} decision={approval_decision_value(request)}"
             ),
         )
-        return {
-            "total": len(results),
-            "succeeded": succeeded,
-            "failed": failed,
-            "results": results,
-        }
+        return build_task_approval_batch_payload(results, succeeded=succeeded)
 
     @router.post("/api/decks")
     async def create_deck(http_request: Request, request: CreateDeckRequest):
