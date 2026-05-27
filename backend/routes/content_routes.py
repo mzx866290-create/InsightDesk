@@ -1,7 +1,6 @@
 """Content route utilities."""
 
 import io
-import json
 import logging
 import time
 from typing import Any, Awaitable, Callable, Coroutine, Optional, cast
@@ -32,6 +31,10 @@ from backend.helpers.research_archive_helpers import (
     research_archive_payload,
     research_conflict_groups,
     research_conflict_review_records,
+)
+from backend.helpers.task_approval_policy_helpers import (
+    load_task_approval_policy_payload,
+    save_task_approval_policy_payload,
 )
 from backend.helpers.workflow_data_helpers import (
     enrich_workflow_data_context,
@@ -150,14 +153,6 @@ def build_content_router(
     import asyncio
 
     router = APIRouter()
-    approval_policy_config_key = "task_approval_policy"
-    default_approval_policy = {
-        "enabled": False,
-        "required_task_types": [],
-        "high_risk_requires_approval": True,
-        "default_reviewer_role": "admin",
-        "updated_at": None,
-    }
 
     def spawn_background_task(coro: Awaitable[None]) -> Any:
         return asyncio.create_task(cast(Coroutine[Any, Any, None], coro))
@@ -189,63 +184,11 @@ def build_content_router(
             return int(share_link_ttl_seconds())
         return int(share_link_ttl_seconds)
 
-    def normalized_approval_policy(raw_policy: Any) -> dict[str, Any]:
-        if hasattr(raw_policy, "model_dump"):
-            data = raw_policy.model_dump()
-        elif hasattr(raw_policy, "dict"):
-            data = raw_policy.dict()
-        elif isinstance(raw_policy, dict):
-            data = dict(raw_policy)
-        else:
-            data = {}
-
-        task_types: list[str] = []
-        seen_task_types: set[str] = set()
-        raw_task_types = data.get("required_task_types")
-        if isinstance(raw_task_types, list):
-            for raw_task_type in raw_task_types:
-                task_type = str(raw_task_type or "").strip()
-                if not task_type or task_type in seen_task_types:
-                    continue
-                task_types.append(task_type)
-                seen_task_types.add(task_type)
-        if len(task_types) > 20:
-            raise HTTPException(
-                status_code=400,
-                detail="required_task_types must contain at most 20 items.",
-            )
-
-        reviewer_role = str(data.get("default_reviewer_role") or "").strip() or "admin"
-        return {
-            "enabled": bool(data.get("enabled", False)),
-            "required_task_types": task_types,
-            "high_risk_requires_approval": bool(
-                data.get("high_risk_requires_approval", True)
-            ),
-            "default_reviewer_role": reviewer_role,
-            "updated_at": data.get("updated_at"),
-        }
-
     def approval_policy_payload() -> dict[str, Any]:
-        record = get_app_config_store().get(approval_policy_config_key)
-        if record is None:
-            return dict(default_approval_policy)
-        try:
-            stored_policy = json.loads(record.value or "{}")
-        except json.JSONDecodeError:
-            logger.warning("Stored task approval policy is not valid JSON")
-            return dict(default_approval_policy)
-        payload = normalized_approval_policy(stored_policy)
-        payload["updated_at"] = float(record.updated_at or 0.0) or None
-        return payload
+        return load_task_approval_policy_payload(get_app_config_store(), logger)
 
     def save_approval_policy_payload(raw_policy: Any) -> dict[str, Any]:
-        payload = normalized_approval_policy(raw_policy)
-        payload.pop("updated_at", None)
-        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        record = get_app_config_store().set(approval_policy_config_key, encoded)
-        payload["updated_at"] = float(record.updated_at or 0.0) or None
-        return payload
+        return save_task_approval_policy_payload(get_app_config_store(), raw_policy)
 
     def require_session_access(
         request: Request, session_id: str, minimum_role: str = "viewer"
