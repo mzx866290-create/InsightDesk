@@ -11,6 +11,7 @@ from fastapi.responses import Response
 from backend.delivery_templates import validate_delivery_template_selection
 from backend.routes.resource_access_helpers import (
     filter_visible_resources,
+    grant_derived_resource_access,
     grant_resource_owner,
     inherit_resource_grants,
     require_resource_access,
@@ -315,22 +316,14 @@ def build_content_router(
             on_record_created=on_record_created,
         )
         if session_id and payload.get("task_id"):
-            inherit_resource_grants(
+            grant_derived_resource_access(
+                http_request,
                 source_resource_type="session",
                 source_resource_id=session_id,
                 target_resource_type="task",
                 target_resource_id=str(payload.get("task_id") or ""),
                 access_store=access_store,
-                now=time.time,
-                audit_security_event=audit_security_event,
-                request=http_request,
-            )
-            grant_resource_owner(
-                http_request,
-                resource_type="task",
-                resource_id=str(payload.get("task_id") or ""),
                 require_remote_role=require_remote_editor,
-                access_store=access_store,
                 now=time.time,
                 audit_security_event=audit_security_event,
             )
@@ -888,22 +881,14 @@ def build_content_router(
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        inherit_resource_grants(
+        grant_derived_resource_access(
+            http_request,
             source_resource_type="session",
             source_resource_id=request.session_id,
             target_resource_type="artifact",
             target_resource_id=artifact.artifact_id,
             access_store=access_store,
-            now=time.time,
-            audit_security_event=audit_security_event,
-            request=http_request,
-        )
-        grant_resource_owner(
-            http_request,
-            resource_type="artifact",
-            resource_id=artifact.artifact_id,
             require_remote_role=require_remote_editor,
-            access_store=access_store,
             now=time.time,
             audit_security_event=audit_security_event,
         )
@@ -1176,22 +1161,14 @@ def build_content_router(
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            inherit_resource_grants(
+            grant_derived_resource_access(
+                http_request,
                 source_resource_type="session",
                 source_resource_id=request.session_id,
                 target_resource_type="artifact",
                 target_resource_id=artifact.artifact_id,
                 access_store=access_store,
-                now=time.time,
-                audit_security_event=audit_security_event,
-                request=http_request,
-            )
-            grant_resource_owner(
-                http_request,
-                resource_type="artifact",
-                resource_id=artifact.artifact_id,
                 require_remote_role=require_remote_editor,
-                access_store=access_store,
                 now=time.time,
                 audit_security_event=audit_security_event,
             )

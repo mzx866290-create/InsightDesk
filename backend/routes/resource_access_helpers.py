@@ -176,6 +176,39 @@ def inherit_resource_grants(
     return copied
 
 
+def grant_derived_resource_access(
+    request: Request,
+    *,
+    source_resource_type: str,
+    source_resource_id: str,
+    target_resource_type: str,
+    target_resource_id: str,
+    access_store: Any | Callable[[], Any],
+    require_remote_role: Callable[[Request], dict[str, Any]],
+    now: Callable[[], float],
+    audit_security_event: Callable[..., Any] | None = None,
+) -> None:
+    inherit_resource_grants(
+        source_resource_type=source_resource_type,
+        source_resource_id=source_resource_id,
+        target_resource_type=target_resource_type,
+        target_resource_id=target_resource_id,
+        access_store=access_store,
+        now=now,
+        audit_security_event=audit_security_event,
+        request=request,
+    )
+    grant_resource_owner(
+        request,
+        resource_type=target_resource_type,
+        resource_id=target_resource_id,
+        require_remote_role=require_remote_role,
+        access_store=access_store,
+        now=now,
+        audit_security_event=audit_security_event,
+    )
+
+
 def filter_visible_resources(
     request: Request,
     resources: Iterable[T],

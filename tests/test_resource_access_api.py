@@ -6,7 +6,10 @@ import backend.chat_store as chat_store
 import backend.deck_service as deck_service
 from backend.stores.identity_store import SQLiteIdentityStore
 from backend.stores.resource_access_store import SQLiteResourceAccessStore
-from backend.routes.resource_access_helpers import inherit_resource_grants
+from backend.routes.resource_access_helpers import (
+    grant_derived_resource_access,
+    inherit_resource_grants,
+)
 
 
 def _set_remote_tokens(monkeypatch):
@@ -433,6 +436,43 @@ def test_inherit_resource_grants_copies_user_and_org_acl(monkeypatch, tmp_path):
     assert user_grant.role == "editor"
     assert org_grant is not None
     assert org_grant.role == "viewer"
+
+
+def test_grant_derived_resource_access_inherits_acl_and_grants_owner(monkeypatch, tmp_path):
+    _identity_store, access_store = _patch_stores(monkeypatch, tmp_path)
+    access_store.upsert_grant(
+        resource_type="session",
+        resource_id="source-session",
+        user_id="editor",
+        role="editor",
+        now=1.0,
+    )
+
+    grant_derived_resource_access(
+        object(),
+        source_resource_type="session",
+        source_resource_id="source-session",
+        target_resource_type="artifact",
+        target_resource_id="artifact-derived",
+        access_store=access_store,
+        require_remote_role=lambda request: {"user_id": "creator"},
+        now=lambda: 2.0,
+    )
+
+    inherited = access_store.get_grant(
+        resource_type="artifact",
+        resource_id="artifact-derived",
+        user_id="editor",
+    )
+    owner = access_store.get_grant(
+        resource_type="artifact",
+        resource_id="artifact-derived",
+        user_id="creator",
+    )
+    assert inherited is not None
+    assert inherited.role == "editor"
+    assert owner is not None
+    assert owner.role == "owner"
 
 
 def test_task_creation_inherits_session_acl(monkeypatch, tmp_path):
