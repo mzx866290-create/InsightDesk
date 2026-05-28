@@ -15,14 +15,15 @@ from backend.routes.resource_access_helpers import (
     require_resource_access,
 )
 from backend.helpers.deck_report_helpers import (
-    DeckExportGateError,
     attach_deck_delivery_audit,
     build_deck_delivery_response,
     update_deck_block_refs,
 )
 from backend.helpers.deck_route_helpers import (
     create_deck_artifact_result,
+    export_deck_response,
     grant_created_deck_artifact_access,
+    regenerate_deck_slide_result,
     update_deck_block_refs_result,
     update_deck_result,
 )
@@ -706,32 +707,21 @@ def build_content_router(
             deck = resolve_deck_store().get(deck_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Deck was not found.") from exc
-        history = create_chat_message_history(session_id=deck.meta.session_id)
-        try:
-            messages = resolve_report_messages_fn(
-                history,
-                answer_group_id=getattr(deck.meta, "source_answer_group_id", None),
-                panel_id=getattr(deck.meta, "source_panel_id", None),
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Requested deck scope was not found.") from exc
-        if not messages:
-            raise HTTPException(status_code=400, detail="No messages were found in this session.")
-        regenerate_kwargs = build_regenerate_deck_kwargs(
-            deck, request,
+        return await regenerate_deck_slide_result(
+            deck=deck,
+            slide_id=slide_id,
+            request=request,
+            create_chat_message_history=create_chat_message_history,
+            resolve_report_messages=resolve_report_messages_fn,
+            build_regenerate_deck_kwargs=build_regenerate_deck_kwargs,
             normalize_model_config=normalize_model_config,
             resolve_active_prompt_runtime=resolve_active_prompt_runtime,
+            regenerate_deck_slide=regenerate_deck_slide,
+            replace_deck_slide=replace_deck_slide,
+            save_deck=resolve_deck_store().save,
+            sync_deck_artifacts=sync_deck_artifacts,
+            build_deck_delivery_response=build_deck_delivery_response,
         )
-        try:
-            regenerated_slide = await regenerate_deck_slide(deck=deck, slide_id=slide_id, messages=messages, **regenerate_kwargs)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Slide was not found.") from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        replace_deck_slide(deck, regenerated_slide)
-        resolve_deck_store().save(deck)
-        sync_deck_artifacts(deck)
-        return build_deck_delivery_response(deck, focus_slide_id=slide_id)
 
     @router.get("/api/decks/{deck_id}/export")
     async def export_deck(
@@ -748,22 +738,15 @@ def build_content_router(
             deck = resolve_deck_store().get(deck_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Deck was not found.") from exc
-        try:
-            ep = export_deck_payload(
-                deck,
-                export_deck_to_pptx=export_deck_to_pptx,
-                build_export_filename=build_export_filename,
-                allow_unsafe_export=allow_unsafe_export,
-                override_reason=override_reason,
-            )
-        except DeckExportGateError as exc:
-            raise HTTPException(status_code=409, detail=exc.payload) from exc
-        except RuntimeError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        return Response(
-            content=ep["content"],
-            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            headers={"Content-Disposition": build_download_content_disposition(ep["filename"])},
+        return export_deck_response(
+            deck=deck,
+            export_format=format,
+            export_deck_payload=export_deck_payload,
+            export_deck_to_pptx=export_deck_to_pptx,
+            build_export_filename=build_export_filename,
+            build_download_content_disposition=build_download_content_disposition,
+            allow_unsafe_export=allow_unsafe_export,
+            override_reason=override_reason,
         )
 
     @router.post("/api/decks/{deck_id}/share", response_model=share_link_response_model)

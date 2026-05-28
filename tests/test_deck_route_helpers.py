@@ -5,10 +5,17 @@ import pytest
 from fastapi import HTTPException
 
 import backend.deck_service as deck_service
+from backend.helpers.deck_report_helpers import DeckExportGateError
 from backend.helpers.deck_report_helpers import build_create_deck_kwargs
+from backend.helpers.deck_route_helpers import DECK_EXPORT_UNSUPPORTED_DETAIL
+from backend.helpers.deck_route_helpers import DECK_SLIDE_NOT_FOUND_DETAIL
+from backend.helpers.deck_route_helpers import DECK_SOURCE_MESSAGES_NOT_FOUND_DETAIL
+from backend.helpers.deck_route_helpers import DECK_SOURCE_SCOPE_NOT_FOUND_DETAIL
 from backend.helpers.deck_route_helpers import DECK_MUST_KEEP_SLIDE_DETAIL
 from backend.helpers.deck_route_helpers import create_deck_artifact_result
+from backend.helpers.deck_route_helpers import export_deck_response
 from backend.helpers.deck_route_helpers import grant_created_deck_artifact_access
+from backend.helpers.deck_route_helpers import regenerate_deck_slide_result
 from backend.helpers.deck_route_helpers import update_deck_block_refs_result
 from backend.helpers.deck_route_helpers import update_deck_result
 
@@ -257,3 +264,204 @@ def test_update_deck_block_refs_result_updates_saves_syncs_and_serializes():
         "slide_delivery": {"slide_id": "slide-1"},
     }
     assert calls == ["update", ("save", deck), ("sync", deck)]
+
+
+def test_regenerate_deck_slide_result_resolves_saved_scope_saves_and_syncs():
+    deck = _deck("deck-regenerate")
+    deck.meta.source_answer_group_id = "answer-1"
+    deck.meta.source_panel_id = "panel-main"
+    request = SimpleNamespace(panel_config="panel-config", knowledge_base_enabled=None)
+    regenerated_slide = deck_service.DeckSlide(
+        id="content-1",
+        type="content",
+        title="Regenerated",
+        layout="title-bullets",
+        blocks=[],
+    )
+    calls = []
+
+    def create_chat_message_history(*, session_id):
+        assert session_id == "session-1"
+        return "history"
+
+    def resolve_report_messages(history, *, answer_group_id, panel_id):
+        assert history == "history"
+        assert answer_group_id == "answer-1"
+        assert panel_id == "panel-main"
+        return ["message"]
+
+    def build_regenerate_deck_kwargs(deck_arg, request_arg, **kwargs):
+        assert deck_arg is deck
+        assert request_arg is request
+        assert kwargs["normalize_model_config"]("raw") == {"normalized": "raw"}
+        assert kwargs["resolve_active_prompt_runtime"](False) == ("prompt", None, None)
+        return {"panel_config": {"panel": "main"}, "knowledge_base_enabled": False}
+
+    async def regenerate_deck_slide(**kwargs):
+        assert kwargs["deck"] is deck
+        assert kwargs["slide_id"] == "content-1"
+        assert kwargs["messages"] == ["message"]
+        assert kwargs["panel_config"] == {"panel": "main"}
+        calls.append("regenerate")
+        return regenerated_slide
+
+    result = asyncio.run(
+        regenerate_deck_slide_result(
+            deck=deck,
+            slide_id="content-1",
+            request=request,
+            create_chat_message_history=create_chat_message_history,
+            resolve_report_messages=resolve_report_messages,
+            build_regenerate_deck_kwargs=build_regenerate_deck_kwargs,
+            normalize_model_config=lambda value: {"normalized": value},
+            resolve_active_prompt_runtime=lambda enabled: ("prompt", None, None),
+            regenerate_deck_slide=regenerate_deck_slide,
+            replace_deck_slide=lambda deck_arg, slide: calls.append(("replace", deck_arg, slide)),
+            save_deck=lambda deck_arg: calls.append(("save", deck_arg)),
+            sync_deck_artifacts=lambda deck_arg: calls.append(("sync", deck_arg)),
+            build_deck_delivery_response=lambda deck_arg, **kwargs: {
+                "deck_id": deck_arg.deck_id,
+                "focus_slide_id": kwargs["focus_slide_id"],
+            },
+        )
+    )
+
+    assert result == {"deck_id": "deck-regenerate", "focus_slide_id": "content-1"}
+    assert calls == [
+        "regenerate",
+        ("replace", deck, regenerated_slide),
+        ("save", deck),
+        ("sync", deck),
+    ]
+
+
+def test_regenerate_deck_slide_result_maps_scope_and_slide_errors():
+    deck = _deck("deck-regenerate-errors")
+    request = SimpleNamespace(panel_config="panel-config", knowledge_base_enabled=None)
+
+    with pytest.raises(HTTPException) as scope_exc:
+        asyncio.run(
+            regenerate_deck_slide_result(
+                deck=deck,
+                slide_id="content-1",
+                request=request,
+                create_chat_message_history=lambda **kwargs: "history",
+                resolve_report_messages=lambda *args, **kwargs: (_ for _ in ()).throw(
+                    KeyError("missing-scope")
+                ),
+                build_regenerate_deck_kwargs=lambda *args, **kwargs: {},
+                normalize_model_config=lambda value: value,
+                resolve_active_prompt_runtime=lambda enabled: (None, None, None),
+                regenerate_deck_slide=lambda **kwargs: None,
+                replace_deck_slide=lambda deck_arg, slide: None,
+                save_deck=lambda deck_arg: None,
+                sync_deck_artifacts=lambda deck_arg: None,
+                build_deck_delivery_response=lambda *args, **kwargs: {},
+            )
+        )
+    assert scope_exc.value.status_code == 404
+    assert scope_exc.value.detail == DECK_SOURCE_SCOPE_NOT_FOUND_DETAIL
+
+    with pytest.raises(HTTPException) as empty_exc:
+        asyncio.run(
+            regenerate_deck_slide_result(
+                deck=deck,
+                slide_id="content-1",
+                request=request,
+                create_chat_message_history=lambda **kwargs: "history",
+                resolve_report_messages=lambda *args, **kwargs: [],
+                build_regenerate_deck_kwargs=lambda *args, **kwargs: {},
+                normalize_model_config=lambda value: value,
+                resolve_active_prompt_runtime=lambda enabled: (None, None, None),
+                regenerate_deck_slide=lambda **kwargs: None,
+                replace_deck_slide=lambda deck_arg, slide: None,
+                save_deck=lambda deck_arg: None,
+                sync_deck_artifacts=lambda deck_arg: None,
+                build_deck_delivery_response=lambda *args, **kwargs: {},
+            )
+        )
+    assert empty_exc.value.status_code == 400
+    assert empty_exc.value.detail == DECK_SOURCE_MESSAGES_NOT_FOUND_DETAIL
+
+    async def missing_slide(**kwargs):
+        raise KeyError("content-1")
+
+    with pytest.raises(HTTPException) as slide_exc:
+        asyncio.run(
+            regenerate_deck_slide_result(
+                deck=deck,
+                slide_id="content-1",
+                request=request,
+                create_chat_message_history=lambda **kwargs: "history",
+                resolve_report_messages=lambda *args, **kwargs: ["message"],
+                build_regenerate_deck_kwargs=lambda *args, **kwargs: {},
+                normalize_model_config=lambda value: value,
+                resolve_active_prompt_runtime=lambda enabled: (None, None, None),
+                regenerate_deck_slide=missing_slide,
+                replace_deck_slide=lambda deck_arg, slide: None,
+                save_deck=lambda deck_arg: None,
+                sync_deck_artifacts=lambda deck_arg: None,
+                build_deck_delivery_response=lambda *args, **kwargs: {},
+            )
+        )
+    assert slide_exc.value.status_code == 404
+    assert slide_exc.value.detail == DECK_SLIDE_NOT_FOUND_DETAIL
+
+
+def test_export_deck_response_returns_pptx_download_response():
+    deck = _deck("deck-export")
+    captured = {}
+
+    def export_deck_payload(deck_arg, **kwargs):
+        captured["deck"] = deck_arg
+        captured["kwargs"] = kwargs
+        return {"content": b"pptx-bytes", "filename": "deck-export.pptx"}
+
+    response = export_deck_response(
+        deck=deck,
+        export_format="pptx",
+        export_deck_payload=export_deck_payload,
+        export_deck_to_pptx=lambda deck_arg: b"pptx",
+        build_export_filename=lambda deck_arg, extension: f"{deck_arg.deck_id}.{extension}",
+        build_download_content_disposition=lambda filename: f'attachment; filename="{filename}"',
+        allow_unsafe_export=True,
+        override_reason="manual review",
+    )
+
+    assert response.body == b"pptx-bytes"
+    assert response.media_type == "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    assert response.headers["content-disposition"] == 'attachment; filename="deck-export.pptx"'
+    assert captured["deck"] is deck
+    assert captured["kwargs"]["allow_unsafe_export"] is True
+    assert captured["kwargs"]["override_reason"] == "manual review"
+
+
+def test_export_deck_response_maps_export_errors():
+    deck = _deck("deck-export-errors")
+
+    with pytest.raises(HTTPException) as format_exc:
+        export_deck_response(
+            deck=deck,
+            export_format="pdf",
+            export_deck_payload=lambda *args, **kwargs: {},
+            export_deck_to_pptx=lambda deck_arg: b"",
+            build_export_filename=lambda *args, **kwargs: "deck.pptx",
+            build_download_content_disposition=lambda filename: filename,
+        )
+    assert format_exc.value.status_code == 400
+    assert format_exc.value.detail == DECK_EXPORT_UNSUPPORTED_DETAIL
+
+    def blocked_export(*args, **kwargs):
+        raise DeckExportGateError({"blocked": True})
+
+    with pytest.raises(HTTPException) as gate_exc:
+        export_deck_response(
+            deck=deck,
+            export_format="pptx",
+            export_deck_payload=blocked_export,
+            export_deck_to_pptx=lambda deck_arg: b"",
+            build_export_filename=lambda *args, **kwargs: "deck.pptx",
+            build_download_content_disposition=lambda filename: filename,
+        )
+    assert gate_exc.value.status_code == 409
+    assert gate_exc.value.detail == {"blocked": True}

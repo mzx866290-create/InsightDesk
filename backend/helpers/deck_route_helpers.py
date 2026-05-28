@@ -4,15 +4,25 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, cast
 
 from fastapi import HTTPException
+from fastapi.responses import Response
 
 from backend.delivery_templates import validate_delivery_template_selection
+from backend.helpers.artifact_export_route_helpers import (
+    PPTX_MEDIA_TYPE,
+    build_download_response,
+)
 from backend.helpers.deck_report_helpers import (
+    DeckExportGateError,
     apply_deck_template_metadata,
     attach_deck_delivery_audit,
 )
 
 
 DECK_MUST_KEEP_SLIDE_DETAIL = "Deck must keep at least one slide."
+DECK_EXPORT_UNSUPPORTED_DETAIL = "Deck export only supports pptx."
+DECK_SOURCE_SCOPE_NOT_FOUND_DETAIL = "Requested deck scope was not found."
+DECK_SOURCE_MESSAGES_NOT_FOUND_DETAIL = "No messages were found in this session."
+DECK_SLIDE_NOT_FOUND_DETAIL = "Slide was not found."
 
 
 @dataclass(frozen=True)
@@ -150,6 +160,92 @@ def update_deck_block_refs_result(
         "export_gate": result["export_gate"],
         "slide_delivery": result["slide_delivery"],
     }
+
+
+async def regenerate_deck_slide_result(
+    *,
+    deck: Any,
+    slide_id: str,
+    request: Any,
+    create_chat_message_history: Callable[..., Any],
+    resolve_report_messages: Callable[..., list[Any]],
+    build_regenerate_deck_kwargs: Callable[..., dict[str, Any]],
+    normalize_model_config: Callable[[Any], Any],
+    resolve_active_prompt_runtime: Callable[[bool], tuple[Any, Any, Any]],
+    regenerate_deck_slide: Callable[..., Awaitable[Any]],
+    replace_deck_slide: Callable[[Any, Any], Any],
+    save_deck: Callable[[Any], Any],
+    sync_deck_artifacts: Callable[[Any], None],
+    build_deck_delivery_response: Callable[..., dict[str, Any]],
+) -> dict[str, Any]:
+    history = create_chat_message_history(session_id=deck.meta.session_id)
+    try:
+        messages = resolve_report_messages(
+            history,
+            answer_group_id=getattr(deck.meta, "source_answer_group_id", None),
+            panel_id=getattr(deck.meta, "source_panel_id", None),
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=DECK_SOURCE_SCOPE_NOT_FOUND_DETAIL) from exc
+    if not messages:
+        raise HTTPException(status_code=400, detail=DECK_SOURCE_MESSAGES_NOT_FOUND_DETAIL)
+
+    regenerate_kwargs = build_regenerate_deck_kwargs(
+        deck,
+        request,
+        normalize_model_config=normalize_model_config,
+        resolve_active_prompt_runtime=resolve_active_prompt_runtime,
+    )
+    try:
+        regenerated_slide = await regenerate_deck_slide(
+            deck=deck,
+            slide_id=slide_id,
+            messages=messages,
+            **regenerate_kwargs,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=DECK_SLIDE_NOT_FOUND_DETAIL) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    replace_deck_slide(deck, regenerated_slide)
+    save_deck(deck)
+    sync_deck_artifacts(deck)
+    return build_deck_delivery_response(deck, focus_slide_id=slide_id)
+
+
+def export_deck_response(
+    *,
+    deck: Any,
+    export_format: str,
+    export_deck_payload: Callable[..., dict[str, Any]],
+    export_deck_to_pptx: Callable[[Any], bytes],
+    build_export_filename: Callable[..., str],
+    build_download_content_disposition: Callable[[str], str],
+    allow_unsafe_export: bool = False,
+    override_reason: str = "",
+) -> Response:
+    if str(export_format or "pptx").strip().lower() != "pptx":
+        raise HTTPException(status_code=400, detail=DECK_EXPORT_UNSUPPORTED_DETAIL)
+    try:
+        export_payload = export_deck_payload(
+            deck,
+            export_deck_to_pptx=export_deck_to_pptx,
+            build_export_filename=build_export_filename,
+            allow_unsafe_export=allow_unsafe_export,
+            override_reason=override_reason,
+        )
+    except DeckExportGateError as exc:
+        raise HTTPException(status_code=409, detail=exc.payload) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return build_download_response(
+        content=export_payload["content"],
+        media_type=PPTX_MEDIA_TYPE,
+        filename=export_payload["filename"],
+        build_download_content_disposition=build_download_content_disposition,
+    )
 
 
 def _model_payload(value: Any) -> Any:
