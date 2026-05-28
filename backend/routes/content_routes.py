@@ -5,8 +5,6 @@ import time
 from typing import Any, Awaitable, Callable, Coroutine, Optional, cast
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import Response
-
 from backend.routes.resource_access_helpers import (
     filter_visible_resources,
     grant_derived_resource_access,
@@ -18,6 +16,10 @@ from backend.helpers.deck_report_helpers import (
     attach_deck_delivery_audit,
     build_deck_delivery_response,
     update_deck_block_refs,
+)
+from backend.helpers.document_route_helpers import (
+    document_stats_payload,
+    upload_documents_result,
 )
 from backend.helpers.deck_route_helpers import (
     create_deck_share_link_result,
@@ -40,6 +42,11 @@ from backend.helpers.report_route_helpers import (
 from backend.helpers.research_archive_route_helpers import (
     research_archives_list_payload,
     upsert_research_conflict_resolution_result,
+)
+from backend.helpers.share_link_route_helpers import (
+    list_share_links_payload,
+    open_shared_resource_response,
+    revoke_share_link_result,
 )
 from backend.helpers.task_approval_policy_helpers import (
     load_task_approval_policy_payload,
@@ -338,57 +345,39 @@ def build_content_router(
         vector_store_path: Optional[str] = Form(default=None),
     ):
         require_remote_editor(request)
-        temp_paths: list[str] = []
-        try:
-            evsp = effective_vector_store_path(vector_store_path)
-            temp_paths, file_names = await stage_upload_files(
-                files,
-                max_file_count=document_upload_max_count,
-                max_file_bytes=document_upload_max_file_bytes,
-                max_total_bytes=document_upload_max_total_bytes,
-            )
-            record = build_upload_documents_task_record(
-                temp_paths=temp_paths,
-                file_names=file_names,
-                vector_store_path=evsp,
-            )
-            task_state = resolve_tasks()
-            async with tasks_lock:
-                task_state[record.task_id] = record
-                prune_task_records_locked(record.created_at)
-            persist_task_record(record)
-            prune_persisted_tasks()
-            await dispatch_existing_task_record(record)
-            logger.info("task_id=%s task_type=upload_documents created", record.task_id)
-            audit_security_event(
-                "upload_documents", request,
-                details=f"file_count={len(file_names)} vector_store_path={evsp}",
-            )
-            return upload_documents_response(record, file_count=len(file_names), vector_store_path=evsp)
-        except ValueError as e:
-            if temp_paths:
-                cleanup_temp_paths(temp_paths)
-            audit_security_event("upload_documents", request, result="rejected", details=str(e))
-            raise HTTPException(status_code=400, detail=str(e))
-        except Exception as e:
-            if temp_paths:
-                cleanup_temp_paths(temp_paths)
-            logger.exception("Document upload failed")
-            raise HTTPException(status_code=500, detail=str(e))
+        return await upload_documents_result(
+            request=request,
+            files=files,
+            vector_store_path=vector_store_path,
+            effective_vector_store_path=effective_vector_store_path,
+            stage_upload_files=stage_upload_files,
+            build_upload_documents_task_record=build_upload_documents_task_record,
+            resolve_tasks=resolve_tasks,
+            tasks_lock=tasks_lock,
+            prune_task_records_locked=prune_task_records_locked,
+            persist_task_record=persist_task_record,
+            prune_persisted_tasks=prune_persisted_tasks,
+            dispatch_existing_task_record=dispatch_existing_task_record,
+            logger=logger,
+            audit_security_event=audit_security_event,
+            upload_documents_response=upload_documents_response,
+            cleanup_temp_paths=cleanup_temp_paths,
+            document_upload_max_count=document_upload_max_count,
+            document_upload_max_file_bytes=document_upload_max_file_bytes,
+            document_upload_max_total_bytes=document_upload_max_total_bytes,
+        )
 
     @router.get("/api/documents/stats")
     async def get_document_stats(request: Request, path: Optional[str] = None):
         from backend.services.doc_pipeline import DocPipeline
         require_remote_viewer(request)
-        pipeline = DocPipeline(vector_store_path=effective_vector_store_path(path))
-        try:
-            pipeline.load_store()
-            stats = pipeline.get_stats()
-            stats.setdefault("store_path", pipeline.vector_store_path)
-            audit_security_event("get_document_stats", request, details=f"path={pipeline.vector_store_path}")
-            return stats
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+        return document_stats_payload(
+            request=request,
+            path=path,
+            effective_vector_store_path=effective_vector_store_path,
+            doc_pipeline_factory=DocPipeline,
+            audit_security_event=audit_security_event,
+        )
 
     # Task routes
 
@@ -1008,63 +997,49 @@ def build_content_router(
         offset: int = 0,
     ):
         require_remote_admin(request)
-        records = share_link_store.list_links(resource_type=resource_type, active_only=active_only, limit=limit, offset=offset)
-        payload_records = [share_link_audit_payload(record) for record in records]
-        payload = {
-            "share_links": payload_records,
-            "total": len(payload_records),
-            "active_count": sum(1 for item in payload_records if item["is_active"]),
-        }
-        audit_security_event(
-            "list_share_links", request,
-            details=f"resource_type={resource_type or '<all>'} active_only={active_only} total={payload['total']}",
+        return list_share_links_payload(
+            request=request,
+            resource_type=resource_type,
+            active_only=active_only,
+            limit=limit,
+            offset=offset,
+            share_link_store=share_link_store,
+            share_link_audit_payload=share_link_audit_payload,
+            audit_security_event=audit_security_event,
         )
-        return payload
 
     @router.delete("/api/share-links/{share_token}", response_model=revoke_share_link_response_model)
     async def revoke_share_link(share_token: str, request: Request):
         require_remote_admin(request)
-        if not share_link_store.revoke(share_token):
-            raise HTTPException(status_code=404, detail="Share link was not found.")
-        audit_security_event("revoke_share_link", request, details=f"share_token_fp={token_fingerprint(share_token)}")
-        return revoke_share_link_response_model(ok=True)
+        return revoke_share_link_result(
+            share_token=share_token,
+            request=request,
+            share_link_store=share_link_store,
+            token_fingerprint=token_fingerprint,
+            audit_security_event=audit_security_event,
+            revoke_share_link_response_model=revoke_share_link_response_model,
+        )
 
     @router.get("/shared/{share_token}")
     async def open_shared_resource(share_token: str, request: Request):
         require_remote_share_secret(request)
-        share_secret = current_share_link_secret()
-        try:
-            link_record = share_link_store.get_active(share_token)
-            if link_record is None:
-                raise ValueError("Share link is invalid or expired.")
-            decoded_type, decoded_id = decode_share_token(share_token, share_secret)
-            if link_record.resource_type != decoded_type or link_record.resource_id != decoded_id:
-                raise ValueError("Share link resource does not match the token.")
-            shared_payload = open_shared_resource_payload(
-                share_token, request,
-                secret=share_secret,
-                decode_share_token=decode_share_token,
-                build_share_url=build_share_url,
-                build_session_messages_payload=build_session_messages_payload,
-                render_shared_session_html=render_shared_session_html,
-                get_deck=resolve_deck_store().get,
-                render_shared_deck_html=render_shared_deck_html,
-            )
-            share_link_store.record_access(
-                share_token,
-                accessed_ip=request_client_ip(request),
-                accessed_user_agent=request_user_agent(request),
-            )
-            audit_security_event(
-                "open_shared_resource", request,
-                details=f"resource_type={decoded_type} share_token_fp={token_fingerprint(share_token)}",
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except KeyError as exc:
-            detail = str(exc.args[0]) if exc.args else "Not found"
-            raise HTTPException(status_code=404, detail=detail) from exc
-        return Response(content=shared_payload["content"], media_type=shared_payload["media_type"])
+        return open_shared_resource_response(
+            share_token=share_token,
+            request=request,
+            share_secret=current_share_link_secret(),
+            share_link_store=share_link_store,
+            decode_share_token=decode_share_token,
+            build_share_url=build_share_url,
+            build_session_messages_payload=build_session_messages_payload,
+            render_shared_session_html=render_shared_session_html,
+            get_deck=resolve_deck_store().get,
+            render_shared_deck_html=render_shared_deck_html,
+            request_client_ip=request_client_ip,
+            request_user_agent=request_user_agent,
+            audit_security_event=audit_security_event,
+            token_fingerprint=token_fingerprint,
+            open_shared_resource_payload=open_shared_resource_payload,
+        )
 
     return router
 
