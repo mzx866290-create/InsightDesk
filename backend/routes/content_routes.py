@@ -20,6 +20,7 @@ from backend.helpers.deck_report_helpers import (
     update_deck_block_refs,
 )
 from backend.helpers.deck_route_helpers import (
+    create_deck_share_link_result,
     create_deck_artifact_result,
     export_deck_response,
     grant_created_deck_artifact_access,
@@ -329,7 +330,7 @@ def build_content_router(
         )
         return backend
 
-    # 鈹€鈹€ 鏂囨。绠＄悊 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # Document routes
 
     @router.post("/api/documents/upload")
     async def upload_documents(
@@ -390,7 +391,7 @@ def build_content_router(
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    # 鈹€鈹€ 寮傛浠诲姟 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # Task routes
 
     @router.post("/api/tasks")
     async def create_task(http_request: Request, request: CreateTaskRequest):
@@ -547,7 +548,7 @@ def build_content_router(
         )
         return task_record_payload(record)
 
-    # 鈹€鈹€ 婕旂ず绋?鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # Deck routes
 
     @router.post("/api/tasks/approvals/batch")
     async def decide_task_approvals_batch(
@@ -732,8 +733,6 @@ def build_content_router(
         override_reason: str = "",
     ):
         require_deck_access(request, deck_id, "viewer")
-        if format != "pptx":
-            raise HTTPException(status_code=400, detail="褰撳墠浠呮敮鎸佸鍑?PPTX")
         try:
             deck = resolve_deck_store().get(deck_id)
         except KeyError as exc:
@@ -757,25 +756,24 @@ def build_content_router(
         try:
             resolve_deck_store().get(deck_id)
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail="鏈壘鍒版紨绀虹") from exc
-        payload = create_share_link_payload_fn(
-            "deck", deck_id, request,
-            secret=share_secret,
+            raise HTTPException(status_code=404, detail="Deck was not found.") from exc
+        return create_deck_share_link_result(
+            deck_id=deck_id,
+            request=request,
+            share_secret=share_secret,
+            create_share_link_payload=create_share_link_payload_fn,
             encode_share_token=encode_share_token,
             build_share_url=build_share_url,
+            share_link_store=share_link_store,
+            share_link_ttl_seconds=resolve_share_link_ttl_seconds(),
+            request_client_ip=request_client_ip,
+            request_user_agent=request_user_agent,
+            audit_security_event=audit_security_event,
+            share_link_response_model=share_link_response_model,
+            now=time.time,
         )
-        record = share_link_store.upsert(
-            share_token=payload["share_token"],
-            resource_type="deck",
-            resource_id=deck_id,
-            expires_at=time.time() + resolve_share_link_ttl_seconds(),
-            created_by_ip=request_client_ip(request),
-            created_user_agent=request_user_agent(request),
-        )
-        audit_security_event("create_deck_share_link", request, details=f"deck_id={deck_id}")
-        return share_link_response_model(**payload, expires_at=record.expires_at)
 
-    # 鈹€鈹€ 鎶ュ憡 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # Report routes
 
     @router.post("/api/reports/generate")
     async def generate_report(http_request: Request, request: GenerateReportRequest):
@@ -841,7 +839,7 @@ def build_content_router(
             build_download_content_disposition=build_download_content_disposition,
         )
 
-    # 鈹€鈹€ Artifacts 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # Artifact routes
 
     @router.get("/api/artifacts")
     async def list_artifacts(request: Request, limit: int = 100, artifact_type: str = ""):
@@ -1106,7 +1104,7 @@ def build_content_router(
             return artifact_payload(deck_created.artifact)
         raise HTTPException(status_code=400, detail="Unsupported artifact type.")
 
-    # 鈹€鈹€ 鍒嗕韩閾炬帴 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # Share link routes
 
     @router.get("/api/share-links", response_model=share_link_audit_list_response_model)
     async def list_share_links(
@@ -1145,10 +1143,10 @@ def build_content_router(
         try:
             link_record = share_link_store.get_active(share_token)
             if link_record is None:
-                raise ValueError("鍒嗕韩閾炬帴涓嶅瓨鍦ㄣ€佸凡杩囨湡鎴栧凡鎾ら攢")
+                raise ValueError("Share link is invalid or expired.")
             decoded_type, decoded_id = decode_share_token(share_token, share_secret)
             if link_record.resource_type != decoded_type or link_record.resource_id != decoded_id:
-                raise ValueError("鍒嗕韩閾炬帴鏃犳晥")
+                raise ValueError("Share link resource does not match the token.")
             shared_payload = open_shared_resource_payload(
                 share_token, request,
                 secret=share_secret,

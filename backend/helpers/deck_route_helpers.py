@@ -248,6 +248,42 @@ def export_deck_response(
     )
 
 
+def create_deck_share_link_result(
+    *,
+    deck_id: str,
+    request: Any,
+    share_secret: str,
+    create_share_link_payload: Callable[..., dict[str, Any]],
+    encode_share_token: Callable[..., str],
+    build_share_url: Callable[..., str],
+    share_link_store: Any,
+    share_link_ttl_seconds: int,
+    request_client_ip: Callable[[Any], str],
+    request_user_agent: Callable[[Any], str],
+    audit_security_event: Callable[..., Any],
+    share_link_response_model: type,
+    now: Callable[[], float],
+) -> Any:
+    payload = create_share_link_payload(
+        "deck",
+        deck_id,
+        request,
+        secret=share_secret,
+        encode_share_token=encode_share_token,
+        build_share_url=build_share_url,
+    )
+    record = share_link_store.upsert(
+        share_token=payload["share_token"],
+        resource_type="deck",
+        resource_id=deck_id,
+        expires_at=now() + share_link_ttl_seconds,
+        created_by_ip=request_client_ip(request),
+        created_user_agent=request_user_agent(request),
+    )
+    audit_security_event("create_deck_share_link", request, details=f"deck_id={deck_id}")
+    return share_link_response_model(**payload, expires_at=record.expires_at)
+
+
 def _model_payload(value: Any) -> Any:
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):

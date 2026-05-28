@@ -12,6 +12,7 @@ from backend.helpers.deck_route_helpers import DECK_SLIDE_NOT_FOUND_DETAIL
 from backend.helpers.deck_route_helpers import DECK_SOURCE_MESSAGES_NOT_FOUND_DETAIL
 from backend.helpers.deck_route_helpers import DECK_SOURCE_SCOPE_NOT_FOUND_DETAIL
 from backend.helpers.deck_route_helpers import DECK_MUST_KEEP_SLIDE_DETAIL
+from backend.helpers.deck_route_helpers import create_deck_share_link_result
 from backend.helpers.deck_route_helpers import create_deck_artifact_result
 from backend.helpers.deck_route_helpers import export_deck_response
 from backend.helpers.deck_route_helpers import grant_created_deck_artifact_access
@@ -465,3 +466,63 @@ def test_export_deck_response_maps_export_errors():
         )
     assert gate_exc.value.status_code == 409
     assert gate_exc.value.detail == {"blocked": True}
+
+
+def test_create_deck_share_link_result_persists_link_and_audits():
+    upserts = []
+    audits = []
+    request = SimpleNamespace(client="browser")
+
+    class ShareStore:
+        def upsert(self, **kwargs):
+            upserts.append(kwargs)
+            return SimpleNamespace(expires_at=kwargs["expires_at"])
+
+    result = create_deck_share_link_result(
+        deck_id="deck-share",
+        request=request,
+        share_secret="secret-value",
+        create_share_link_payload=lambda resource_type, resource_id, req, **kwargs: {
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "share_token": kwargs["encode_share_token"](
+                resource_type,
+                resource_id,
+                kwargs["secret"],
+            ),
+            "share_url": kwargs["build_share_url"](req, "token-deck-share"),
+        },
+        encode_share_token=lambda resource_type, resource_id, secret: (
+            f"{resource_type}:{resource_id}:{secret}"
+        ),
+        build_share_url=lambda req, token: f"https://app.example/shared/{token}",
+        share_link_store=ShareStore(),
+        share_link_ttl_seconds=3600,
+        request_client_ip=lambda req: "127.0.0.1",
+        request_user_agent=lambda req: "pytest",
+        audit_security_event=lambda *args, **kwargs: audits.append((args, kwargs)),
+        share_link_response_model=SimpleNamespace,
+        now=lambda: 1000.0,
+    )
+
+    assert result.resource_type == "deck"
+    assert result.resource_id == "deck-share"
+    assert result.share_token == "deck:deck-share:secret-value"
+    assert result.share_url == "https://app.example/shared/token-deck-share"
+    assert result.expires_at == 4600.0
+    assert upserts == [
+        {
+            "share_token": "deck:deck-share:secret-value",
+            "resource_type": "deck",
+            "resource_id": "deck-share",
+            "expires_at": 4600.0,
+            "created_by_ip": "127.0.0.1",
+            "created_user_agent": "pytest",
+        }
+    ]
+    assert audits == [
+        (
+            ("create_deck_share_link", request),
+            {"details": "deck_id=deck-share"},
+        )
+    ]
