@@ -28,7 +28,10 @@ from backend.helpers.deck_route_helpers import (
     update_deck_block_refs_result,
     update_deck_result,
 )
-from backend.helpers.artifact_route_helpers import update_artifact_result
+from backend.helpers.artifact_route_helpers import (
+    generate_artifact_result,
+    update_artifact_result,
+)
 from backend.helpers.artifact_export_route_helpers import export_artifact_response
 from backend.helpers.report_route_helpers import (
     build_report_download_response,
@@ -966,63 +969,33 @@ def build_content_router(
             messages = resolve_report_messages_fn(history, answer_group_id=request.answer_group_id, panel_id=request.panel_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Requested artifact scope was not found.") from exc
-        if not messages:
-            raise HTTPException(status_code=400, detail="No usable messages were found for artifact generation.")
-        if request.artifact_type == "report":
-            try:
-                report_created = create_report_artifact_result(
-                    request=request,
-                    messages=messages,
-                    ensure_deckable_chat=ensure_deckable_chat,
-                    build_chat_report_title=build_chat_report_title,
-                    build_report_markdown=build_report_markdown,
-                    build_report_artifact=build_report_artifact,
-                    save_artifact=resolve_artifact_store().save,
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            grant_derived_resource_access(
-                http_request,
-                source_resource_type="session",
-                source_resource_id=request.session_id,
-                target_resource_type="artifact",
-                target_resource_id=report_created.artifact_id,
-                access_store=access_store,
-                require_remote_role=require_remote_editor,
-                now=time.time,
-                audit_security_event=audit_security_event,
-            )
-            return artifact_payload(report_created.artifact)
-        if request.artifact_type == "deck":
-            if request.panel_config is None:
-                raise HTTPException(status_code=400, detail="Deck artifact requires panel_config.")
-            try:
-                deck_created = await create_deck_artifact_result(
-                    request=request,
-                    messages=messages,
-                    build_deck=resolve_build_deck(),
-                    build_create_deck_kwargs=build_create_deck_kwargs,
-                    resolve_active_prompt_runtime=resolve_active_prompt_runtime,
-                    normalize_deck_theme=normalize_deck_theme,
-                    save_deck=resolve_deck_store().save,
-                    create_deck_artifact=create_deck_artifact_for_deck,
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            grant_created_deck_artifact_access(
-                request=http_request,
-                session_id=request.session_id,
-                deck_id=deck_created.deck_id,
-                artifact_id=deck_created.artifact_id,
-                access_store=access_store,
-                require_remote_editor=require_remote_editor,
-                audit_security_event=audit_security_event,
-                inherit_resource_grants=inherit_resource_grants,
-                grant_resource_owner=grant_resource_owner,
-                now=time.time,
-            )
-            return artifact_payload(deck_created.artifact)
-        raise HTTPException(status_code=400, detail="Unsupported artifact type.")
+        return await generate_artifact_result(
+            http_request=http_request,
+            request=request,
+            messages=messages,
+            create_report_artifact_result=create_report_artifact_result,
+            create_deck_artifact_result=create_deck_artifact_result,
+            ensure_deckable_chat=ensure_deckable_chat,
+            build_chat_report_title=build_chat_report_title,
+            build_report_markdown=build_report_markdown,
+            build_report_artifact=build_report_artifact,
+            save_artifact=resolve_artifact_store().save,
+            grant_derived_resource_access=grant_derived_resource_access,
+            build_deck=resolve_build_deck(),
+            build_create_deck_kwargs=build_create_deck_kwargs,
+            resolve_active_prompt_runtime=resolve_active_prompt_runtime,
+            normalize_deck_theme=normalize_deck_theme,
+            save_deck=resolve_deck_store().save,
+            create_deck_artifact=create_deck_artifact_for_deck,
+            grant_created_deck_artifact_access=grant_created_deck_artifact_access,
+            artifact_payload=artifact_payload,
+            access_store=access_store,
+            require_remote_editor=require_remote_editor,
+            audit_security_event=audit_security_event,
+            inherit_resource_grants=inherit_resource_grants,
+            grant_resource_owner=grant_resource_owner,
+            now=time.time,
+        )
 
     # Share link routes
 
