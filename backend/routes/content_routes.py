@@ -39,6 +39,12 @@ from backend.helpers.report_route_helpers import (
     build_report_download_response,
     create_report_artifact_result,
 )
+from backend.helpers.resource_route_helpers import (
+    artifact_for_route,
+    deck_for_route,
+    list_artifacts_route_payload,
+    list_decks_route_payload,
+)
 from backend.helpers.research_archive_route_helpers import (
     research_archives_list_payload,
     upsert_research_conflict_resolution_result,
@@ -267,6 +273,30 @@ def build_content_router(
             access_store=access_store,
             identity_store=identity_store,
             audit_security_event=audit_security_event,
+        )
+
+    def load_deck_for_route(request: Request, deck_id: str, minimum_role: str) -> Any:
+        return deck_for_route(
+            request=request,
+            deck_id=deck_id,
+            minimum_role=minimum_role,
+            require_deck_access=require_deck_access,
+            get_deck=resolve_deck_store().get,
+        )
+
+    def load_artifact_for_route(
+        request: Request,
+        artifact_id: str,
+        minimum_role: str,
+        store: Any | None = None,
+    ) -> Any:
+        resolved_store = resolve_artifact_store() if store is None else store
+        return artifact_for_route(
+            request=request,
+            artifact_id=artifact_id,
+            minimum_role=minimum_role,
+            require_artifact_access=require_artifact_access,
+            get_artifact=resolved_store.get,
         )
 
     def create_deck_artifact_for_deck(deck: Any) -> Any:
@@ -562,42 +592,25 @@ def build_content_router(
 
     @router.get("/api/decks")
     async def list_decks(request: Request, limit: int = 100):
-        safe_limit = max(1, min(500, int(limit or 100)))
-        decks = resolve_deck_store().list_recent(limit=safe_limit)
-        visible_decks = filter_visible_resources(
-            request,
-            decks,
-            resource_type="deck",
-            resource_id_getter=lambda deck: str(getattr(deck, "deck_id", "") or ""),
-            require_remote_role=require_remote_viewer,
+        return list_decks_route_payload(
+            request=request,
+            limit=limit,
+            list_recent_decks=resolve_deck_store().list_recent,
+            filter_visible_resources=filter_visible_resources,
+            require_remote_viewer=require_remote_viewer,
             access_store=access_store,
             identity_store=identity_store,
+            attach_deck_delivery_audit=attach_deck_delivery_audit,
         )
-        return {
-            "decks": [
-                attach_deck_delivery_audit(deck).model_dump(mode="json")
-                for deck in visible_decks
-            ],
-            "total": len(visible_decks),
-            "limit": safe_limit,
-        }
 
     @router.get("/api/decks/{deck_id}")
     async def get_deck(deck_id: str, request: Request):
-        require_deck_access(request, deck_id, "viewer")
-        try:
-            deck = resolve_deck_store().get(deck_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Deck was not found.") from exc
+        deck = load_deck_for_route(request, deck_id, "viewer")
         return attach_deck_delivery_audit(deck).model_dump(mode="json")
 
     @router.patch("/api/decks/{deck_id}")
     async def update_deck(deck_id: str, http_request: Request, request: UpdateDeckRequest):
-        require_deck_access(http_request, deck_id, "editor")
-        try:
-            deck = resolve_deck_store().get(deck_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Deck was not found.") from exc
+        deck = load_deck_for_route(http_request, deck_id, "editor")
         return update_deck_result(
             deck=deck,
             request=request,
@@ -615,11 +628,7 @@ def build_content_router(
         http_request: Request,
         payload: dict[str, Any],
     ):
-        require_deck_access(http_request, deck_id, "editor")
-        try:
-            deck = resolve_deck_store().get(deck_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Deck was not found.") from exc
+        deck = load_deck_for_route(http_request, deck_id, "editor")
         try:
             return update_deck_block_refs_result(
                 deck=deck,
@@ -639,11 +648,7 @@ def build_content_router(
         deck_id: str, slide_id: str, http_request: Request, request: RegenerateDeckSlideRequest,
     ):
         from backend.stores.factory import create_chat_message_history
-        require_deck_access(http_request, deck_id, "editor")
-        try:
-            deck = resolve_deck_store().get(deck_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Deck was not found.") from exc
+        deck = load_deck_for_route(http_request, deck_id, "editor")
         return await regenerate_deck_slide_result(
             deck=deck,
             slide_id=slide_id,
@@ -668,11 +673,7 @@ def build_content_router(
         allow_unsafe_export: bool = False,
         override_reason: str = "",
     ):
-        require_deck_access(request, deck_id, "viewer")
-        try:
-            deck = resolve_deck_store().get(deck_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Deck was not found.") from exc
+        deck = load_deck_for_route(request, deck_id, "viewer")
         return export_deck_response(
             deck=deck,
             export_format=format,
@@ -687,12 +688,8 @@ def build_content_router(
     @router.post("/api/decks/{deck_id}/share", response_model=share_link_response_model)
     async def create_deck_share_link(deck_id: str, request: Request):
         require_remote_share_secret(request)
-        require_deck_access(request, deck_id, "viewer")
+        load_deck_for_route(request, deck_id, "viewer")
         share_secret = current_share_link_secret()
-        try:
-            resolve_deck_store().get(deck_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Deck was not found.") from exc
         return create_deck_share_link_result(
             deck_id=deck_id,
             request=request,
@@ -779,25 +776,17 @@ def build_content_router(
 
     @router.get("/api/artifacts")
     async def list_artifacts(request: Request, limit: int = 100, artifact_type: str = ""):
-        safe_limit = max(1, min(500, int(limit or 100)))
-        artifacts = resolve_artifact_store().list_recent(
-            limit=safe_limit,
+        return list_artifacts_route_payload(
+            request=request,
+            limit=limit,
             artifact_type=artifact_type,
-        )
-        visible_artifacts = filter_visible_resources(
-            request,
-            artifacts,
-            resource_type="artifact",
-            resource_id_getter=lambda artifact: str(getattr(artifact, "artifact_id", "") or ""),
-            require_remote_role=require_remote_viewer,
+            list_recent_artifacts=resolve_artifact_store().list_recent,
+            filter_visible_resources=filter_visible_resources,
+            require_remote_viewer=require_remote_viewer,
             access_store=access_store,
             identity_store=identity_store,
+            artifact_payload=artifact_payload,
         )
-        return {
-            "artifacts": [artifact_payload(artifact) for artifact in visible_artifacts],
-            "total": len(visible_artifacts),
-            "limit": safe_limit,
-        }
 
     @router.get("/api/research/archives")
     async def list_research_archives(
@@ -825,12 +814,8 @@ def build_content_router(
         artifact_id: str,
         request: Request,
     ):
-        require_artifact_access(request, artifact_id, "editor")
         store = resolve_artifact_store()
-        try:
-            artifact = store.get(artifact_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Artifact was not found.") from exc
+        artifact = load_artifact_for_route(request, artifact_id, "editor", store)
         body = await request.json()
         return upsert_research_conflict_resolution_result(
             artifact=artifact,
@@ -841,22 +826,13 @@ def build_content_router(
 
     @router.get("/api/artifacts/{artifact_id}")
     async def get_artifact(artifact_id: str, request: Request):
-        require_artifact_access(request, artifact_id, "viewer")
-        store = resolve_artifact_store()
-        try:
-            artifact = store.get(artifact_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Artifact was not found.") from exc
+        artifact = load_artifact_for_route(request, artifact_id, "viewer")
         return artifact_payload(artifact)
 
     @router.patch("/api/artifacts/{artifact_id}")
     async def update_artifact(artifact_id: str, http_request: Request, request: UpdateArtifactRequest):
-        require_artifact_access(http_request, artifact_id, "editor")
         store = resolve_artifact_store()
-        try:
-            artifact = store.get(artifact_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Artifact was not found.") from exc
+        artifact = load_artifact_for_route(http_request, artifact_id, "editor", store)
         return update_artifact_result(
             artifact_id=artifact_id,
             artifact=artifact,
@@ -877,12 +853,8 @@ def build_content_router(
         allow_unsafe_export: bool = False,
         override_reason: str = "",
     ):
-        require_artifact_access(request, artifact_id, "viewer")
         store = resolve_artifact_store()
-        try:
-            artifact = store.get(artifact_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Artifact was not found.") from exc
+        artifact = load_artifact_for_route(request, artifact_id, "viewer", store)
         return export_artifact_response(
             artifact=artifact,
             export_format=format,
