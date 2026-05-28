@@ -28,6 +28,7 @@ from backend.helpers.deck_route_helpers import (
     update_deck_block_refs_result,
     update_deck_result,
 )
+from backend.helpers.artifact_route_helpers import update_artifact_result
 from backend.helpers.artifact_export_route_helpers import export_artifact_response
 from backend.helpers.report_route_helpers import (
     build_report_download_response,
@@ -982,32 +983,17 @@ def build_content_router(
             artifact = store.get(artifact_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Artifact was not found.") from exc
-        next_title = str(request.title or "").strip()
-        if artifact.artifact_type == "report":
-            if next_title:
-                artifact.title = next_title
-            if request.markdown is not None:
-                artifact.content["markdown"] = str(request.markdown or "").strip()
-            store.save(artifact)
-            return artifact_payload(artifact)
-        if artifact.artifact_type == "deck":
-            if request.markdown is not None:
-                raise HTTPException(status_code=400, detail="Deck artifact does not support markdown patching.")
-            deck_id = str(artifact.linked_resource_id or artifact.content.get("deck_id") or "").strip()
-            if not deck_id:
-                raise HTTPException(status_code=400, detail="Deck artifact is missing deck_id.")
-            try:
-                deck = resolve_deck_store().get(deck_id)
-            except KeyError as exc:
-                raise HTTPException(status_code=404, detail="Deck was not found.") from exc
-            if next_title:
-                deck.meta.title = next_title
-                if deck.slides and deck.slides[0].type == "cover":
-                    deck.slides[0].title = next_title
-                resolve_deck_store().save(deck)
-            sync_deck_artifacts(deck)
-            return artifact_payload(store.get(artifact_id))
-        raise HTTPException(status_code=400, detail="Unsupported artifact type.")
+        return update_artifact_result(
+            artifact_id=artifact_id,
+            artifact=artifact,
+            request=request,
+            save_artifact=store.save,
+            get_artifact=store.get,
+            get_deck=resolve_deck_store().get,
+            save_deck=resolve_deck_store().save,
+            sync_deck_artifacts=sync_deck_artifacts,
+            artifact_payload=artifact_payload,
+        )
 
     @router.get("/api/artifacts/{artifact_id}/export")
     async def export_artifact(
