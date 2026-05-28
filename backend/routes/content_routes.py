@@ -22,7 +22,7 @@ from backend.helpers.document_route_helpers import (
     upload_documents_result,
 )
 from backend.helpers.deck_route_helpers import (
-    create_deck_share_link_result,
+    create_deck_share_link_route_result,
     create_deck_artifact_result,
     export_deck_response,
     grant_created_deck_artifact_access,
@@ -32,9 +32,9 @@ from backend.helpers.deck_route_helpers import (
 )
 from backend.helpers.artifact_route_helpers import (
     generate_artifact_result,
-    update_artifact_result,
+    update_artifact_route_result,
+    export_artifact_route_response,
 )
-from backend.helpers.artifact_export_route_helpers import export_artifact_response
 from backend.helpers.report_route_helpers import (
     build_report_download_response,
     create_report_artifact_result,
@@ -691,13 +691,13 @@ def build_content_router(
 
     @router.post("/api/decks/{deck_id}/share", response_model=share_link_response_model)
     async def create_deck_share_link(deck_id: str, request: Request):
-        require_remote_share_secret(request)
-        load_deck_for_route(request, deck_id, "viewer")
-        share_secret = current_share_link_secret()
-        return create_deck_share_link_result(
+        return create_deck_share_link_route_result(
             deck_id=deck_id,
             request=request,
-            share_secret=share_secret,
+            require_remote_share_secret=require_remote_share_secret,
+            deck_store=resolve_deck_store(),
+            require_deck_access=require_deck_access,
+            current_share_link_secret=current_share_link_secret,
             create_share_link_payload=create_share_link_payload_fn,
             encode_share_token=encode_share_token,
             build_share_url=build_share_url,
@@ -843,16 +843,13 @@ def build_content_router(
 
     @router.patch("/api/artifacts/{artifact_id}")
     async def update_artifact(artifact_id: str, http_request: Request, request: UpdateArtifactRequest):
-        store = resolve_artifact_store()
-        artifact = load_artifact_for_route(http_request, artifact_id, "editor", store)
-        return update_artifact_result(
+        return update_artifact_route_result(
             artifact_id=artifact_id,
-            artifact=artifact,
+            http_request=http_request,
             request=request,
-            save_artifact=store.save,
-            get_artifact=store.get,
-            get_deck=resolve_deck_store().get,
-            save_deck=resolve_deck_store().save,
+            artifact_store=resolve_artifact_store(),
+            deck_store=resolve_deck_store(),
+            require_artifact_access=require_artifact_access,
             sync_deck_artifacts=sync_deck_artifacts,
             artifact_payload=artifact_payload,
         )
@@ -865,20 +862,21 @@ def build_content_router(
         allow_unsafe_export: bool = False,
         override_reason: str = "",
     ):
-        store = resolve_artifact_store()
-        artifact = load_artifact_for_route(request, artifact_id, "viewer", store)
-        return export_artifact_response(
-            artifact=artifact,
+        return export_artifact_route_response(
+            artifact_id=artifact_id,
+            request=request,
             export_format=format,
-            get_deck=resolve_deck_store().get,
+            allow_unsafe_export=allow_unsafe_export,
+            override_reason=override_reason,
+            artifact_store=resolve_artifact_store(),
+            deck_store=resolve_deck_store(),
+            require_artifact_access=require_artifact_access,
             export_deck_payload=export_deck_payload,
             export_deck_to_pptx=export_deck_to_pptx,
             build_export_filename=build_export_filename,
             build_download_content_disposition=build_download_content_disposition,
             safe_report_filename=safe_report_filename,
             populate_chat_report_presentation=populate_chat_report_presentation,
-            allow_unsafe_export=allow_unsafe_export,
-            override_reason=override_reason,
         )
 
     @router.post("/api/artifacts/generate")

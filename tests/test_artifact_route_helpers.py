@@ -10,7 +10,9 @@ from backend.helpers.artifact_route_helpers import (
     DECK_ARTIFACT_MARKDOWN_UNSUPPORTED_DETAIL,
     DECK_ARTIFACT_MISSING_DECK_ID_DETAIL,
     UNSUPPORTED_ARTIFACT_TYPE_DETAIL,
+    export_artifact_route_response,
     generate_artifact_result,
+    update_artifact_route_result,
     update_artifact_result,
 )
 
@@ -196,6 +198,103 @@ def test_update_artifact_result_maps_missing_deck_and_unsupported_artifact_type(
 
     assert unsupported_exc.value.status_code == 400
     assert unsupported_exc.value.detail == UNSUPPORTED_ARTIFACT_TYPE_DETAIL
+
+
+def test_update_artifact_route_result_loads_artifact_and_deck():
+    calls = []
+    artifact = SimpleNamespace(
+        artifact_id="artifact-deck",
+        artifact_type="deck",
+        title="Deck",
+        linked_resource_id="deck-1",
+        content={},
+    )
+    deck = SimpleNamespace(
+        meta=SimpleNamespace(title="Deck"),
+        slides=[],
+    )
+
+    class ArtifactStore:
+        def get(self, artifact_id):
+            calls.append(("artifact-get", artifact_id))
+            return artifact
+
+        def save(self, artifact_arg):
+            calls.append(("artifact-save", artifact_arg))
+
+    class DeckStore:
+        def get(self, deck_id):
+            calls.append(("deck-get", deck_id))
+            return deck
+
+        def save(self, deck_arg):
+            calls.append(("deck-save", deck_arg))
+
+    result = update_artifact_route_result(
+        artifact_id="artifact-deck",
+        http_request="request",
+        request=_request(title=" Updated "),
+        artifact_store=ArtifactStore(),
+        deck_store=DeckStore(),
+        require_artifact_access=lambda req, artifact_id, role: calls.append(
+            ("access", req, artifact_id, role)
+        )
+        or {"role": role},
+        sync_deck_artifacts=lambda deck_arg: calls.append(("sync", deck_arg)),
+        artifact_payload=lambda artifact_arg: {"artifact_id": artifact_arg.artifact_id},
+    )
+
+    assert result == {"artifact_id": "artifact-deck"}
+    assert calls == [
+        ("access", "request", "artifact-deck", "editor"),
+        ("artifact-get", "artifact-deck"),
+        ("deck-get", "deck-1"),
+        ("deck-save", deck),
+        ("sync", deck),
+        ("artifact-get", "artifact-deck"),
+    ]
+
+
+def test_export_artifact_route_response_loads_artifact_and_exports_report():
+    calls = []
+    artifact = SimpleNamespace(
+        artifact_id="artifact-report",
+        artifact_type="report",
+        title="Report Title",
+        content={"markdown": "# Report"},
+    )
+
+    class ArtifactStore:
+        def get(self, artifact_id):
+            calls.append(("artifact-get", artifact_id))
+            return artifact
+
+    class DeckStore:
+        def get(self, deck_id):
+            calls.append(("deck-get", deck_id))
+            return None
+
+    response = export_artifact_route_response(
+        artifact_id="artifact-report",
+        request="request",
+        export_format="md",
+        artifact_store=ArtifactStore(),
+        deck_store=DeckStore(),
+        require_artifact_access=lambda req, artifact_id, role: calls.append(
+            ("access", req, artifact_id, role)
+        )
+        or {"role": role},
+        export_deck_payload=lambda *args, **kwargs: {},
+        export_deck_to_pptx=lambda deck: b"",
+        build_export_filename=lambda *args, **kwargs: "deck.pptx",
+        build_download_content_disposition=lambda filename: filename,
+        safe_report_filename=lambda title: title,
+        populate_chat_report_presentation=lambda *args, **kwargs: None,
+    )
+
+    assert response.body == b"# Report"
+    assert response.media_type == "text/markdown; charset=utf-8"
+    assert calls == [("access", "request", "artifact-report", "viewer"), ("artifact-get", "artifact-report")]
 
 
 def test_generate_artifact_result_creates_report_and_grants_access():

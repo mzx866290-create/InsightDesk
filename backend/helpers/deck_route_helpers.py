@@ -16,6 +16,7 @@ from backend.helpers.deck_report_helpers import (
     apply_deck_template_metadata,
     attach_deck_delivery_audit,
 )
+from backend.helpers.resource_route_helpers import deck_for_route
 from backend.helpers.scoped_message_route_helpers import (
     load_scoped_session_messages,
 )
@@ -286,6 +287,50 @@ def create_deck_share_link_result(
     )
     audit_security_event("create_deck_share_link", request, details=f"deck_id={deck_id}")
     return share_link_response_model(**payload, expires_at=record.expires_at)
+
+
+def create_deck_share_link_route_result(
+    *,
+    deck_id: str,
+    request: Any,
+    require_remote_share_secret: Callable[[Any], Any],
+    deck_store: Any,
+    require_deck_access: Callable[[Any, str, str], dict[str, Any]],
+    current_share_link_secret: Callable[[], str],
+    create_share_link_payload: Callable[..., dict[str, Any]],
+    encode_share_token: Callable[..., str],
+    build_share_url: Callable[..., str],
+    share_link_store: Any,
+    share_link_ttl_seconds: int,
+    request_client_ip: Callable[[Any], str],
+    request_user_agent: Callable[[Any], str],
+    audit_security_event: Callable[..., Any],
+    share_link_response_model: type,
+    now: Callable[[], float],
+) -> Any:
+    require_remote_share_secret(request)
+    deck_for_route(
+        request=request,
+        deck_id=deck_id,
+        minimum_role="viewer",
+        require_deck_access=require_deck_access,
+        get_deck=deck_store.get,
+    )
+    return create_deck_share_link_result(
+        deck_id=deck_id,
+        request=request,
+        share_secret=current_share_link_secret(),
+        create_share_link_payload=create_share_link_payload,
+        encode_share_token=encode_share_token,
+        build_share_url=build_share_url,
+        share_link_store=share_link_store,
+        share_link_ttl_seconds=share_link_ttl_seconds,
+        request_client_ip=request_client_ip,
+        request_user_agent=request_user_agent,
+        audit_security_event=audit_security_event,
+        share_link_response_model=share_link_response_model,
+        now=now,
+    )
 
 
 def _model_payload(value: Any) -> Any:

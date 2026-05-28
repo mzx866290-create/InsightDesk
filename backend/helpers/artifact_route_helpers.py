@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from fastapi import HTTPException
 
+from backend.helpers.resource_route_helpers import artifact_for_route
 
 DECK_ARTIFACT_MARKDOWN_UNSUPPORTED_DETAIL = (
     "Deck artifact does not support markdown patching."
@@ -60,6 +61,78 @@ def update_artifact_result(
         return artifact_payload(get_artifact(artifact_id))
 
     raise HTTPException(status_code=400, detail=UNSUPPORTED_ARTIFACT_TYPE_DETAIL)
+
+
+def update_artifact_route_result(
+    *,
+    artifact_id: str,
+    http_request: Any,
+    request: Any,
+    artifact_store: Any,
+    deck_store: Any,
+    require_artifact_access: Callable[[Any, str, str], dict[str, Any]],
+    sync_deck_artifacts: Callable[[Any], None],
+    artifact_payload: Callable[[Any], dict[str, Any]],
+) -> dict[str, Any]:
+    artifact = artifact_for_route(
+        request=http_request,
+        artifact_id=artifact_id,
+        minimum_role="editor",
+        require_artifact_access=require_artifact_access,
+        get_artifact=artifact_store.get,
+    )
+    return update_artifact_result(
+        artifact_id=artifact_id,
+        artifact=artifact,
+        request=request,
+        save_artifact=artifact_store.save,
+        get_artifact=artifact_store.get,
+        get_deck=deck_store.get,
+        save_deck=deck_store.save,
+        sync_deck_artifacts=sync_deck_artifacts,
+        artifact_payload=artifact_payload,
+    )
+
+
+def export_artifact_route_response(
+    *,
+    artifact_id: str,
+    request: Any,
+    export_format: str,
+    artifact_store: Any,
+    deck_store: Any,
+    require_artifact_access: Callable[[Any, str, str], dict[str, Any]],
+    export_deck_payload: Callable[..., dict[str, Any]],
+    export_deck_to_pptx: Callable[[Any], bytes],
+    build_export_filename: Callable[..., str],
+    build_download_content_disposition: Callable[[str], str],
+    safe_report_filename: Callable[[str], str],
+    populate_chat_report_presentation: Callable[..., None],
+    allow_unsafe_export: bool = False,
+    override_reason: str = "",
+) -> Any:
+    artifact = artifact_for_route(
+        request=request,
+        artifact_id=artifact_id,
+        minimum_role="viewer",
+        require_artifact_access=require_artifact_access,
+        get_artifact=artifact_store.get,
+    )
+    from backend.helpers.artifact_export_route_helpers import export_artifact_response
+
+    return export_artifact_response(
+        artifact=artifact,
+        export_format=export_format,
+        get_deck=deck_store.get,
+        export_deck_payload=export_deck_payload,
+        export_deck_to_pptx=export_deck_to_pptx,
+        build_export_filename=build_export_filename,
+        build_download_content_disposition=build_download_content_disposition,
+        safe_report_filename=safe_report_filename,
+        populate_chat_report_presentation=populate_chat_report_presentation,
+        allow_unsafe_export=allow_unsafe_export,
+        override_reason=override_reason,
+    )
 
 
 async def generate_artifact_result(
