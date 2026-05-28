@@ -34,14 +34,9 @@ from backend.helpers.report_route_helpers import (
     build_report_download_response,
     create_report_artifact_result,
 )
-from backend.helpers.research_archive_helpers import (
-    artifact_content,
-    compact_text,
-    is_research_archive_artifact,
-    matches_research_archive_filters,
-    research_archive_payload,
-    research_conflict_groups,
-    research_conflict_review_records,
+from backend.helpers.research_archive_route_helpers import (
+    research_archives_list_payload,
+    upsert_research_conflict_resolution_result,
 )
 from backend.helpers.task_approval_policy_helpers import (
     load_task_approval_policy_payload,
@@ -872,40 +867,18 @@ def build_content_router(
         task_id: str = "",
         limit: int = 100,
     ):
-        safe_limit = max(1, min(500, int(limit or 100)))
-        query_text = str(q or "").strip()
-        session_filter = str(session_id or "").strip()
-        task_filter = str(task_id or "").strip()
-        artifacts = [
-            artifact
-            for artifact in resolve_artifact_store().list_recent(limit=500)
-            if is_research_archive_artifact(artifact)
-            and matches_research_archive_filters(
-                artifact,
-                q=query_text,
-                session_id=session_filter,
-                task_id=task_filter,
-            )
-        ]
-        visible_artifacts = filter_visible_resources(
-            request,
-            artifacts,
-            resource_type="artifact",
-            resource_id_getter=lambda artifact: str(getattr(artifact, "artifact_id", "") or ""),
-            require_remote_role=require_remote_viewer,
+        return research_archives_list_payload(
+            request=request,
+            artifacts=resolve_artifact_store().list_recent(limit=500),
+            q=q,
+            session_id=session_id,
+            task_id=task_id,
+            limit=limit,
+            filter_visible_resources=filter_visible_resources,
+            require_remote_viewer=require_remote_viewer,
             access_store=access_store,
             identity_store=identity_store,
         )
-        limited_artifacts = visible_artifacts[:safe_limit]
-        return {
-            "archives": [
-                research_archive_payload(artifact)
-                for artifact in limited_artifacts
-            ],
-            "conflict_groups": research_conflict_groups(visible_artifacts),
-            "total": len(visible_artifacts),
-            "limit": safe_limit,
-        }
 
     @router.post("/api/research/archives/{artifact_id}/conflict-resolutions")
     async def upsert_research_conflict_resolution(
@@ -918,52 +891,13 @@ def build_content_router(
             artifact = store.get(artifact_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Artifact was not found.") from exc
-        if not is_research_archive_artifact(artifact):
-            raise HTTPException(status_code=400, detail="Artifact is not a research archive.")
-
         body = await request.json()
-        if not isinstance(body, dict):
-            raise HTTPException(status_code=400, detail="Resolution payload must be an object.")
-        conflict_id = str(body.get("conflict_id") or "").strip()
-        claim_id = str(body.get("claim_id") or "").strip()
-        if not conflict_id and not claim_id:
-            raise HTTPException(status_code=400, detail="conflict_id or claim_id is required.")
-        status = str(body.get("status") or "resolved").strip() or "resolved"
-        if status not in {"resolved", "dismissed", "needs_followup", "reviewed"}:
-            raise HTTPException(status_code=400, detail="Unsupported resolution status.")
-
-        content = artifact_content(artifact)
-        records = research_conflict_review_records(content)
-        record = {
-            "conflict_id": conflict_id or claim_id,
-            "claim_id": claim_id,
-            "status": status,
-            "resolution": compact_text(body.get("resolution"), 1000),
-            "note": compact_text(body.get("note"), 1000),
-            "reviewer": compact_text(body.get("reviewer"), 120),
-            "updated_at": time.time(),
-        }
-        replaced = False
-        for index, existing in enumerate(records):
-            if (
-                str(existing.get("conflict_id") or "") == record["conflict_id"]
-                or (
-                    record["claim_id"]
-                    and str(existing.get("claim_id") or "") == record["claim_id"]
-                )
-            ):
-                records[index] = record
-                replaced = True
-                break
-        if not replaced:
-            records.append(record)
-        content["conflict_review_resolutions"] = records
-        artifact.content = content
-        store.save(artifact)
-        return {
-            "resolution": record,
-            "archive": research_archive_payload(artifact),
-        }
+        return upsert_research_conflict_resolution_result(
+            artifact=artifact,
+            body=body,
+            save_artifact=store.save,
+            now=time.time,
+        )
 
     @router.get("/api/artifacts/{artifact_id}")
     async def get_artifact(artifact_id: str, request: Request):
