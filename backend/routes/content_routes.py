@@ -45,6 +45,9 @@ from backend.helpers.resource_route_helpers import (
     list_artifacts_route_payload,
     list_decks_route_payload,
 )
+from backend.helpers.scoped_message_route_helpers import (
+    load_scoped_session_messages,
+)
 from backend.helpers.research_archive_route_helpers import (
     research_archives_list_payload,
     upsert_research_conflict_resolution_result,
@@ -553,16 +556,17 @@ def build_content_router(
     @router.post("/api/decks")
     async def create_deck(http_request: Request, request: CreateDeckRequest):
         from backend.stores.factory import create_chat_message_history
-        require_session_access(http_request, request.session_id, "editor")
-        history = create_chat_message_history(session_id=request.session_id)
-        try:
-            messages = resolve_report_messages_fn(
-                history, answer_group_id=request.answer_group_id, panel_id=request.panel_id,
-            )
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Requested deck scope was not found.") from exc
-        if not messages:
-            raise HTTPException(status_code=400, detail="No messages were found in this session.")
+        messages = load_scoped_session_messages(
+            request=http_request,
+            session_id=request.session_id,
+            minimum_role="editor",
+            answer_group_id=request.answer_group_id,
+            panel_id=request.panel_id,
+            require_session_access=require_session_access,
+            create_chat_message_history=create_chat_message_history,
+            resolve_report_messages=resolve_report_messages_fn,
+            scope_not_found_detail="Requested deck scope was not found.",
+        )
         try:
             created = await create_deck_artifact_result(
                 request=request,
@@ -711,14 +715,17 @@ def build_content_router(
     @router.post("/api/reports/generate")
     async def generate_report(http_request: Request, request: GenerateReportRequest):
         from backend.stores.factory import create_chat_message_history
-        require_session_access(http_request, request.session_id, "editor")
-        history = create_chat_message_history(session_id=request.session_id)
-        try:
-            msgs = resolve_report_messages_fn(history, answer_group_id=request.answer_group_id, panel_id=request.panel_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Requested report scope was not found.") from exc
-        if not msgs:
-            raise HTTPException(status_code=400, detail="No messages were found in this session.")
+        msgs = load_scoped_session_messages(
+            request=http_request,
+            session_id=request.session_id,
+            minimum_role="editor",
+            answer_group_id=request.answer_group_id,
+            panel_id=request.panel_id,
+            require_session_access=require_session_access,
+            create_chat_message_history=create_chat_message_history,
+            resolve_report_messages=resolve_report_messages_fn,
+            scope_not_found_detail="Requested report scope was not found.",
+        )
         try:
             report_created = create_report_artifact_result(
                 request=request,
@@ -756,12 +763,17 @@ def build_content_router(
         panel_id: Optional[str] = None,
     ):
         from backend.stores.factory import create_chat_message_history
-        require_session_access(request, session_id, "viewer")
-        history = create_chat_message_history(session_id=session_id)
-        try:
-            msgs = resolve_report_messages_fn(history, answer_group_id=answer_group_id, panel_id=panel_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Requested report scope was not found.") from exc
+        msgs = load_scoped_session_messages(
+            request=request,
+            session_id=session_id,
+            minimum_role="viewer",
+            answer_group_id=answer_group_id,
+            panel_id=panel_id,
+            require_session_access=require_session_access,
+            create_chat_message_history=create_chat_message_history,
+            resolve_report_messages=resolve_report_messages_fn,
+            scope_not_found_detail="Requested report scope was not found.",
+        )
         return build_report_download_response(
             msgs,
             report_download_payload=report_download_payload,
@@ -872,12 +884,17 @@ def build_content_router(
     @router.post("/api/artifacts/generate")
     async def generate_artifact(http_request: Request, request: GenerateArtifactRequest):
         from backend.stores.factory import create_chat_message_history
-        require_session_access(http_request, request.session_id, "editor")
-        history = create_chat_message_history(session_id=request.session_id)
-        try:
-            messages = resolve_report_messages_fn(history, answer_group_id=request.answer_group_id, panel_id=request.panel_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="Requested artifact scope was not found.") from exc
+        messages = load_scoped_session_messages(
+            request=http_request,
+            session_id=request.session_id,
+            minimum_role="editor",
+            answer_group_id=request.answer_group_id,
+            panel_id=request.panel_id,
+            require_session_access=require_session_access,
+            create_chat_message_history=create_chat_message_history,
+            resolve_report_messages=resolve_report_messages_fn,
+            scope_not_found_detail="Requested artifact scope was not found.",
+        )
         return await generate_artifact_result(
             http_request=http_request,
             request=request,

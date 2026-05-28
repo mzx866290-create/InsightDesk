@@ -16,6 +16,9 @@ from backend.helpers.deck_report_helpers import (
     apply_deck_template_metadata,
     attach_deck_delivery_audit,
 )
+from backend.helpers.scoped_message_route_helpers import (
+    load_scoped_session_messages,
+)
 
 
 DECK_MUST_KEEP_SLIDE_DETAIL = "Deck must keep at least one slide."
@@ -178,17 +181,18 @@ async def regenerate_deck_slide_result(
     sync_deck_artifacts: Callable[[Any], None],
     build_deck_delivery_response: Callable[..., dict[str, Any]],
 ) -> dict[str, Any]:
-    history = create_chat_message_history(session_id=deck.meta.session_id)
-    try:
-        messages = resolve_report_messages(
-            history,
-            answer_group_id=getattr(deck.meta, "source_answer_group_id", None),
-            panel_id=getattr(deck.meta, "source_panel_id", None),
-        )
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=DECK_SOURCE_SCOPE_NOT_FOUND_DETAIL) from exc
-    if not messages:
-        raise HTTPException(status_code=400, detail=DECK_SOURCE_MESSAGES_NOT_FOUND_DETAIL)
+    messages = load_scoped_session_messages(
+        request=request,
+        session_id=deck.meta.session_id,
+        minimum_role="viewer",
+        answer_group_id=getattr(deck.meta, "source_answer_group_id", None),
+        panel_id=getattr(deck.meta, "source_panel_id", None),
+        require_session_access=None,
+        create_chat_message_history=create_chat_message_history,
+        resolve_report_messages=resolve_report_messages,
+        scope_not_found_detail=DECK_SOURCE_SCOPE_NOT_FOUND_DETAIL,
+        empty_messages_detail=DECK_SOURCE_MESSAGES_NOT_FOUND_DETAIL,
+    )
 
     regenerate_kwargs = build_regenerate_deck_kwargs(
         deck,
