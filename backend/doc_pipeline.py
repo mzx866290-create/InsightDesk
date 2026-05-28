@@ -33,6 +33,22 @@ from backend.core.storage_runtime import (
     VECTOR_STORE_PROVIDER_FAISS,
     vector_store_runtime_summary,
 )
+from backend.doc_governance_helpers import (
+    apply_document_governance_metadata,
+    apply_topic_version_status,
+    content_hash,
+    dedupe_index_documents,
+    document_governance_boost,
+    extract_date_candidates,
+    extract_expiry_timestamp,
+    extract_version_label,
+    extract_version_number,
+    governance_rank,
+    normalize_source_key,
+    normalize_topic_key,
+    parse_date_parts,
+    prepare_documents_for_index,
+)
 
 load_dotenv()
 
@@ -2030,6 +2046,25 @@ class DocPipeline:
         except Exception as e:
             logger.error("向量库删除失败: %s", e)
             return False
+
+
+for _name, _impl in {
+    "_normalize_source_key": normalize_source_key,
+    "_normalize_topic_key": normalize_topic_key,
+    "_parse_date_parts": parse_date_parts,
+    "_extract_date_candidates": extract_date_candidates,
+    "_extract_expiry_timestamp": extract_expiry_timestamp,
+    "_extract_version_number": extract_version_number,
+    "_extract_version_label": extract_version_label,
+    "_content_hash": content_hash,
+    "_governance_rank": governance_rank,
+    "_apply_document_governance_metadata": apply_document_governance_metadata,
+    "_dedupe_index_documents": dedupe_index_documents,
+    "_apply_topic_version_status": apply_topic_version_status,
+    "_prepare_documents_for_index": prepare_documents_for_index,
+    "_document_governance_boost": document_governance_boost,
+}.items():
+    setattr(DocPipeline, _name, staticmethod(cast(Any, _impl)))
 
 
 if __name__ == "__main__":
