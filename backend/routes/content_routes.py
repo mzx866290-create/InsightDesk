@@ -2,7 +2,7 @@
 
 import logging
 import time
-from typing import Any, Awaitable, Callable, Coroutine, Optional, cast
+from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from backend.routes.resource_access_helpers import (
@@ -53,18 +53,22 @@ from backend.helpers.task_approval_policy_helpers import (
     save_task_approval_policy_payload,
 )
 from backend.helpers.task_approval_route_helpers import (
-    TASK_NOT_FOUND_DETAIL,
-    apply_approval_decision_to_record,
     approval_decision_value,
     build_task_approval_batch_payload,
-    ensure_task_accepts_approval_decision,
     normalize_task_approval_id,
     task_approval_batch_error_result,
     task_approval_batch_id_required_result,
     task_approval_batch_success_result,
 )
 from backend.helpers.workflow_task_payload_helpers import build_multi_agent_workflow_task_params
-from backend.helpers.task_route_helpers import filter_visible_task_records
+from backend.helpers.task_route_helpers import (
+    apply_task_approval_decision_result,
+    create_background_task_result,
+    dispatch_existing_task_record_result,
+    get_task_route_payload,
+    list_tasks_route_payload,
+    resolve_task_backend_value,
+)
 from backend.schemas.api_models import (
     ApprovalPolicyRequest,
     ApprovalTaskBatchDecisionRequest,
@@ -78,7 +82,6 @@ from backend.schemas.api_models import (
     UpdateArtifactRequest,
     UpdateDeckRequest,
 )
-from backend.tasks.backends import dispatch_task_record
 
 
 def build_content_router(
@@ -175,12 +178,7 @@ def build_content_router(
     enqueue_external_task: Callable[[Any], Awaitable[Any]] | None = None,
     arq_queue_health_payload: Callable[[], Awaitable[dict[str, Any]]] | None = None,
 ) -> APIRouter:
-    import asyncio
-
     router = APIRouter()
-
-    def spawn_background_task(coro: Awaitable[None]) -> Any:
-        return asyncio.create_task(cast(Coroutine[Any, Any, None], coro))
 
     def resolve_artifact_store() -> Any:
         if callable(artifact_store):
@@ -198,8 +196,7 @@ def build_content_router(
         return tasks
 
     def resolve_task_backend() -> str:
-        value = task_backend() if callable(task_backend) else task_backend
-        return str(value or "memory").strip().lower() or "memory"
+        return resolve_task_backend_value(task_backend)
 
     def resolve_build_deck() -> Callable[..., Awaitable[Any]]:
         return build_deck
@@ -285,56 +282,37 @@ def build_content_router(
         session_id: str | None = None,
         on_record_created: Callable[..., None] | None = None,
     ) -> dict[str, Any]:
-        if session_id:
-            require_session_access(http_request, session_id, "editor")
-        else:
-            require_remote_editor(http_request)
-        task_state = resolve_tasks()
-        payload: dict[str, Any] = await enqueue_task(
-            task_state,
-            tasks_lock,
+        return await create_background_task_result(
+            http_request=http_request,
             task_type=task_type,
             params=params,
             session_id=session_id,
-            prune_in_memory=prune_task_records_locked,
-            persist_record=persist_task_record,
-            prune_persisted=prune_persisted_tasks,
+            on_record_created=on_record_created,
+            resolve_tasks=resolve_tasks,
+            tasks_lock=tasks_lock,
+            enqueue_task=enqueue_task,
+            prune_task_records_locked=prune_task_records_locked,
+            persist_task_record=persist_task_record,
+            prune_persisted_tasks=prune_persisted_tasks,
             run_task=run_task,
-            spawn_background_task=spawn_background_task,
             logger=logger,
             task_backend=resolve_task_backend(),
             enqueue_external_task=enqueue_external_task,
-            on_record_created=on_record_created,
+            require_session_access=require_session_access,
+            require_remote_editor=require_remote_editor,
+            grant_derived_resource_access=grant_derived_resource_access,
+            access_store=access_store,
+            audit_security_event=audit_security_event,
         )
-        if session_id and payload.get("task_id"):
-            grant_derived_resource_access(
-                http_request,
-                source_resource_type="session",
-                source_resource_id=session_id,
-                target_resource_type="task",
-                target_resource_id=str(payload.get("task_id") or ""),
-                access_store=access_store,
-                require_remote_role=require_remote_editor,
-                now=time.time,
-                audit_security_event=audit_security_event,
-            )
-        return payload
 
     async def dispatch_existing_task_record(record: Any) -> str:
-        backend = await dispatch_task_record(
+        return await dispatch_existing_task_record_result(
             record,
             task_backend=resolve_task_backend(),
             run_task=run_task,
-            spawn_background_task=spawn_background_task,
             enqueue_external_task=enqueue_external_task,
+            logger=logger,
         )
-        logger.info(
-            "task_id=%s task_type=%s dispatched backend=%s",
-            getattr(record, "task_id", ""),
-            getattr(record, "task_type", ""),
-            backend,
-        )
-        return backend
 
     # Document routes
 
@@ -419,35 +397,22 @@ def build_content_router(
 
     @router.get("/api/tasks")
     async def list_tasks(request: Request, limit: int = 20, status: str = ""):
-        task_state = resolve_tasks()
-        async with tasks_lock:
-            prune_task_records_locked()
-            in_memory_tasks = list(task_state.values())
-        prune_persisted_tasks()
-        persisted_tasks = get_task_store().list_recent(limit=max(limit, task_history_limit))
-        filtered_in_memory_tasks = filter_visible_task_records(
-            in_memory_tasks,
-            request,
-            require_session_access=require_session_access,
-            require_remote_viewer=require_remote_viewer,
-        )
-        filtered_persisted_tasks = filter_visible_task_records(
-            persisted_tasks,
-            request,
-            require_session_access=require_session_access,
-            require_remote_viewer=require_remote_viewer,
-        )
-        queue_health = None
-        if resolve_task_backend() in {"arq", "redis"} and arq_queue_health_payload is not None:
-            queue_health = await arq_queue_health_payload()
-        payload = list_tasks_payload(
-            in_memory_tasks=filtered_in_memory_tasks,
-            persisted_tasks=filtered_persisted_tasks,
+        return await list_tasks_route_payload(
+            request=request,
             limit=limit,
-            status_filter=status,
-            queue_health=queue_health,
+            status=status,
+            resolve_tasks=resolve_tasks,
+            tasks_lock=tasks_lock,
+            prune_task_records_locked=prune_task_records_locked,
+            prune_persisted_tasks=prune_persisted_tasks,
+            get_task_store=get_task_store,
+            task_history_limit=task_history_limit,
+            require_session_access=require_session_access,
+            require_remote_viewer=require_remote_viewer,
+            task_backend=resolve_task_backend(),
+            arq_queue_health_payload=arq_queue_health_payload,
+            list_tasks_payload=list_tasks_payload,
         )
-        return payload
 
     @router.get("/api/tasks/approval-policy")
     async def get_task_approval_policy(request: Request):
@@ -475,20 +440,18 @@ def build_content_router(
 
     @router.get("/api/tasks/{task_id}")
     async def get_task(task_id: str, request: Request):
-        task_state = resolve_tasks()
-        async with tasks_lock:
-            prune_task_records_locked()
-            record = task_state.get(task_id)
-        if record is None:
-            prune_persisted_tasks()
-            record = get_task_store().get(task_id)
-        if record is None:
-            raise HTTPException(status_code=404, detail="Task was not found.")
-        if getattr(record, "session_id", None):
-            require_session_access(request, str(record.session_id), "viewer")
-        else:
-            require_remote_viewer(request)
-        return task_record_payload(record)
+        return await get_task_route_payload(
+            task_id=task_id,
+            request=request,
+            resolve_tasks=resolve_tasks,
+            tasks_lock=tasks_lock,
+            prune_task_records_locked=prune_task_records_locked,
+            prune_persisted_tasks=prune_persisted_tasks,
+            get_task_store=get_task_store,
+            require_session_access=require_session_access,
+            require_remote_viewer=require_remote_viewer,
+            task_record_payload=task_record_payload,
+        )
 
     @router.post("/api/tasks/{task_id}/approval")
     async def decide_task_approval(
@@ -503,38 +466,23 @@ def build_content_router(
         http_request: Request,
         request: Any,
     ) -> dict[str, Any]:
-        task_state = resolve_tasks()
-        async with tasks_lock:
-            prune_task_records_locked()
-            record = task_state.get(task_id)
-        if record is None:
-            prune_persisted_tasks()
-            record = get_task_store().get(task_id)
-        if record is None:
-            raise HTTPException(status_code=404, detail=TASK_NOT_FOUND_DETAIL)
-        ensure_task_accepts_approval_decision(record)
-        if getattr(record, "session_id", None):
-            require_session_access(http_request, str(record.session_id), "editor")
-        else:
-            require_remote_admin(http_request)
-
-        apply_approval_decision_to_record(record, request, updated_at=time.time())
-
-        async with tasks_lock:
-            task_state[task_id] = record
-            prune_task_records_locked(record.updated_at)
-        persist_task_record(record)
-        prune_persisted_tasks()
-        await dispatch_existing_task_record(record)
-        audit_security_event(
-            "task_approval_decision",
-            http_request,
-            details=(
-                f"task_id={task_id} decision={approval_decision_value(request)} "
-                f"session_id={getattr(record, 'session_id', '') or '<none>'}"
-            ),
+        return await apply_task_approval_decision_result(
+            task_id=task_id,
+            http_request=http_request,
+            approval_request=request,
+            resolve_tasks=resolve_tasks,
+            tasks_lock=tasks_lock,
+            prune_task_records_locked=prune_task_records_locked,
+            prune_persisted_tasks=prune_persisted_tasks,
+            get_task_store=get_task_store,
+            persist_task_record=persist_task_record,
+            dispatch_existing_task_record=dispatch_existing_task_record,
+            require_session_access=require_session_access,
+            require_remote_admin=require_remote_admin,
+            audit_security_event=audit_security_event,
+            task_record_payload=task_record_payload,
+            now=time.time,
         )
-        return task_record_payload(record)
 
     # Deck routes
 
