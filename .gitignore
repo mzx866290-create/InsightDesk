@@ -53,6 +53,7 @@ runtime/*report*.json
 runtime/vector_store/
 runtime/upload_staging/
 runtime/searxng/
+runtime/ops-readiness/
 
 # Local agent continuation state
 .continue/
