@@ -309,3 +309,14 @@ def test_normalize_rerank_scores_handles_invalid_values():
     )
 
     assert scores == [0.0, 2.5, 0.0, 0.0]
+
+
+def test_embeddings_property_raises_clearly_on_slim_distribution(monkeypatch):
+    import pytest
+
+    import backend.doc_pipeline as doc_pipeline
+
+    monkeypatch.setattr(doc_pipeline, "HuggingFaceEmbeddings", None)
+    pipeline = doc_pipeline.DocPipeline(device="cpu")
+    with pytest.raises(RuntimeError, match="本地嵌入依赖未安装"):
+        _ = pipeline.embeddings

@@ -10,10 +10,20 @@ import shutil
 import sys
 from typing import Any, List, Optional, cast
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
-from sentence_transformers import CrossEncoder
 from dotenv import load_dotenv
+
+try:  # local-inference stack; slim distributions may ship without it
+    from langchain_huggingface import HuggingFaceEmbeddings
+    from sentence_transformers import CrossEncoder
+
+    LOCAL_INFERENCE_AVAILABLE: bool = (
+        HuggingFaceEmbeddings is not None and CrossEncoder is not None
+    )
+except Exception:  # pragma: no cover - exercised by slim distributions
+    HuggingFaceEmbeddings = None  # type: ignore
+    CrossEncoder = None  # type: ignore
+    LOCAL_INFERENCE_AVAILABLE = False
 from backend.stores.vector_store import create_vector_store_adapter
 from backend.core.storage_runtime import (
     VECTOR_STORE_PROVIDER_FAISS,
@@ -71,8 +81,8 @@ class DocPipeline(
     DocPipelineRetrievalMixin,
 ):
     _embedding_cache: dict[tuple[str, str], Any] = {}
-    _reranker_cache: dict[tuple[str, str], CrossEncoder] = {}
-    _reranker: CrossEncoder | None
+    _reranker_cache: dict[tuple[str, str], Any] = {}
+    _reranker: Any | None
     """文档处理管道类"""
     """文档处理管道类"""
 
@@ -169,6 +179,11 @@ class DocPipeline(
     @property
     def embeddings(self):
         """延迟加载 Embedding 模型"""
+        if HuggingFaceEmbeddings is None:
+            raise RuntimeError(
+                "本地嵌入依赖未安装（sentence-transformers/langchain-huggingface）。"
+                "请安装完整依赖或改用云端 embedding。"
+            )
         if self._embeddings is None:
             cache_key = (self.embedding_model, self.device)
             cached = self._embedding_cache.get(cache_key)
@@ -247,7 +262,11 @@ class DocPipeline(
         device: str,
         *,
         local_files_only: bool,
-    ) -> CrossEncoder:
+    ) -> Any:
+        if CrossEncoder is None:
+            raise RuntimeError(
+                "本地重排依赖未安装（sentence-transformers）。请安装完整依赖或关闭重排。"
+            )
         hf_token = os.getenv("HF_TOKEN") or None
         return cast(
             CrossEncoder,
@@ -264,7 +283,7 @@ class DocPipeline(
         self,
         model_name: str,
         preferred_device: str,
-    ) -> tuple[CrossEncoder, str]:
+    ) -> tuple[Any, str]:
         candidate_devices = [str(preferred_device or self.device or "cpu").strip() or "cpu"]
         if candidate_devices[0].lower() != "cpu":
             candidate_devices.append("cpu")

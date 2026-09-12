@@ -23,6 +23,12 @@ ROOT = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
 hiddenimports = [
     "backend",
     "backend.api_server",
+    # dynamically imported via backend.services.* proxies and the tasks bridge
+    "backend.agent_core",
+    "backend.artifact_service",
+    "backend.deck_service",
+    "backend.doc_pipeline",
+    "backend.tasks.worker",
     "uvicorn",
     "uvicorn.logging",
     "uvicorn.loops",
@@ -36,10 +42,33 @@ hiddenimports = [
     "uvicorn.lifespan.on",
     "anyio._backends._asyncio",
 ]
+
+# The backend packages use lazy __getattr__ re-exports and importlib
+# bridges everywhere; enumerate the whole package so every dynamically
+# imported module is bundled.
 hiddenimports += collect_submodules("backend")
 
 datas = [
     (os.path.join(ROOT, "frontend", "dist"), "frontend/dist"),
+]
+
+# Slim distribution: the local-inference stack (torch/sentence-transformers)
+# is excluded; doc_pipeline degrades gracefully (embeddings/reranker raise a
+# clear RuntimeError on first use, KB ingestion is unavailable) while cloud
+# providers and everything else keep working. Remove this block to build the
+# full local-inference bundle.
+excludes = [
+    "torch",
+    "sentence_transformers",
+    "langchain_huggingface",
+    "transformers",
+    "accelerate",
+    "safetensors",
+    "huggingface_hub.hub_patches",
+    # python-magic crashes PyInstaller's isolated analysis subprocess on
+    # Windows (libmagic DLL); unstructured degrades to extension-based
+    # MIME detection when the import fails.
+    "magic",
 ]
 
 a = Analysis(
@@ -51,7 +80,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=excludes,
     noarchive=False,
 )
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
