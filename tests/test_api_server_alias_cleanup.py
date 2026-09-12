@@ -148,15 +148,6 @@ def test_api_server_no_longer_seeds_legacy_short_module_aliases():
     assert "async def _auto_generate_phase_summary_memory" not in source
 
 
-def test_legacy_api_config_store_is_re_export_only():
-    source = Path("backend/api_config_store.py").read_text(encoding="utf-8")
-
-    assert "Compatibility re-export" in source
-    assert "from backend.stores.config_store import" in source
-    assert "def append_mcp_runtime_health_history" not in source
-    assert "def read_mcp_runtime_health_history" not in source
-
-
 def test_helpers_api_misc_is_compatibility_re_export_only():
     source = Path("backend/helpers/api_misc_helpers.py").read_text(encoding="utf-8")
 
@@ -165,36 +156,13 @@ def test_helpers_api_misc_is_compatibility_re_export_only():
     assert "def request_field_set" not in source
 
 
-def test_legacy_api_modules_are_structural_re_exports_only():
-    allowed_import_roots = (
-        "backend.helpers.",
-        "backend.routes.",
-        "backend.stores.",
-        "backend.tasks.",
+def test_legacy_api_modules_are_gone_except_api_server():
+    remaining = {path.name for path in Path("backend").glob("api_*.py")}
+
+    assert remaining == {"api_server.py"}, (
+        "the api_* compat shims were removed; do not reintroduce them "
+        "(import from backend.helpers / backend.routes / backend.stores)"
     )
-
-    for path in Path("backend").glob("api_*.py"):
-        if path.name == "api_server.py":
-            continue
-        source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source, filename=str(path))
-
-        assert "Compatibility" in (ast.get_docstring(tree) or "")
-        assert "sys.path" not in source
-        assert "importlib" not in source
-
-        for node in tree.body:
-            assert not isinstance(
-                node,
-                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
-            ), f"{path} should not define implementation symbols"
-            if isinstance(node, ast.Import):
-                raise AssertionError(f"{path} should use explicit re-export imports")
-            if isinstance(node, ast.ImportFrom):
-                assert node.module is not None
-                assert node.module.startswith(allowed_import_roots), (
-                    f"{path} imports from unexpected module {node.module}"
-                )
 
 
 def test_router_registration_uses_explicit_dependency_functions():
@@ -347,7 +315,6 @@ def test_tests_do_not_reintroduce_backend_short_import_path():
 def test_non_compat_tests_do_not_import_legacy_api_modules():
     allowed_files = {
         "test_api_server_alias_cleanup.py",
-        "test_backend_module_compat.py",
     }
 
     for path in Path("tests").glob("test_*.py"):
