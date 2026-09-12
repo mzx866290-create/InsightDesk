@@ -925,7 +925,7 @@ export async function decideTaskApprovalsBatch(
 
 export async function getDocStats(): Promise<DocStats> {
   const res = await fetch(`${BASE}/documents/stats`)
-  if (!res.ok) throw new Error(await readErrorDetail(res, '鑾峰彇缁熻淇℃伅澶辫触'))
+    if (!res.ok) throw new Error(await readErrorDetail(res, '获取统计信息失败'))
   return res.json()
 }
 
@@ -948,7 +948,7 @@ export async function createSystemPrompt(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, content, dashboard_template: dashboard_template ?? {} }),
   })
-  if (!res.ok) throw new Error(await readErrorDetail(res, '鍒涘缓瑙掕壊澶辫触'))
+  if (!res.ok) throw new Error(await readErrorDetail(res, '创建角色失败'))
   return res.json()
 }
 
@@ -963,18 +963,18 @@ export async function updateSystemPrompt(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name, content, dashboard_template: dashboard_template ?? {} }),
   })
-  if (!res.ok) throw new Error(await readErrorDetail(res, '鏇存柊瑙掕壊澶辫触'))
+  if (!res.ok) throw new Error(await readErrorDetail(res, '更新角色失败'))
   return res.json()
 }
 
 export async function deleteSystemPrompt(id: string): Promise<void> {
   const res = await fetch(`${BASE}/prompts/${id}`, { method: 'DELETE' })
-  if (!res.ok) throw new Error(await readErrorDetail(res, '鍒犻櫎瑙掕壊澶辫触'))
+  if (!res.ok) throw new Error(await readErrorDetail(res, '删除角色失败'))
 }
 
 export async function activateSystemPrompt(id: string): Promise<{ ok: boolean; kb_status?: string }> {
   const res = await fetch(`${BASE}/prompts/${id}/activate`, { method: 'POST' })
-  if (!res.ok) throw new Error(await readErrorDetail(res, '鍚敤瑙掕壊澶辫触'))
+    if (!res.ok) throw new Error(await readErrorDetail(res, '启用角色失败'))
   return res.json()
 }
 
@@ -994,7 +994,7 @@ export async function createSystemPromptWithKB(
       dashboard_template: dashboardTemplate ?? {},
     }),
   })
-  if (!res.ok) throw new Error(await readErrorDetail(res, '鍒涘缓瑙掕壊澶辫触'))
+  if (!res.ok) throw new Error(await readErrorDetail(res, '创建角色失败'))
   return res.json()
 }
 
@@ -1015,7 +1015,7 @@ export async function updateSystemPromptWithKB(
       dashboard_template: dashboardTemplate ?? {},
     }),
   })
-  if (!res.ok) throw new Error(await readErrorDetail(res, '鏇存柊瑙掕壊澶辫触'))
+  if (!res.ok) throw new Error(await readErrorDetail(res, '更新角色失败'))
   return res.json()
 }
 

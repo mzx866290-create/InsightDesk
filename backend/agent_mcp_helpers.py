@@ -905,7 +905,6 @@ def _redact_cli_args(args: list[Any]) -> list[Any]:
     for item in args:
         text = str(item)
         stripped = text.strip()
-        lower = stripped.lower()
         if previous_was_secret_flag and not text.startswith("-"):
             redacted.append(MCP_CONFIG_REDACTED_VALUE)
             previous_was_secret_flag = False

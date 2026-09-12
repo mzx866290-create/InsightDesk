@@ -39,7 +39,7 @@ def build_report_markdown(messages: list[Any], title: str) -> str:
     for index, (question, answer) in enumerate(qa_pairs, start=1):
         lines.append("---")
         lines.append("")
-        lines.append(f"## 涓婚 {index}: {_truncate(question, 72)}")
+        lines.append(f"## 主题 {index}: {_truncate(question, 72)}")
         lines.append("")
         lines.append(answer)
         lines.append("")
@@ -582,7 +582,7 @@ def export_deck_to_pptx(deck: DeckSpec) -> bytes:
     def format_date_label(raw_value: str) -> str:
         raw = _clean_text(raw_value)
         if not raw:
-            return "鏈煡鏃堕棿"
+            return "未知时间"
         if "T" in raw:
             return raw.split("T", 1)[0]
         return raw[:10]
@@ -693,7 +693,7 @@ def export_deck_to_pptx(deck: DeckSpec) -> bytes:
                 {
                     "text": slide.subtitle
                     or deck.meta.subtitle
-                    or "AI 鑷姩鐢熸垚鐨勭粨鏋勫寲姹囨姤鑽夌",
+                    or "AI 自动生成的结构化汇报草稿",
                     "font_size": 16,
                     "color": "muted",
                     "line_spacing": 1.15,
@@ -717,7 +717,7 @@ def export_deck_to_pptx(deck: DeckSpec) -> bytes:
                 message_box,
                 [
                     {
-                        "text": "鏍稿績缁撹",
+                    "text": "核心结论",
                         "font_size": 11,
                         "bold": True,
                         "color": "accent",
@@ -747,7 +747,7 @@ def export_deck_to_pptx(deck: DeckSpec) -> bytes:
             meta_box,
             [
                 {
-                    "text": "瀵煎嚭鎽樿",
+                    "text": "导出摘要",
                     "font_size": 11,
                     "bold": True,
                     "color": "title",
@@ -958,7 +958,7 @@ def export_deck_to_pptx(deck: DeckSpec) -> bytes:
                     "space_after": 6,
                 },
                 {
-                    "text": f"鐩殑: {deck.meta.purpose}",
+                    "text": f"目的: {deck.meta.purpose}",
                     "font_size": 11,
                     "color": "body",
                     "space_after": 6,
@@ -1395,7 +1395,7 @@ def export_deck_to_pptx(deck: DeckSpec) -> bytes:
             stat_box,
             [
                 {
-                    "text": "鏉ユ簮缁熻",
+                "text": "来源统计",
                     "font_size": 10.5,
                     "bold": True,
                     "color": "accent",

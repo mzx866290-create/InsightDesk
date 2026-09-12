@@ -1,7 +1,8 @@
 """Session route utilities."""
 
 import logging
-from typing import Any, Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -79,13 +80,13 @@ def build_session_router(
     update_session_memory_payload: Callable[..., dict[str, Any]],
     summarize_session_memory_payload: Callable[..., dict[str, Any]],
     delete_session_memory_payload: Callable[..., dict[str, Any]],
-    generate_session_phase_summary_memory: Callable[..., Awaitable[Optional[dict[str, Any]]]],
+    generate_session_phase_summary_memory: Callable[..., Awaitable[dict[str, Any] | None]],
     validate_chat_payload: Callable[..., None],
     base_model_payload: Callable[..., dict[str, Any]],
     normalize_model_config: Callable[..., Any],
     model_config_payload: Callable[..., dict[str, Any]],
     chat_attachment_preview_chars: int,
-    effective_vector_store_path: Callable[[Optional[str]], str],
+    effective_vector_store_path: Callable[[str | None], str],
     require_workspace_session: Callable[..., None],
     request_field_set: Callable[..., set[str]],
     create_workspace_request_model: type,
@@ -255,7 +256,7 @@ def build_session_router(
         require_workspace_access(http_request, workspace_id, "editor")
         field_set = request_field_set(request)
         if not field_set:
-            raise HTTPException(status_code=400, detail="鑷冲皯闇€瑕佹彁渚涗竴涓伐浣滃尯瀛楁")
+            raise HTTPException(status_code=400, detail="至少需要提供一个工作区字段")
         try:
             preset = request.preset
             workspace = update_workspace(
@@ -291,14 +292,14 @@ def build_session_router(
         require_workspace_access(request, workspace_id, "editor")
         workspace = activate_workspace(workspace_id)
         if not workspace:
-            raise HTTPException(status_code=404, detail="鏈壘鍒板伐浣滃尯")
+            raise HTTPException(status_code=404, detail="未找到工作区")
         return {"ok": True, "workspace": workspace}
 
     @router.delete("/api/workspaces/{workspace_id}")
     async def delete_workspace_endpoint(
         workspace_id: str,
         request: Request,
-        target_workspace_id: Optional[str] = None,
+        target_workspace_id: str | None = None,
     ):
         from backend.chat_store import DEFAULT_WORKSPACE_ID, delete_workspace
         require_workspace_access(request, workspace_id, "admin")
@@ -320,10 +321,10 @@ def build_session_router(
     async def get_sessions(
         request: Request,
         query: str = "",
-        archived: Optional[bool] = None,
-        favorite: Optional[bool] = None,
+        archived: bool | None = None,
+        favorite: bool | None = None,
         tag: str = "",
-        workspace_id: Optional[str] = None,
+        workspace_id: str | None = None,
     ):
         from backend.chat_store import DEFAULT_WORKSPACE_ID, get_all_sessions
         sessions = get_all_sessions(
@@ -355,7 +356,10 @@ def build_session_router(
     @router.post("/api/sessions")
     async def create_session(http_request: Request, request: CreateSessionRequest):
         from backend.chat_store import (
-            DEFAULT_WORKSPACE_ID, get_session, get_workspace, list_workspaces,
+            DEFAULT_WORKSPACE_ID,
+            get_session,
+            get_workspace,
+            list_workspaces,
             update_session_meta,
         )
         from backend.stores.factory import create_chat_message_history
@@ -486,10 +490,10 @@ def build_session_router(
         delete_session(session_id)
         return {"ok": True}
 
-    # 鈹€鈹€ 涔︾ 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # ---------------- 书签 ----------------
 
     @router.get("/api/bookmarks")
-    async def list_bookmarks_endpoint(request: Request, session_id: Optional[str] = None):
+    async def list_bookmarks_endpoint(request: Request, session_id: str | None = None):
         from backend.chat_store import list_bookmarks
         bookmarks = list_bookmarks(session_id=session_id)
         if session_id:
@@ -547,6 +551,7 @@ def build_session_router(
     @router.post("/api/sessions/{session_id}/share", response_model=share_link_response_model)
     async def create_session_share_link(session_id: str, request: Request):
         import time
+
         from backend.chat_store import get_session
         require_remote_share_secret(request)
         require_session_access(request, session_id, "viewer")
@@ -814,14 +819,14 @@ def build_session_router(
             raise HTTPException(status_code=404, detail="Session memory was not found.")
         return delete_session_memory_payload(deleted)
 
-    # 鈹€鈹€ 闄勪欢 & 绛旀鍒嗙粍 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    # ---------------- 附件 & 回答分组 ----------------
 
     @router.get("/api/sessions/{session_id}/attachments")
     async def get_session_attachments(
         session_id: str,
         request: Request,
-        vector_store_path: Optional[str] = None,
-        workspace_id: Optional[str] = None,
+        vector_store_path: str | None = None,
+        workspace_id: str | None = None,
     ):
         from backend.stores.factory import create_chat_message_history
         require_session_access(request, session_id, "viewer")
@@ -842,8 +847,8 @@ def build_session_router(
         session_id: str,
         attachment_id: str,
         request: Request,
-        vector_store_path: Optional[str] = None,
-        workspace_id: Optional[str] = None,
+        vector_store_path: str | None = None,
+        workspace_id: str | None = None,
     ):
         require_session_access(request, session_id, "editor")
         require_workspace_session(session_id, workspace_id)
@@ -908,7 +913,7 @@ def build_session_router(
             else promote_panel_answer(session_id, answer_group_id, panel_id)
         )
         if not promoted:
-            raise HTTPException(status_code=404, detail="鏈壘鍒板洖绛斿垎缁勬垨闈㈡澘娑堟伅")
+            raise HTTPException(status_code=404, detail="未找到回答分组或模板消息")
         preference_signal = (
             record_answer_preference_signal(
                 session_id,
@@ -966,8 +971,8 @@ def build_session_router(
 
     @router.post("/api/sessions/{session_id}/reset")
     async def reset_session(session_id: str, request: Request):
-        from backend.services.agent_core import clear_session_history
         from backend.chat_store import clear_session_memory
+        from backend.services.agent_core import clear_session_history
         require_session_access(request, session_id, "admin")
         clear_session_history(session_id)
         clear_session_memory(session_id)
@@ -977,7 +982,7 @@ def build_session_router(
     # 鈹€鈹€ 浼氳瘽宸ヤ欢 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
     @router.get("/api/sessions/{session_id}/artifacts")
-    async def list_session_artifacts(session_id: str, request: Request, artifact_type: Optional[str] = None):
+    async def list_session_artifacts(session_id: str, request: Request, artifact_type: str | None = None):
         require_session_access(request, session_id, "viewer")
         artifacts = resolve_artifact_store().list_by_session(
             session_id, artifact_type=str(artifact_type or "").strip(),

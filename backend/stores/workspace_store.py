@@ -64,7 +64,8 @@ def _mirror_workspace_snapshot(
             is_active = bool(activate)
         if is_active:
             store.deactivate_all_workspace_mirrors()
-        preset = record.get("preset") if isinstance(record.get("preset"), dict) else {}
+        preset_raw = record.get("preset")
+        preset: dict[str, Any] = preset_raw if isinstance(preset_raw, dict) else {}
         store.mirror_workspace_snapshot(
             workspace_id=str(record.get("workspace_id") or ""),
             name=str(record.get("name") or ""),
@@ -337,7 +338,8 @@ def update_workspace(
         )
         conn.commit()
     updated_workspace = get_workspace(workspace_id, db_path=db_path)
-    _mirror_workspace_snapshot(updated_workspace, db_path=db_path)
+    if updated_workspace is not None:
+        _mirror_workspace_snapshot(updated_workspace, db_path=db_path)
     return updated_workspace
 
 
@@ -359,11 +361,12 @@ def activate_workspace(
         )
         conn.commit()
     activated_workspace = get_workspace(workspace_id, db_path=db_path)
-    _mirror_workspace_snapshot(
-        activated_workspace,
-        activate=True,
-        db_path=db_path,
-    )
+    if activated_workspace is not None:
+        _mirror_workspace_snapshot(
+            activated_workspace,
+            activate=True,
+            db_path=db_path,
+        )
     return activated_workspace
 
 

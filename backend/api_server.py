@@ -1,34 +1,66 @@
 """
-FastAPI 鍚庣 API 鏈嶅姟
-鎻愪緵 REST + SSE 绔偣锛屽寘瑁呯幇鏈?agent_core / chat_store / doc_pipeline 妯″潡
+FastAPI 后端 API 服务
+提供 REST + SSE 端点，包装现有 agent_core / chat_store / doc_pipeline 模块
 """
 
 import asyncio
-from dataclasses import dataclass
 import logging
 import os
-from pathlib import Path
 import re
 import threading
 import time
 import uuid
-from typing import Any, AsyncGenerator, Optional
-from backend.core import session_summary_runtime
-from backend.core import task_runtime
-from backend.core import security_runtime
-from backend.core import sso_runtime
-from backend.core import env_runtime
-from backend.core import rate_limit
-from backend.core import request_runtime
-from backend.core import kb_runtime
+from collections.abc import AsyncGenerator
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from backend.agent.connection import list_llm_provider_catalog
+from backend.agent.registry import (
+    install_agent_plugin_manifest_payload,
+    list_agent_catalog,
+    uninstall_agent_plugin_manifest_payload,
+)
+from backend.agent_mcp_helpers import (
+    current_mcp_approved_connectors_payload as _current_mcp_approved_connectors_payload,
+)
+from backend.agent_mcp_helpers import (
+    default_mcp_server_names,
+    list_mcp_server_catalog,
+    normalize_mcp_server_names,
+)
+from backend.agent_mcp_helpers import (
+    get_mcp_runtime_health_history as _get_mcp_runtime_health_history,
+)
+from backend.agent_mcp_helpers import (
+    list_mcp_server_runtime_health as _list_mcp_server_runtime_health,
+)
+from backend.agent_mcp_helpers import (
+    set_runtime_mcp_approved_connectors as _set_runtime_mcp_approved_connectors,
+)
+from backend.core import (
+    env_runtime,
+    kb_runtime,
+    model_config_runtime,
+    prompt_runtime,
+    rate_limit,
+    request_runtime,
+    security_runtime,
+    session_summary_runtime,
+    sso_runtime,
+    task_runtime,
+)
 from backend.core import mcp_runtime as mcp_runtime_helpers
-from backend.core import model_config_runtime
-from backend.core import prompt_runtime
 from backend.core.app_lifecycle import register_app_lifecycle_handler
 from backend.core.config_runtime import (
     sync_runtime_secret_from_store,
 )
-from backend.core.static_assets import mount_frontend_static
 from backend.core.router_registration import (
     _CORE_ROUTER_CONTEXT_ATTRIBUTES,
     _DEFERRED_ROUTER_CONTEXT_ATTRIBUTES,
@@ -42,30 +74,19 @@ from backend.core.runtime_metrics import (
     record_runtime_error,
     record_runtime_request,
 )
-from backend.agent.connection import list_llm_provider_catalog
-from backend.agent.registry import (
-    install_agent_plugin_manifest_payload,
-    list_agent_catalog,
-    uninstall_agent_plugin_manifest_payload,
-)
+from backend.core.static_assets import mount_frontend_static
 from backend.delivery_templates import (
     install_delivery_template_manifest_payload,
     list_delivery_template_catalog,
     uninstall_delivery_template_manifest_payload,
 )
-from backend.helpers.security_helpers import (
-    content_hash,
-    hash_secret,
-    sanitize_log_value,
-    sanitize_request_path,
-)
-from backend.helpers import delete_kb_directory
 from backend.helpers import (
     build_parallel_agent_streams,
     build_share_url,
     build_single_agent_stream,
     create_session_record,
     decode_share_token,
+    delete_kb_directory,
     delete_session_memory_payload,
     encode_share_token,
     kb_health_payload,
@@ -76,175 +97,54 @@ from backend.helpers import (
     prepare_attachment_promotion,
     prepare_chat_route_runtime,
     reorder_sessions_payload,
+    session_attachments_payload,
     session_memory_payload,
     session_memory_updates,
-    session_attachments_payload,
     session_update_requested,
     sse_streaming_response,
     summarize_session_memory_payload,
     update_session_memory_payload,
     workspaces_payload,
 )
-from backend.helpers.kb_management_helpers import (
-    effective_vector_store_path as _effective_vector_store_path_impl,
-)
-from backend.helpers.http_runtime_helpers import (
-    classify_runtime_error,
-)
-from backend.helpers.misc_helpers import (
-    dashboard_feature_enabled,
-    is_max_iterations_output,
-)
-from backend.schemas.api_models import (
-    ModelConfig,
-    ChatRequest,
-    SingleChatRequest,
-    CreateSessionRequest,
-    UpdateSessionRequest,
-    ReorderSessionsRequest,
-    CreateBookmarkRequest,
-    ShareLinkResponse,
-    RevokeShareLinkResponse,
-    ShareLinkAuditListResponse,
-    SecurityStatusResponse,
-    AuthWhoAmIResponse,
-    AuthTokenCatalogResponse,
-    SsoConfigResponse,
-    SsoLoginResponse,
-    SsoCallbackResponse,
-    SecurityAuditEventListResponse,
-    SecurityAuditCleanupResponse,
-    SecurityAuditActionCatalogResponse,
-    SecurityAuditSummaryResponse,
-    SecurityAuditSiemExportResponse,
-    SecurityAuditAggregateReportResponse,
-    SecurityAuditArchivePolicyResponse,
-    SecurityAuditLegalHoldResponse,
-    RuntimeOperationsResponse,
-    CreateWorkspaceRequest,
-    UpdateWorkspaceRequest,
-    SetMessageFeedbackRequest,
-    TruncateSessionMessagesRequest,
-    ImportSessionMessagesRequest,
-    SetRetrievalFeedbackRequest,
-    PinSessionMemoryRequest,
-    UpdateSessionMemoryRequest,
-    GenerateReportRequest,
-    CreateDeckRequest,
-    GenerateArtifactRequest,
-    UpdateArtifactRequest,
-    UpdateDeckRequest,
-    RegenerateDeckSlideRequest,
-    UpsertOrganizationRequest,
-    UpsertUserRequest,
-    SetMembershipRequest,
-    SyncExternalIdentityRequest,
-    OrganizationResponse,
-    UserResponse,
-    MembershipResponse,
-    IdentityCatalogResponse,
-    SyncExternalIdentityResponse,
-    UpsertResourceGrantRequest,
-    DeleteResourceGrantRequest,
-    ResourceGrantResponse,
-    ResourceGrantListResponse,
-    ResourceAccessResponse,
-    RolePermissionMatrixResponse,
-    CreateTaskRequest,
-    CreateMultiAgentWorkflowTaskRequest,
-    ApprovalPolicyRequest,
-    ApprovalTaskDecisionRequest,
-    AgentCatalogResponse,
-    DeliveryTemplateCatalogResponse,
-    ProviderCatalogResponse,
-)
-from backend.routes import (
-    build_access_router,
-    build_agent_catalog_router,
-    build_assistant_preset_router,
-    build_chat_router,
-    build_content_router,
-    build_delivery_template_router,
-    build_identity_router,
-    build_kb_router,
-    build_operations_router,
-    build_provider_router,
-    build_prompt_router,
-    build_security_router,
-    build_session_router,
-)
-from backend.routes.operations_routes import run_integrator_scheduler_tick
-from backend.stores.factory import (
-    create_app_config_store,
-    create_artifact_store,
-    create_deck_store,
-    create_identity_store,
-    create_resource_access_store,
-    create_security_audit_store,
-    create_share_link_store,
-    create_sso_session_store,
-    create_task_store,
-)
-from backend.stores import (
-    SQLiteAppConfigStore,
-    SQLiteSecurityAuditStore,
-    SQLiteTaskStore,
-    TaskRecord,
-    TaskStatus,
-)
-from backend.services.artifact_service import (
-    artifact_export_formats,
-    build_deck_artifact,
-    build_report_artifact,
-    build_research_archive_artifact,
-    sync_deck_artifact,
-)
-from backend.agent_mcp_helpers import (
-    current_mcp_approved_connectors_payload as _current_mcp_approved_connectors_payload,
-    default_mcp_server_names,
-    get_mcp_runtime_health_history as _get_mcp_runtime_health_history,
-    list_mcp_server_catalog,
-    list_mcp_server_runtime_health as _list_mcp_server_runtime_health,
-    normalize_mcp_server_names,
-    set_runtime_mcp_approved_connectors as _set_runtime_mcp_approved_connectors,
-)
-from backend.helpers.session_helpers import (
-    build_answer_group_review_payload as _build_answer_group_review_payload,
-    build_session_messages_payload as _build_session_messages_payload,
-    collect_session_attachments as _collect_session_attachments,
-    find_session_attachment as _find_session_attachment,
-    render_shared_deck_html as _render_shared_deck_html,
-    render_shared_session_html as _render_shared_session_html,
-)
-from backend.helpers.chat_input_helpers import (
-    ChatImageConfig,
-    SUPPORTED_CHAT_IMAGE_MEDIA_TYPES,
-    build_user_input as _build_user_input_impl,
-    stringify_user_input as _stringify_user_input_impl,
-    validate_chat_payload as _validate_chat_payload_impl,
-)
-from backend.helpers.chat_file_helpers import (
-    ChatFileConfig,
-    prepare_chat_files as _prepare_chat_files_impl,
-)
 from backend.helpers.agent_stream_helpers import (
     dashboard_prompt_excerpt,
     fail_dashboard_task,
-    finalize_dashboard_task,
     fallback_generate_with_llm,
+    finalize_dashboard_task,
     resolve_non_stream_agent_result,
     stream_agent_item,
     task_created_event,
 )
-from backend.helpers.document_helpers import (
-    build_chat_report_title,
-    build_upload_documents_task_record,
-    cleanup_temp_paths,
-    populate_chat_report_presentation,
-    retrieval_test_payload,
-    safe_report_filename,
-    stage_upload_files,
-    upload_documents_response,
+from backend.helpers.chat_file_helpers import (
+    ChatFileConfig,
+)
+from backend.helpers.chat_file_helpers import (
+    prepare_chat_files as _prepare_chat_files_impl,
+)
+from backend.helpers.chat_input_helpers import (
+    SUPPORTED_CHAT_IMAGE_MEDIA_TYPES,
+    ChatImageConfig,
+)
+from backend.helpers.chat_input_helpers import (
+    build_user_input as _build_user_input_impl,
+)
+from backend.helpers.chat_input_helpers import (
+    stringify_user_input as _stringify_user_input_impl,
+)
+from backend.helpers.chat_input_helpers import (
+    validate_chat_payload as _validate_chat_payload_impl,
+)
+from backend.helpers.chat_stream_helpers import (
+    answer_chunks,
+    build_agent_config_payload,
+    stream_parallel_sse,
+    stream_single_sse,
+)
+from backend.helpers.chat_stream_helpers import (
+    done_event as _done_event,
+)
+from backend.helpers.chat_stream_helpers import (
+    panel_event as _panel_event,
 )
 from backend.helpers.deck_report_helpers import (
     apply_deck_update,
@@ -256,13 +156,69 @@ from backend.helpers.deck_report_helpers import (
     report_download_payload,
     report_markdown_payload,
 )
-from backend.helpers.chat_stream_helpers import (
-    answer_chunks,
-    build_agent_config_payload,
-    done_event as _done_event,
-    panel_event as _panel_event,
-    stream_parallel_sse,
-    stream_single_sse,
+from backend.helpers.document_helpers import (
+    build_chat_report_title,
+    build_upload_documents_task_record,
+    cleanup_temp_paths,
+    populate_chat_report_presentation,
+    retrieval_test_payload,
+    safe_report_filename,
+    stage_upload_files,
+    upload_documents_response,
+)
+from backend.helpers.http_runtime_helpers import (
+    classify_runtime_error,
+)
+from backend.helpers.kb_chunk_route_helpers import (
+    delete_kb_chunk_payload,
+    list_kb_chunks_payload,
+    update_kb_chunk_payload,
+)
+from backend.helpers.kb_helpers import (
+    filter_kb_chunks,
+)
+from backend.helpers.kb_helpers import (
+    kb_collect_chunks as _kb_collect_chunks,
+)
+from backend.helpers.kb_helpers import (
+    kb_docstore_dict as _kb_docstore_dict,
+)
+from backend.helpers.kb_helpers import (
+    kb_rebuild_from_documents as _kb_rebuild_from_documents,
+)
+from backend.helpers.kb_helpers import (
+    kb_safe_metadata as _kb_safe_metadata,
+)
+from backend.helpers.kb_management_helpers import (
+    effective_vector_store_path as _effective_vector_store_path_impl,
+)
+from backend.helpers.misc_helpers import (
+    dashboard_feature_enabled,
+    is_max_iterations_output,
+)
+from backend.helpers.security_helpers import (
+    content_hash,
+    hash_secret,
+    sanitize_log_value,
+    sanitize_request_path,
+)
+from backend.helpers.session_helpers import (
+    build_answer_group_review_payload as _build_answer_group_review_payload,
+)
+from backend.helpers.session_helpers import (
+    build_session_messages_payload as _build_session_messages_payload,
+)
+from backend.helpers.session_helpers import (
+    collect_session_attachments as _collect_session_attachments,
+)
+from backend.helpers.session_helpers import (
+    find_session_attachment as _find_session_attachment,
+)
+from backend.helpers.session_helpers import (
+    render_shared_deck_html as _render_shared_deck_html,
+)
+from backend.helpers.session_helpers import (
+    render_shared_session_html as _render_shared_session_html,
 )
 from backend.helpers.session_memory_helpers import (
     build_phase_summary_content,
@@ -275,25 +231,35 @@ from backend.helpers.session_memory_helpers import (
     summary_llm_timeout_seconds,
     summary_turns,
 )
-from backend.helpers.kb_helpers import (
-    filter_kb_chunks,
-    kb_collect_chunks as _kb_collect_chunks,
-    kb_docstore_dict as _kb_docstore_dict,
-    kb_rebuild_from_documents as _kb_rebuild_from_documents,
-    kb_safe_metadata as _kb_safe_metadata,
-)
-from backend.helpers.kb_chunk_route_helpers import (
-    delete_kb_chunk_payload,
-    list_kb_chunks_payload,
-    update_kb_chunk_payload,
+from backend.helpers.task_execution_helpers import (
+    persist_multi_agent_workflow_task_placeholder,  # noqa: F401 - task runtime context attribute
+    persist_multi_agent_workflow_task_result,  # noqa: F401 - task runtime context attribute
+    persist_web_research_task_placeholder,
+    persist_web_research_task_result,
+    run_analyze_knowledge_base_task,
+    run_generate_deck_task,
+    run_generate_report_task,
+    run_multi_agent_workflow_task,
+    run_placeholder_task,
+    run_promote_attachment_to_kb_task,
+    run_upload_documents_task,
+    run_web_research_task,
 )
 from backend.helpers.task_helpers import (
     contains_dashboard_card as _contains_dashboard_card,
+)
+from backend.helpers.task_helpers import (
     create_inline_task_record,
     prune_task_records,
     set_inline_task_state,
+)
+from backend.helpers.task_helpers import (
     should_start_dashboard_task as _should_start_dashboard_task,
+)
+from backend.helpers.task_helpers import (
     summarize_dashboard_task_error as _summarize_dashboard_task_error,
+)
+from backend.helpers.task_helpers import (
     summarize_dashboard_task_result as _summarize_dashboard_task_result,
 )
 from backend.helpers.task_runtime_helpers import (
@@ -302,36 +268,121 @@ from backend.helpers.task_runtime_helpers import (
     list_tasks_payload,
     task_record_payload,
 )
-from backend.tasks.health import arq_queue_health_payload
-from backend.helpers.task_execution_helpers import (
-    persist_multi_agent_workflow_task_placeholder,
-    persist_multi_agent_workflow_task_result,
-    persist_web_research_task_placeholder,
-    persist_web_research_task_result,
-    run_analyze_knowledge_base_task,
-    run_generate_deck_task,
-    run_multi_agent_workflow_task,
-    run_generate_report_task,
-    run_placeholder_task,
-    run_promote_attachment_to_kb_task,
-    run_upload_documents_task,
-    run_web_research_task,
+from backend.logging_config import configure_logging
+from backend.routes import (
+    build_access_router,
+    build_agent_catalog_router,
+    build_assistant_preset_router,
+    build_chat_router,
+    build_content_router,
+    build_delivery_template_router,
+    build_identity_router,
+    build_kb_router,
+    build_operations_router,
+    build_prompt_router,
+    build_provider_router,
+    build_security_router,
+    build_session_router,
+)
+from backend.routes.operations_routes import run_integrator_scheduler_tick
+from backend.schemas.api_models import (
+    AgentCatalogResponse,
+    ApprovalPolicyRequest,
+    ApprovalTaskDecisionRequest,
+    AuthTokenCatalogResponse,
+    AuthWhoAmIResponse,
+    ChatRequest,
+    CreateBookmarkRequest,
+    CreateDeckRequest,
+    CreateMultiAgentWorkflowTaskRequest,
+    CreateSessionRequest,
+    CreateTaskRequest,
+    CreateWorkspaceRequest,
+    DeleteResourceGrantRequest,
+    DeliveryTemplateCatalogResponse,
+    GenerateArtifactRequest,
+    GenerateReportRequest,
+    IdentityCatalogResponse,
+    ImportSessionMessagesRequest,
+    MembershipResponse,
+    ModelConfig,
+    OrganizationResponse,
+    PinSessionMemoryRequest,
+    ProviderCatalogResponse,
+    RegenerateDeckSlideRequest,
+    ReorderSessionsRequest,
+    ResourceAccessResponse,
+    ResourceGrantListResponse,
+    ResourceGrantResponse,
+    RevokeShareLinkResponse,
+    RolePermissionMatrixResponse,
+    RuntimeOperationsResponse,
+    SecurityAuditActionCatalogResponse,
+    SecurityAuditAggregateReportResponse,
+    SecurityAuditArchivePolicyResponse,
+    SecurityAuditCleanupResponse,
+    SecurityAuditEventListResponse,
+    SecurityAuditLegalHoldResponse,
+    SecurityAuditSiemExportResponse,
+    SecurityAuditSummaryResponse,
+    SecurityStatusResponse,
+    SetMembershipRequest,
+    SetMessageFeedbackRequest,
+    SetRetrievalFeedbackRequest,
+    ShareLinkAuditListResponse,
+    ShareLinkResponse,
+    SingleChatRequest,
+    SsoCallbackResponse,
+    SsoConfigResponse,
+    SsoLoginResponse,
+    SyncExternalIdentityRequest,
+    SyncExternalIdentityResponse,
+    TruncateSessionMessagesRequest,
+    UpdateArtifactRequest,
+    UpdateDeckRequest,
+    UpdateSessionMemoryRequest,
+    UpdateSessionRequest,
+    UpdateWorkspaceRequest,
+    UpsertOrganizationRequest,
+    UpsertResourceGrantRequest,
+    UpsertUserRequest,
+    UserResponse,
+)
+from backend.services.artifact_service import (
+    artifact_export_formats,
+    build_deck_artifact,
+    build_report_artifact,
+    build_research_archive_artifact,
+    sync_deck_artifact,
 )
 from backend.services.deck_service import (
     build_deck,
-    build_report_markdown,
     build_export_filename,
+    build_report_markdown,
     ensure_deckable_chat,
     export_deck_to_pptx,
     normalize_deck_theme,
     regenerate_deck_slide,
 )
-from backend.logging_config import configure_logging
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
-from fastapi.responses import JSONResponse
+from backend.stores import (
+    SQLiteAppConfigStore,
+    SQLiteSecurityAuditStore,
+    SQLiteTaskStore,
+    TaskRecord,
+    TaskStatus,
+)
+from backend.stores.factory import (
+    create_app_config_store,
+    create_artifact_store,
+    create_deck_store,
+    create_identity_store,
+    create_resource_access_store,
+    create_security_audit_store,
+    create_share_link_store,
+    create_sso_session_store,
+    create_task_store,
+)
+from backend.tasks.health import arq_queue_health_payload
 
 BACKEND_DIR = Path(__file__).resolve().parent
 
@@ -564,7 +615,7 @@ load_dotenv()
 
 _log_format = configure_logging()
 logger = logging.getLogger(__name__)
-logger.info("鏃ュ織鏍煎紡: %s", _log_format)
+logger.info("日志格式: %s", _log_format)
 
 _app_config_store = create_app_config_store()
 MCP_RUNTIME_HEALTH_HISTORY_CONFIG_KEY = (
@@ -982,7 +1033,7 @@ def _active_vector_store_id() -> str | None:
     return vector_store_path
 
 
-def _effective_vector_store_path(candidate: Optional[str] = None) -> str:
+def _effective_vector_store_path(candidate: str | None = None) -> str:
     raw = str(candidate or "").strip()
     return _effective_vector_store_path_impl(
         candidate,
@@ -1180,11 +1231,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-# Pydantic 璇锋眰/鍝嶅簲妯″瀷
+# Pydantic 请求/响应模型
 # 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 # 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-# 寮傛浠诲姟鐘舵€佹満
+# 异步任务状态机
 # 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 
@@ -1212,7 +1263,7 @@ async def _create_inline_task_record(
     task_type: str,
     params: dict[str, Any],
     *,
-    session_id: Optional[str] = None,
+    session_id: str | None = None,
     progress: int = 10,
 ) -> TaskRecord:
     return await task_runtime._create_inline_task_record(
@@ -1228,9 +1279,9 @@ async def _set_inline_task_state(
     record: TaskRecord,
     *,
     status: TaskStatus,
-    progress: Optional[int] = None,
-    result: Optional[str] = None,
-    error: Optional[str] = None,
+    progress: int | None = None,
+    result: str | None = None,
+    error: str | None = None,
 ) -> TaskRecord:
     return await task_runtime._set_inline_task_state(
         _task_runtime_context(),
@@ -1294,10 +1345,10 @@ _task_store_init_lock = threading.Lock()
 
 
 # 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-# 鍐呴儴宸ュ叿鍑芥暟
+# 内部工具函数
 # 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
-# 缂撳瓨宸叉瀯寤虹殑 agent 瀹炰緥锛宬ey = (provider, model, base_url, api_key, temperature, agent_mode)
+# 缓存已构建的 agent 实例，key = (provider, model, base_url, api_key, temperature, agent_mode)
 _agent_cache: dict[str, Any] = {}
 _agent_cache_lock = asyncio.Lock()
 
@@ -1327,8 +1378,8 @@ def _session_summary_runtime_context():
 
 
 def _resolve_summary_model_config(
-    session_id: str, preferred_model_config: Optional[dict[str, Any]] = None
-) -> Optional[ModelConfig]:
+    session_id: str, preferred_model_config: dict[str, Any] | None = None
+) -> ModelConfig | None:
     return session_summary_runtime._resolve_summary_model_config(
         _session_summary_runtime_context(), session_id, preferred_model_config
     )
@@ -1336,12 +1387,12 @@ def _resolve_summary_model_config(
 
 async def _get_or_build_agent(
     mc: ModelConfig,
-    system_prompt: Optional[str] = None,
+    system_prompt: str | None = None,
     web_search_enabled: bool = True,
     knowledge_base_enabled: bool = True,
-    vector_store_path: Optional[str] = None,
-    dashboard_template: Optional[dict[str, Any]] = None,
-    enabled_mcp_servers: Optional[list[str]] = None,
+    vector_store_path: str | None = None,
+    dashboard_template: dict[str, Any] | None = None,
+    enabled_mcp_servers: list[str] | None = None,
 ):
     """????????? Agent?"""
     from backend.services.agent_core import build_agent
@@ -1404,10 +1455,10 @@ async def _invoke_agent_stream(
     session_id: str,
     web_search_enabled: bool,
     knowledge_base_enabled: bool,
-    system_prompt: Optional[str] = None,
-    vector_store_path: Optional[str] = None,
-    dashboard_template: Optional[dict[str, Any]] = None,
-    enabled_mcp_servers: Optional[list[str]] = None,
+    system_prompt: str | None = None,
+    vector_store_path: str | None = None,
+    dashboard_template: dict[str, Any] | None = None,
+    enabled_mcp_servers: list[str] | None = None,
     persist_history: bool = True,
     persist_user_history: bool = True,
     persist_ai_history: bool = True,
@@ -1415,8 +1466,8 @@ async def _invoke_agent_stream(
     exclude_ai_answer_group_id: str = "",
     answer_group_id: str = "",
     raw_user_message: str = "",
-    raw_images: Optional[list[dict[str, Any]]] = None,
-    raw_files: Optional[list[dict[str, Any]]] = None,
+    raw_images: list[dict[str, Any]] | None = None,
+    raw_files: list[dict[str, Any]] | None = None,
     omit_history: bool = False,
     auto_summary_trigger: bool = False,
 ) -> AsyncGenerator[str, None]:
@@ -1541,7 +1592,7 @@ async def _invoke_agent_stream(
                     token_usage=dict(result.get("token_usage") or {}),
                 )
 
-        # 瀹屾垚淇″彿
+        # 完成信号
         if dashboard_task_record is not None:
             final_answer = "".join(answer_parts)
             await finalize_dashboard_task(

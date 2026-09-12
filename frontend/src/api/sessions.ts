@@ -236,7 +236,7 @@ export async function createSession(
   }
   return {
     session_id: data.session_id,
-    title: typeof data.title === 'string' && data.title.trim() ? data.title : '鏂板缓瀵硅瘽',
+    title: typeof data.title === 'string' && data.title.trim() ? data.title : '新建对话',
     workspace_id:
       typeof data.workspace_id === 'string' && data.workspace_id.trim()
         ? data.workspace_id.trim()

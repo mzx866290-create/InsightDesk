@@ -4,9 +4,9 @@ import hashlib
 import json
 import re
 import time
+from collections.abc import Callable
 from html import escape
-from typing import Any, Callable
-
+from typing import Any
 
 _SHARED_SLIDE_TYPE_LABELS = {
     "cover": "Cover",
@@ -333,7 +333,7 @@ def _score_answer_candidate(
         strengths.append("Structured response format")
 
     if re.search(
-        r"(鎬荤粨|缁撹|寤鸿|涓嬩竴姝椋庨櫓|鎺ㄨ崘|summary|conclusion|recommend)",
+        r"(总结|结论|建议|下一步|风险|推荐|summary|conclusion|recommend)",
         content,
         re.IGNORECASE,
     ):
@@ -1133,17 +1133,17 @@ def build_session_messages_payload(session_id: str) -> dict[str, Any]:
 def render_shared_session_html(payload: dict[str, Any], share_url: str) -> str:
     session = dict(payload.get("session") or {})
     messages = list(payload.get("messages") or [])
-    title = str(session.get("title") or "鍏变韩浼氳瘽").strip() or "鍏变韩浼氳瘽"
+    title = str(session.get("title") or "共享会话").strip() or "共享会话"
     updated_at = float(session.get("updated_at") or 0)
     updated_label = (
         time.strftime("%Y-%m-%d %H:%M", time.localtime(updated_at))
         if updated_at > 0
-        else "鏈煡"
+            else "未知"
     )
 
     message_cards: list[str] = []
     for message in messages:
-        role = "鐢ㄦ埛" if message.get("role") == "user" else "鍔╂墜"
+        role = "用户" if message.get("role") == "user" else "助手"
         role_class = "user" if message.get("role") == "user" else "assistant"
         content = escape(str(message.get("content") or "")).replace("\n", "<br>")
 
@@ -1152,7 +1152,7 @@ def render_shared_session_html(payload: dict[str, Any], share_url: str) -> str:
         if images:
             image_html = "".join(
                 f'<img src="{escape(str(image.get("data_url") or ""))}" '
-                f'alt="{escape(str(image.get("name") or "鍥剧墖"))}" loading="lazy" />'
+                f'alt="{escape(str(image.get("name") or "图片"))}" loading="lazy" />'
                 for image in images
                 if str(image.get("data_url") or "").strip()
             )
@@ -1164,7 +1164,7 @@ def render_shared_session_html(payload: dict[str, Any], share_url: str) -> str:
         if files:
             file_html = "".join(
                 "<li>"
-                f"<strong>{escape(str(file.get('name') or '闄勪欢'))}</strong>"
+                f"<strong>{escape(str(file.get('name') or '附件'))}</strong>"
                 f"<span>{escape(_clip_text(file.get('extracted_text') or '', 180))}</span>"
                 "</li>"
                 for file in files
@@ -1176,7 +1176,7 @@ def render_shared_session_html(payload: dict[str, Any], share_url: str) -> str:
         if sources:
             source_html = "".join(
                 "<li>"
-                f"<strong>{escape(str(source.get('title') or '鏉ユ簮'))}</strong>"
+                f"<strong>{escape(str(source.get('title') or '来源'))}</strong>"
                 f"<span>{escape(_clip_text(source.get('snippet') or '', 180))}</span>"
                 "</li>"
                 for source in sources
@@ -1190,7 +1190,7 @@ def render_shared_session_html(payload: dict[str, Any], share_url: str) -> str:
                 <span class="role">{role}</span>
                 <span class="meta">{escape(str(message.get('model_id') or ''))}</span>
               </div>
-              <div class="message-body">{content or '<span class="muted">锛堢┖鍐呭锛?/span>'}</div>
+                <div class="message-body">{content or '<span class="muted">（空内容）</span>'}</div>
               {image_html}
               {file_html}
               {source_html}
@@ -1198,7 +1198,7 @@ def render_shared_session_html(payload: dict[str, Any], share_url: str) -> str:
             """
         )
 
-    timeline = "\n".join(message_cards) or '<p class="empty">鏆傛棤娑堟伅鍐呭銆?/p>'
+        timeline = "\n".join(message_cards) or '<p class="empty">暂无消息内容。</p>'
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -1250,7 +1250,7 @@ def render_shared_session_html(payload: dict[str, Any], share_url: str) -> str:
 <body>
   <main class="page">
     <section class="hero">
-      <div class="eyebrow">鍏变韩浼氳瘽</div>
+      <div class="eyebrow">共享会话</div>
       <h1>{escape(title)}</h1>
       <div class="summary">
         <span>{len(messages)} messages</span>
