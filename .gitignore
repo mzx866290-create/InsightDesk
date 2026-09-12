@@ -64,6 +64,9 @@ runtime/searxng/
 .vscode/
 .idea/
 .claude/
+.zcode/
+.claudian/
+.obsidian/
 *.swp
 *.swo
 *~
@@ -86,6 +89,12 @@ tmp_export_test.pptx
 frontend/node_modules/
 frontend/dist/
 frontend/test-results/
+frontend/eslint-report.json
+frontend/eslint-live.json
+eslint-report.json
+eslint-live.json
+frontend/playwright-report/
+frontend/blob-report/
 
 # Model cache
 .cache/
