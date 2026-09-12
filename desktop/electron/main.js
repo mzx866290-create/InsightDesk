@@ -65,7 +65,6 @@ function resolveBackendCommand() {
   const packaged = path.join(
     process.resourcesPath || '',
     'backend',
-    'insightdesk-backend',
     'insightdesk-backend.exe',
   );
   if (fs.existsSync(packaged)) {
