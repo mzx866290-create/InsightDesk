@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable
 
 from backend.agent.agents.researcher import ResearchAgentConfig
 from backend.agent import resume_orchestrator, run_orchestrator
+from backend.core.workflow_events import publish_workflow_event
 from backend.delivery_templates import validate_delivery_template_selection
 from backend.helpers.deck_report_helpers import (
     apply_deck_template_metadata,
@@ -676,6 +677,17 @@ async def run_multi_agent_workflow_task(
 
     await set_progress(20)
 
+    def _publish_workflow_event(event: dict) -> None:
+        publish_workflow_event(str(record.task_id or ""), event)
+
+    _publish_workflow_event(
+        {
+            "type": "workflow_started",
+            "user_request": user_request[:200],
+            "resumed": workflow_state is not None,
+        }
+    )
+
     params = dict(record.params or {})
     decision = str(params.pop("approval_decision", "") or "").strip().lower()
     reviewer = str(params.pop("approval_reviewer", "") or "").strip()
@@ -770,6 +782,7 @@ async def run_multi_agent_workflow_task(
             llm=llm,
             research_config=research_config,
             integrator_connectors=integrator_connectors,
+            event_sink=_publish_workflow_event,
         )
     else:
         result_state = await run_orchestrator(
@@ -779,7 +792,16 @@ async def run_multi_agent_workflow_task(
             llm=llm,
             research_config=research_config,
             integrator_connectors=integrator_connectors,
+            event_sink=_publish_workflow_event,
         )
+
+    _publish_workflow_event(
+        {
+            "type": "workflow_completed",
+            "status": str(result_state.get("status") or "").strip(),
+            "final_output": str(result_state.get("final_output") or "")[:500],
+        }
+    )
 
     await set_progress(80)
 

@@ -1021,6 +1021,10 @@ _REMOTE_MANAGEMENT_RATE_LIMIT_PATH_PREFIXES = (
 )
 
 app = FastAPI(title="InsightDesk API", version="2.0.0")
+
+from backend.routes.workflow_event_routes import router as workflow_event_router
+
+app.include_router(workflow_event_router)
 _deck_store = create_deck_store()
 _artifact_store = create_artifact_store()
 _share_link_store = create_share_link_store()

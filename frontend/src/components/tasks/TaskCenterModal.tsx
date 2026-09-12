@@ -29,6 +29,7 @@ import type {
   TaskStatus,
 } from '../../api/client'
 import { useChatStore } from '../../stores/chatStore'
+import { useTaskWorkflowEvents } from '../../hooks/useTaskWorkflowEvents'
 import { createAndTrackTask, createAndTrackWorkflowTask, useTaskStore } from '../../stores/taskStore'
 import { formatResearchModeLabel, getResearchTaskMeta } from '../../utils/researchTask'
 import { DeckEditorModal } from '../reports/DeckEditorModal'
@@ -303,6 +304,16 @@ export const TaskCenterModal: React.FC<TaskCenterModalProps> = ({ open, onClose 
   const approvalTaskCount = tasks.filter(
     (task) => task.task_type === 'multi_agent_workflow' && task.status === 'waiting_approval',
   ).length
+
+  const runningWorkflowTaskId = useMemo(() => {
+    const running = tasks.find(
+      (task) =>
+        task.task_type === 'multi_agent_workflow' &&
+        (task.status === 'pending' || task.status === 'running'),
+    )
+    return running?.task_id ?? null
+  }, [tasks])
+  const { lastEvent: workflowEvent } = useTaskWorkflowEvents(runningWorkflowTaskId)
 
   const filteredTasks = useMemo(() => {
     if (taskFilter === 'all') return tasks
@@ -612,6 +623,13 @@ export const TaskCenterModal: React.FC<TaskCenterModalProps> = ({ open, onClose 
               <p className="text-xs text-text-secondary">
                 {activeTaskCount} active task(s), {approvalTaskCount} approval gate(s), showing {filteredTasks.length} of the latest {Math.min(tasks.length, 30)} record(s).
               </p>
+              {runningWorkflowTaskId && workflowEvent && (workflowEvent.type === 'step_started' || workflowEvent.type === 'step_completed' || workflowEvent.type === 'plan_built') && (
+                <p className="text-xs text-accent-blue" data-testid="workflow-live-step">
+                  {workflowEvent.type === 'step_started' && `当前步骤: ${workflowEvent.agent ?? ''} (${workflowEvent.step_id ?? ''})`}
+                  {workflowEvent.type === 'step_completed' && `步骤完成: ${workflowEvent.step_id ?? ''}`}
+                  {workflowEvent.type === 'plan_built' && `计划生成: ${(workflowEvent.plan as Array<unknown> | undefined)?.length ?? 0} 个步骤`}
+                </p>
+              )}
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {([

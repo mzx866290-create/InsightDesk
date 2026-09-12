@@ -764,8 +764,14 @@ def build_orchestrator_graph(
     research_config: ResearchAgentConfig | None = None,
     model_compare_config: ModelCompareAgentConfig | None = None,
     integrator_connectors: tuple[Any, ...] | list[Any] | None = None,
+    event_sink: Any | None = None,
 ):
-    """Build the multi-agent orchestration graph."""
+    """Build the multi-agent orchestration graph.
+
+    ``event_sink`` (when provided) receives plain dict events for every step
+    lifecycle transition -- step_started / step_completed / step_failed /
+    plan_built / approval_required -- for step-level SSE push.
+    """
     agent_registry = registry or (
         create_runtime_agent_registry(
             llm=llm,
@@ -870,6 +876,8 @@ def build_orchestrator_graph(
         next_state["approval_step_id"] = ""
         next_state["approval_batch"] = {}
 
+        if callable(event_sink):
+            event_sink({"type": "plan_built", "plan": _copy_plan(next_state.get("plan", []))})
         if len(executable_indexes) > 1:
             next_state["next_agent"] = "parallel_group"
             next_state["parallel_step_indexes"] = executable_indexes
@@ -911,6 +919,16 @@ def build_orchestrator_graph(
             "current_step": step_index,
         }
         started_at = time.perf_counter()
+        if callable(event_sink):
+            event_sink(
+                {
+                    "type": "step_started",
+                    "step_id": task["id"],
+                    "step_index": step_index,
+                    "agent": expected_agent,
+                    "task_type": task["type"],
+                }
+            )
         async with trace_span("agent.orchestrator.step", span_attributes) as span:
             try:
                 agent = agent_registry.get(expected_agent)
@@ -951,6 +969,16 @@ def build_orchestrator_graph(
                             "estimated_cost_usd": metric["estimated_cost_usd"],
                         }
                     )
+                    if callable(event_sink):
+                        event_sink(
+                            {
+                                "type": "step_failed",
+                                "step_id": task["id"],
+                                "step_index": step_index,
+                                "agent": expected_agent,
+                                "error": error,
+                            }
+                        )
                     outcome = {
                         "index": step_index,
                         "task_id": task["id"],
@@ -969,6 +997,16 @@ def build_orchestrator_graph(
                     trace_id=str(span.trace_id or ""),
                     span_id=str(span.span_id or ""),
                 )
+                if callable(event_sink):
+                    event_sink(
+                        {
+                            "type": "step_completed",
+                            "step_id": task["id"],
+                            "step_index": step_index,
+                            "agent": expected_agent,
+                            "duration_ms": metric["duration_ms"],
+                        }
+                    )
                 span.set_attributes(
                     {
                         "step_status": "completed",
@@ -1107,6 +1145,14 @@ def build_orchestrator_graph(
         next_state = _copy_state(state)
         next_state["status"] = "waiting_approval"
         next_state["needs_human_approval"] = True
+        if callable(event_sink):
+            event_sink(
+                {
+                    "type": "approval_required",
+                    "step_id": str(next_state.get("approval_step_id") or ""),
+                    "reason": str(next_state.get("approval_reason") or ""),
+                }
+            )
         return next_state
 
     def after_route(state: OrchestratorState) -> str:
@@ -1187,6 +1233,7 @@ async def run_orchestrator(
     research_config: ResearchAgentConfig | None = None,
     model_compare_config: ModelCompareAgentConfig | None = None,
     integrator_connectors: tuple[Any, ...] | list[Any] | None = None,
+    event_sink: Any | None = None,
 ) -> OrchestratorState:
     """Convenience helper for one-shot orchestrator execution."""
     normalized_requested_tasks = [
@@ -1227,6 +1274,7 @@ async def run_orchestrator(
             research_config=research_config,
             model_compare_config=model_compare_config,
             integrator_connectors=integrator_connectors,
+            event_sink=event_sink,
         )
         initial_state: OrchestratorState = {
             "user_request": user_request,
@@ -1270,6 +1318,7 @@ async def resume_orchestrator(
     research_config: ResearchAgentConfig | None = None,
     model_compare_config: ModelCompareAgentConfig | None = None,
     integrator_connectors: tuple[Any, ...] | list[Any] | None = None,
+    event_sink: Any | None = None,
 ) -> OrchestratorState:
     """Resume an existing orchestrator state, optionally after a human decision."""
     async with trace_span(
@@ -1297,6 +1346,7 @@ async def resume_orchestrator(
             research_config=research_config,
             model_compare_config=model_compare_config,
             integrator_connectors=integrator_connectors,
+            event_sink=event_sink,
         )
         result = await graph.ainvoke(resume_state)
         span.set_attributes(
