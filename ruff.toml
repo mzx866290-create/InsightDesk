@@ -1,0 +1,31 @@
+target-version = "py312"
+line-length = 120
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific rules
+]
+ignore = [
+    "E501",    # line too long (let formatter handle)
+    "RUF001",  # ambiguous unicode in strings (Chinese text is intentional)
+    "RUF002",  # ambiguous unicode in docstrings
+    "RUF003",  # ambiguous unicode in comments
+    "B008",    # function-call-in-default-argument (FastAPI Depends/Query pattern)
+    "B905",    # zip-without-explicit-strict (changes runtime behavior on mismatch)
+    "UP042",   # replace-str-enum (may affect serialization in existing code)
+    "UP047",   # non-pep695-generic-function (cosmetic Python 3.12 syntax)
+    "E402",    # module-import-not-at-top (test files need sys.path before imports)
+]
+
+[lint.per-file-ignores]
+"tests/**" = ["RUF012", "RUF043", "B904", "F811", "SIM102"]
+
+[lint.isort]
+known-first-party = ["backend"]
