@@ -33,6 +33,19 @@ from backend.agent.sources import (
 )
 
 
+def _streamed_chunk_text(content: Any) -> str:
+    """Extract visible text from an on_chat_model_stream chunk."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return "".join(parts)
+    return ""
+
+
 class _BaseAgentWrapper:
     def __init__(
         self,
@@ -190,6 +203,19 @@ class _BaseAgentWrapper:
         except Exception:
             cancel_llm_usage_capture(usage_token)
             raise
+        async for item in self._stream_finalized_result(
+            user_input, config, invocation, result, token_usage
+        ):
+            yield item
+
+    async def _stream_finalized_result(
+        self,
+        user_input: Any,
+        config: dict | None,
+        invocation: Any,
+        result: dict[str, Any],
+        token_usage: dict[str, Any],
+    ):
         result = _attach_configured_task_meta(result, config)
         result = _finalize_agent_result(
             result,
@@ -472,5 +498,127 @@ class FunctionCallingAgentWrapper(_BaseAgentWrapper):
                 yield item
             return
 
-        async for item in self._stream_finalized_run_once(user_input, config, invocation):
+        if _has_image_input(user_input):
+            async for item in self._stream_finalized_run_once(user_input, config, invocation):
+                yield item
+            return
+
+        dashboard_result = await self._generate_dashboard_result(user_input)
+        if dashboard_result:
+            usage_token = start_llm_usage_capture()
+            token_usage = finish_llm_usage_capture(
+                usage_token,
+                panel_id=invocation.panel_id,
+                model_id=invocation.model_id,
+            )
+            async for item in self._stream_finalized_result(
+                user_input, config, invocation, dashboard_result, token_usage
+            ):
+                yield item
+            return
+
+        async for item in self._astream_agent_executor_native(
+            invocation, user_input, config, chat_history
+        ):
             yield item
+
+    async def _astream_agent_executor_native(
+        self,
+        invocation: Any,
+        user_input: Any,
+        config: dict | None,
+        chat_history: list[Any],
+    ):
+        """Stream the tool-calling agent's answer tokens as they are produced."""
+        usage_token = start_llm_usage_capture()
+        streamed_parts: list[str] = []
+        tool_observations: list[str] = []
+        final_result: Any = None
+        try:
+            async for event in self.agent_executor.astream_events(
+                {"input": user_input, "chat_history": chat_history}
+            ):
+                kind = event.get("event")
+                if kind == "on_chat_model_stream":
+                    chunk = (event.get("data") or {}).get("chunk")
+                    if getattr(chunk, "tool_call_chunks", None):
+                        continue
+                    text = _streamed_chunk_text(getattr(chunk, "content", ""))
+                    if text:
+                        streamed_parts.append(text)
+                        yield text
+                elif kind == "on_tool_end":
+                    output = (event.get("data") or {}).get("output")
+                    if isinstance(output, dict):
+                        output = output.get("output") or ""
+                    if output is not None:
+                        tool_observations.append(str(output))
+                elif kind == "on_chain_end" and event.get("name") == "AgentExecutor":
+                    final_result = (event.get("data") or {}).get("output")
+        except Exception:
+            cancel_llm_usage_capture(usage_token)
+            raise
+        token_usage = finish_llm_usage_capture(
+            usage_token,
+            panel_id=invocation.panel_id,
+            model_id=invocation.model_id,
+        )
+
+        if isinstance(final_result, dict):
+            output = str(final_result.get("output", "") or "")
+            sources = _extract_sources_from_intermediate_steps(
+                final_result.get("intermediate_steps", [])
+            )
+        else:
+            output = "".join(streamed_parts)
+            sources = []
+        if not sources:
+            sources = _extract_sources_from_intermediate_steps(
+                [(None, observation) for observation in tool_observations]
+            )
+        response_mode = "agent" if sources or tool_observations else "plain_text"
+        result: dict[str, Any] = {
+            "output": output,
+            "sources": sources,
+            "response_mode": response_mode,
+        }
+        result = _attach_configured_task_meta(result, config)
+        result = _finalize_agent_result(
+            result,
+            user_input=user_input,
+            raw_files=invocation.raw_files,
+            raw_images=invocation.raw_images,
+            answer_group_id=invocation.answer_group_id,
+        )
+        result["token_usage"] = token_usage
+        output = result.get("output", "")
+        if not token_usage.get("call_count") and str(output or "").strip():
+            token_usage = estimate_llm_answer_token_usage(
+                user_input,
+                output,
+                panel_id=invocation.panel_id,
+                model_id=invocation.model_id,
+            )
+            result["token_usage"] = token_usage
+
+        final_sources = result.get("sources", [])
+        if final_sources:
+            yield {"type": "sources", "sources": final_sources}
+
+        if not streamed_parts and str(output or "").strip():
+            # native token events were unavailable; fall back to paced chunks
+            for i in range(0, len(output), 20):
+                yield output[i : i + 20]
+                await asyncio.sleep(0.01)
+
+        _persist_output_history(
+            invocation,
+            user_input,
+            output,
+            sources=final_sources,
+            workflow_nodes=result.get("workflow_nodes", []),
+            task_id=str(result.get("task_id", "") or ""),
+            task_type=str(result.get("task_type", "") or ""),
+            token_usage=token_usage,
+        )
+        yield {"type": "token_usage", "token_usage": token_usage}
