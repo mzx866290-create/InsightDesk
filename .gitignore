@@ -115,3 +115,9 @@ docs/SEARCH_MAX_UPGRADE_PLAN.md
 f02632b6-f59a-4e49-b810-4870b5025de3.png
 项目介绍.md
 项目模块技术栈总结.md
+
+# Desktop packaging artifacts
+desktop/pyinstaller/dist/
+desktop/pyinstaller/build/
+desktop/electron/node_modules/
+desktop/electron/dist/

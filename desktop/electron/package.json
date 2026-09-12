@@ -1,0 +1,45 @@
+{
+  "name": "insightdesk-desktop",
+  "private": true,
+  "version": "2.0.0",
+  "description": "InsightDesk desktop shell",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.insightdesk.desktop",
+    "productName": "InsightDesk",
+    "files": [
+      "main.js",
+      "preload.js"
+    ],
+    "extraResources": [
+      {
+        "from": "../pyinstaller/dist/insightdesk-backend",
+        "to": "backend",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "InsightDesk-Setup-${version}.${ext}"
+    }
+  }
+}
