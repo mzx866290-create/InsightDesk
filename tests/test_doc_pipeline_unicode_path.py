@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import backend.doc_pipeline as doc_pipeline
+import backend.doc_pipeline_store as doc_pipeline_store
 from backend.doc_pipeline import DocPipeline
 
 
@@ -26,8 +27,8 @@ def test_save_vectorstore_uses_ascii_staging_dir_for_unicode_windows_path(
     pipeline = DocPipeline(vector_store_path=str(unicode_target))
     pipeline.vectorstore = _FakeVectorStore()
 
-    monkeypatch.setattr(doc_pipeline.sys, "platform", "win32")
-    monkeypatch.setattr(doc_pipeline.tempfile, "gettempdir", lambda: str(ascii_temp))
+    monkeypatch.setattr(doc_pipeline_store.sys, "platform", "win32")
+    monkeypatch.setattr(doc_pipeline_store.tempfile, "gettempdir", lambda: str(ascii_temp))
 
     pipeline._save_vectorstore_local()
 
@@ -55,14 +56,14 @@ def test_load_vectorstore_uses_ascii_staging_dir_for_unicode_windows_path(
         seen["allow"] = allow_dangerous_deserialization
         return "loaded-store"
 
-    monkeypatch.setattr(doc_pipeline.sys, "platform", "win32")
-    monkeypatch.setattr(doc_pipeline.tempfile, "gettempdir", lambda: str(ascii_temp))
+    monkeypatch.setattr(doc_pipeline_store.sys, "platform", "win32")
+    monkeypatch.setattr(doc_pipeline_store.tempfile, "gettempdir", lambda: str(ascii_temp))
     monkeypatch.setattr(
         DocPipeline,
         "embeddings",
         property(lambda self: "fake-embeddings"),
     )
-    monkeypatch.setattr(doc_pipeline.FAISS, "load_local", fake_load_local)
+    monkeypatch.setattr(doc_pipeline_store.FAISS, "load_local", fake_load_local)
 
     pipeline = DocPipeline(vector_store_path=str(unicode_target))
 

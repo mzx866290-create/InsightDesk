@@ -1,3 +1,4 @@
+import time
 from langchain_core.documents import Document
 
 import backend.doc_pipeline as doc_pipeline
@@ -153,7 +154,7 @@ def test_format_debug_entry_exposes_feedback_fields():
 
 def test_prepare_documents_applies_governance_metadata_and_dedupes():
     pipeline = DocPipeline(device="cpu")
-    expired_ts = int(doc_pipeline.time.time()) - 60
+    expired_ts = int(time.time()) - 60
 
     prepared = pipeline._prepare_documents_for_index(
         [
