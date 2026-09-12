@@ -3,6 +3,7 @@ import { Sidebar } from './components/layout/Sidebar'
 import { Header } from './components/layout/Header'
 import { ChatArea } from './components/chat/ChatArea'
 import { SettingsModal } from './components/settings/SettingsModal'
+import { ModelProviderModal } from './components/providers/ModelProviderModal'
 import { getBookmarks } from './api/client'
 import { useResolvedTheme } from './hooks/useResolvedTheme'
 import { useChatStore } from './stores/chatStore'
@@ -10,6 +11,8 @@ import { useChatStore } from './stores/chatStore'
 const App: React.FC = () => {
   const settingsOpen = useChatStore((s) => s.settingsOpen)
   const setSettingsOpen = useChatStore((s) => s.setSettingsOpen)
+  const modelProviderOpen = useChatStore((s) => s.modelProviderOpen)
+  const setModelProviderOpen = useChatStore((s) => s.setModelProviderOpen)
   const setBookmarks = useChatStore((s) => s.setBookmarks)
   const language = useChatStore((s) => s.language)
   const { resolvedTheme } = useResolvedTheme()
@@ -55,6 +58,9 @@ const App: React.FC = () => {
 
       {/* Settings modal */}
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+
+      {/* Model provider modal */}
+      <ModelProviderModal open={modelProviderOpen} onClose={() => setModelProviderOpen(false)} />
     </div>
   )
 }

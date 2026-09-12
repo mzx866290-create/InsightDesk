@@ -14,6 +14,10 @@ from backend.stores.chat_normalization import (
 )
 from backend.stores.chat_serialization import parse_json_object as _parse_json_object
 from backend.stores.pg_base import PostgresStoreMixin
+from backend.stores.pg_chat_schema import (
+    init_postgres_session_memory_schema,
+    init_postgres_session_panels_schema,
+)
 
 
 class PostgresSessionMemoryStore(PostgresStoreMixin):
@@ -32,57 +36,8 @@ class PostgresSessionMemoryStore(PostgresStoreMixin):
     def _init_db(self) -> None:
         with self._connect() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS session_memory (
-                        id TEXT PRIMARY KEY,
-                        session_id TEXT NOT NULL,
-                        kind TEXT NOT NULL,
-                        content TEXT NOT NULL,
-                        meta_json TEXT DEFAULT '{}',
-                        created_at DOUBLE PRECISION NOT NULL,
-                        updated_at DOUBLE PRECISION NOT NULL
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_session_memory_session
-                    ON session_memory(session_id)
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_session_memory_session_updated
-                    ON session_memory(session_id, updated_at DESC)
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS session_panels (
-                        session_id TEXT NOT NULL,
-                        panel_id TEXT NOT NULL,
-                        provider TEXT DEFAULT 'ollama',
-                        connection_type TEXT DEFAULT '',
-                        model TEXT DEFAULT '',
-                        base_url TEXT DEFAULT '',
-                        api_key_ref TEXT DEFAULT '',
-                        temperature DOUBLE PRECISION DEFAULT 0.3,
-                        agent_mode TEXT DEFAULT 'auto',
-                        display_order INTEGER DEFAULT 0,
-                        is_primary INTEGER DEFAULT 0,
-                        created_at DOUBLE PRECISION NOT NULL,
-                        updated_at DOUBLE PRECISION NOT NULL,
-                        PRIMARY KEY (session_id, panel_id)
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_session_panels_session
-                    ON session_panels(session_id, display_order)
-                    """
-                )
+                init_postgres_session_memory_schema(cursor)
+                init_postgres_session_panels_schema(cursor)
             conn.commit()
 
     def _session_exists(self, cursor: Any, session_id: str) -> bool:

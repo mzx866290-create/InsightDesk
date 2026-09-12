@@ -45,7 +45,8 @@ from backend.helpers.security_helpers import (
 
 SECURITY_RUNTIME_CONTEXT_ATTRIBUTES = (
     "ALLOW_REMOTE_CLIENTS", "AUTH_ROLE_RANKS", "CHAT_ATTACHMENT_PREVIEW_CHARS", "CHAT_FILE_MAX_BYTES",
-    "CHAT_FILE_MAX_CHARS_PER_FILE", "CHAT_FILE_MAX_COUNT", "CHAT_FILE_MAX_TOTAL_CHARS", "DEFAULT_AUTH_ROLE",
+    "CHAT_FILE_MAX_CHARS_PER_FILE", "CHAT_FILE_MAX_COUNT", "CHAT_FILE_MAX_TOTAL_CHARS", "CHAT_IMAGE_MAX_BYTES",
+    "CHAT_IMAGE_MAX_COUNT", "CHAT_IMAGE_MAX_TOTAL_BYTES", "DEFAULT_AUTH_ROLE",
     "DEFAULT_AUTH_USER_IDS", "DEFAULT_SHARE_LINK_SECRET", "DOCUMENT_UPLOAD_MAX_COUNT", "DOCUMENT_UPLOAD_MAX_FILE_BYTES",
     "DOCUMENT_UPLOAD_MAX_TOTAL_BYTES", "MIN_AUTH_TOKEN_RECOMMENDED_LENGTH", "MIN_SHARE_LINK_SECRET_LENGTH",
     "REMOTE_MANAGEMENT_RATE_LIMIT_ENABLED", "REMOTE_MANAGEMENT_RATE_LIMIT_MAX_REQUESTS", "REMOTE_MANAGEMENT_RATE_LIMIT_MAX_REQUESTS_SOURCE", "REMOTE_MANAGEMENT_RATE_LIMIT_WINDOW_SECONDS",
@@ -94,7 +95,10 @@ def build_security_runtime_context(source: Any) -> SecurityRuntimeContext:
 
 
 def _request_is_local(ctx, request: Request) -> bool:
-    return env_runtime.is_loopback_host(request_runtime.request_client_ip(request))
+    # Local bypass is only granted for a genuine loopback/Unix-socket peer.
+    # Forwarded headers never widen this: request_runtime honors the same
+    # loopback semantics env_runtime.is_loopback_host uses for direct peers.
+    return request_runtime.request_is_local_origin(request)
 
 
 def _current_admin_api_token(ctx) -> str:
@@ -630,6 +634,11 @@ def _security_status_payload(ctx) -> dict[str, Any]:
             "max_chars_per_file": int(ctx.CHAT_FILE_MAX_CHARS_PER_FILE),
             "max_total_chars": int(ctx.CHAT_FILE_MAX_TOTAL_CHARS),
             "preview_chars": int(ctx.CHAT_ATTACHMENT_PREVIEW_CHARS),
+        },
+        chat_image_limits={
+            "max_count": int(ctx.CHAT_IMAGE_MAX_COUNT),
+            "max_bytes": int(ctx.CHAT_IMAGE_MAX_BYTES),
+            "max_total_bytes": int(ctx.CHAT_IMAGE_MAX_TOTAL_BYTES),
         },
         document_upload_limits={
             "max_count": int(ctx.DOCUMENT_UPLOAD_MAX_COUNT),

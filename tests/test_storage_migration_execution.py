@@ -7,6 +7,8 @@ import sqlite3
 from deploy.validate_storage_migration import (
     APP_METADATA_TABLES,
     POSTGRES_ADAPTER_TABLES,
+    POSTGRES_COPY_COLUMNS,
+    POSTGRES_TABLE_DDL,
     build_migration_report,
     emit_evidence_report,
 )
@@ -338,6 +340,11 @@ def test_storage_migration_postgres_coverage_includes_content_and_acl_tables(tmp
     assert len(report["coverage"]["pending_postgres_adapter_tables"]) == (
         len(APP_METADATA_TABLES) - len(POSTGRES_ADAPTER_TABLES)
     )
+
+
+def test_storage_migration_preserves_message_token_usage_column():
+    assert "token_usage_json" in POSTGRES_COPY_COLUMNS["messages"]
+    assert "token_usage_json TEXT DEFAULT ''" in POSTGRES_TABLE_DDL["messages"]
 
 
 def test_storage_migration_report_includes_qdrant_backfill_plan(tmp_path):

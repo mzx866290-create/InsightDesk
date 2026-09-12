@@ -238,6 +238,15 @@ function Read-DotEnvValue {
     return $null
 }
 
+function Test-EnabledValue {
+    param([AllowNull()][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return $false
+    }
+    return $Value.Trim().ToLowerInvariant() -in @("1", "true", "yes", "on")
+}
+
 function Test-HttpReady {
     param(
         [string]$Url,
@@ -483,6 +492,53 @@ if ($env:FRONTEND_PORT) {
     $frontendPort = [int]$env:FRONTEND_PORT
 }
 
+$allowRemoteClients = Test-EnabledValue -Value $env:ALLOW_REMOTE_CLIENTS
+$backendBindHost = if ($allowRemoteClients) { "0.0.0.0" } else { "127.0.0.1" }
+$frontendBindHost = if ($allowRemoteClients) { "0.0.0.0" } else { "127.0.0.1" }
+$lanIp = if ($allowRemoteClients) { Get-LanIpAddress } else { $null }
+
+$defaultCorsOrigins = @(
+    "http://127.0.0.1:$frontendPort",
+    "http://localhost:$frontendPort",
+    "http://127.0.0.1:$backendPort",
+    "http://localhost:$backendPort"
+)
+if ($allowRemoteClients) {
+    if ($lanIp) {
+        $defaultCorsOrigins += @(
+            "http://$lanIp`:$frontendPort",
+            "http://$lanIp`:$backendPort"
+        )
+    }
+    if ($env:COMPUTERNAME) {
+        $defaultCorsOrigins += @(
+            "http://$($env:COMPUTERNAME):$frontendPort",
+            "http://$($env:COMPUTERNAME):$backendPort"
+        )
+    }
+}
+
+$corsAllowOrigins = $env:CORS_ALLOW_ORIGINS
+if ([string]::IsNullOrWhiteSpace($corsAllowOrigins)) {
+    $corsAllowOrigins = ($defaultCorsOrigins | Select-Object -Unique) -join ","
+}
+
+# Normalize and export the effective values so both child service processes
+# inherit the same security mode without embedding user input in cmd.exe text.
+$env:ALLOW_REMOTE_CLIENTS = if ($allowRemoteClients) { "true" } else { "false" }
+$env:CORS_ALLOW_ORIGINS = $corsAllowOrigins
+
+if ($allowRemoteClients) {
+    Write-Warn "Remote access is enabled explicitly. The backend and frontend will listen on all interfaces."
+    Write-Warn "Configure ADMIN_API_TOKEN or APP_AUTH_TOKENS_JSON and restrict Windows Firewall to trusted networks."
+    if (-not $lanIp) {
+        Write-Warn "No LAN address was detected. Set CORS_ALLOW_ORIGINS to the exact trusted frontend origin."
+    }
+}
+if (($corsAllowOrigins -split "," | ForEach-Object { $_.Trim() }) -contains "*") {
+    Write-Warn "CORS_ALLOW_ORIGINS contains '*'. This is unsafe for remote access; use exact trusted origins."
+}
+
 $backendHealthUrl = "http://127.0.0.1:$backendPort/api/health"
 $frontendUrl = "http://127.0.0.1:$frontendPort"
 
@@ -503,8 +559,8 @@ if ($backendReady -and $frontendReady) {
 
     Write-Section "Start services"
 
-    $backendCommand = "chcp 65001 > nul && cd /d `"$script:ProjectRoot`" && set BACKEND_PORT=$backendPort && set FRONTEND_PORT=$frontendPort && set ALLOW_REMOTE_CLIENTS=true && set CORS_ALLOW_ORIGINS=* && `"$venvPython`" -m uvicorn backend.api_server:app --host 0.0.0.0 --port $backendPort"
-    $frontendCommand = "chcp 65001 > nul && cd /d `"$($script:ProjectRoot)\frontend`" && set BACKEND_PORT=$backendPort && set FRONTEND_PORT=$frontendPort && `"$npmCmd`" run dev -- --host 0.0.0.0 --port $frontendPort"
+    $backendCommand = "chcp 65001 > nul && cd /d `"$script:ProjectRoot`" && set BACKEND_PORT=$backendPort && set FRONTEND_PORT=$frontendPort && `"$venvPython`" -m uvicorn backend.api_server:app --host $backendBindHost --port $backendPort"
+    $frontendCommand = "chcp 65001 > nul && cd /d `"$($script:ProjectRoot)\frontend`" && set BACKEND_PORT=$backendPort && set FRONTEND_PORT=$frontendPort && `"$npmCmd`" run dev -- --host $frontendBindHost --port $frontendPort"
 
     $null = Start-ServiceWindow -Title "AI Backend" -Command $backendCommand
     if (-not (Wait-ForHttpReady -Url $backendHealthUrl -TimeoutSeconds 40)) {
@@ -527,22 +583,23 @@ if ($backendReady -and $frontendReady) {
 
 Write-Section "Available addresses"
 
-$lanIp = Get-LanIpAddress
 Write-Host "Local page : http://localhost:$frontendPort" -ForegroundColor Green
-if ($lanIp) {
+Write-Host "Local API  : http://localhost:$backendPort/docs" -ForegroundColor Green
+if ($allowRemoteClients -and $lanIp) {
     Write-Host "LAN page   : http://$lanIp`:$frontendPort" -ForegroundColor Green
-    Write-Host "Local API  : http://localhost:$backendPort/docs" -ForegroundColor Green
     Write-Host "LAN API    : http://$lanIp`:$backendPort/docs" -ForegroundColor Green
     Write-Host ""
     Write-Warn "If coworkers still cannot open the LAN address, check that both computers are on the same network and allow Windows Firewall access for ports $frontendPort and $backendPort."
-} else {
+} elseif ($allowRemoteClients) {
     Write-Warn "Could not detect a LAN IPv4 address automatically."
+} else {
+    Write-Info "Remote access is disabled. Set ALLOW_REMOTE_CLIENTS=true explicitly to enable LAN access."
 }
 
 try {
     Start-Process "http://localhost:$frontendPort" | Out-Null
-    Write-Ok "Browser opened. Keep the backend and frontend windows running while coworkers are using the system."
+    Write-Ok "Browser opened. Keep the backend and frontend windows running while using the system."
 } catch {
     Write-Warn "Could not open the browser automatically. Please open http://localhost:$frontendPort manually."
-    Write-Ok "Backend and frontend are ready. Keep their windows running while coworkers are using the system."
+    Write-Ok "Backend and frontend are ready. Keep their windows running while using the system."
 }

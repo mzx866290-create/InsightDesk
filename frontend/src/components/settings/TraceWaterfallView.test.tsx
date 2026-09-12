@@ -1,8 +1,10 @@
-import { cleanup, render, screen, within } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, render, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
 
-import type { TraceEvent } from '../../api/client'
-import { TraceWaterfallView } from './TraceWaterfallView'
+import type { TraceEvent } from '../../api/client';
+import { translations } from '../../i18n';
+import { useChatStore } from '../../stores/chatStore';
+import { TraceWaterfallView } from './TraceWaterfallView';
 
 const event = (patch: Partial<TraceEvent>): TraceEvent => ({
   event: 'end',
@@ -16,20 +18,23 @@ const event = (patch: Partial<TraceEvent>): TraceEvent => ({
   error_type: null,
   error_message: null,
   ...patch,
-})
+});
 
 describe('TraceWaterfallView', () => {
   afterEach(() => {
-    cleanup()
-  })
+    cleanup();
+  });
 
   it('renders nothing without events after loading finishes', () => {
-    const { container } = render(<TraceWaterfallView events={[]} loading={false} />)
+    const { container } = render(<TraceWaterfallView events={[]} loading={false} />);
 
-    expect(container.firstChild).toBeNull()
-  })
+    expect(container.firstChild).toBeNull();
+  });
 
   it('renders grouped waterfall rows', () => {
+    useChatStore.setState({ language: 'zh-CN' });
+    const zh = translations['zh-CN'];
+
     render(
       <TraceWaterfallView
         loading={false}
@@ -46,16 +51,28 @@ describe('TraceWaterfallView', () => {
             error_message: 'boom',
           }),
         ]}
-      />,
-    )
+      />
+    );
 
-    const waterfall = screen.getByTestId('settings-trace-waterfall')
-    const rows = within(waterfall).getAllByTestId('settings-trace-waterfall-row')
+    const waterfall = screen.getByTestId('settings-trace-waterfall');
+    const rows = within(waterfall).getAllByTestId('settings-trace-waterfall-row');
 
-    expect(within(waterfall).getByText('trace trace-12')).toBeInTheDocument()
-    expect(rows).toHaveLength(2)
-    expect(within(rows[0]).getByText('llm.invoke')).toBeInTheDocument()
-    expect(within(rows[1]).getByText(/tool\.execute/)).toBeInTheDocument()
-    expect(within(rows[1]).getByText('ToolError: boom')).toBeInTheDocument()
-  })
-})
+    expect(within(waterfall).getByText(zh['settings.traces.waterfallTitle'])).toBeInTheDocument();
+    expect(
+      within(waterfall).getByText(zh['settings.traces.waterfallDescription'])
+    ).toBeInTheDocument();
+    expect(
+      within(waterfall).getByText(
+        (_, element) =>
+          element?.tagName === 'DIV' &&
+          element.textContent ===
+            `${zh['settings.traces.spanCount'].replace('{count}', '2')} · 500.0 ms`
+      )
+    ).toBeInTheDocument();
+    expect(within(waterfall).getByText('trace trace-12')).toBeInTheDocument();
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]).getByText('llm.invoke')).toBeInTheDocument();
+    expect(within(rows[1]).getByText(/tool\.execute/)).toBeInTheDocument();
+    expect(within(rows[1]).getByText('ToolError: boom')).toBeInTheDocument();
+  });
+});

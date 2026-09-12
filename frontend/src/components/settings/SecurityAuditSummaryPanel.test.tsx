@@ -1,24 +1,21 @@
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   cleanupSecurityAuditEvents,
   getSecurityAuditEvents,
   getSecurityAuditSummary,
   getSecurityStatus,
-} from '../../api/client'
-import type {
-  SecurityAuditSummary,
-  SecurityStatusResponse,
-} from '../../api/client'
-import { SecurityAuditSummaryPanel } from './SecurityAuditSummaryPanel'
+} from '../../api/client';
+import type { SecurityAuditSummary, SecurityStatusResponse } from '../../api/client';
+import { SecurityAuditSummaryPanel } from './SecurityAuditSummaryPanel';
 
 vi.mock('../../api/client', () => ({
   cleanupSecurityAuditEvents: vi.fn(),
   getSecurityAuditEvents: vi.fn(),
   getSecurityAuditSummary: vi.fn(),
   getSecurityStatus: vi.fn(),
-}))
+}));
 
 const securityStatusPayload: SecurityStatusResponse = {
   allow_remote_clients: true,
@@ -73,12 +70,17 @@ const securityStatusPayload: SecurityStatusResponse = {
     max_total_chars: 24000,
     preview_chars: 4000,
   },
+  chat_image_limits: {
+    max_count: 4,
+    max_bytes: 10485760,
+    max_total_bytes: 20971520,
+  },
   document_upload_limits: {
     max_count: 12,
     max_file_bytes: 52428800,
     max_total_bytes: 209715200,
   },
-}
+};
 
 const securityAuditSummaryPayload: SecurityAuditSummary = {
   category: '',
@@ -96,73 +98,75 @@ const securityAuditSummaryPayload: SecurityAuditSummary = {
     auth: 1,
   },
   unknown_action_count: 0,
-}
+};
 
 describe('SecurityAuditSummaryPanel', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
-    vi.mocked(getSecurityStatus).mockResolvedValue(securityStatusPayload)
-    vi.mocked(getSecurityAuditSummary).mockResolvedValue(securityAuditSummaryPayload)
+    vi.clearAllMocks();
+    vi.mocked(getSecurityStatus).mockResolvedValue(securityStatusPayload);
+    vi.mocked(getSecurityAuditSummary).mockResolvedValue(securityAuditSummaryPayload);
     vi.mocked(getSecurityAuditEvents).mockResolvedValue({
       events: [],
       total: 0,
       limit: 200,
-    })
+    });
     vi.mocked(cleanupSecurityAuditEvents).mockResolvedValue({
       keep_latest: 200,
       deleted_count: 0,
       remaining_count: 0,
       dry_run: false,
-    })
-  })
+    });
+  });
 
   afterEach(() => {
-    cleanup()
-  })
+    cleanup();
+  });
 
   it('shows share-link security status from the security status endpoint', async () => {
-    render(<SecurityAuditSummaryPanel />)
+    render(<SecurityAuditSummaryPanel />);
 
-    const statusPanel = await screen.findByTestId('settings-security-status')
+    const statusPanel = await screen.findByTestId('settings-security-status');
 
-    expect(within(statusPanel).getByText('Remote sharing')).toBeInTheDocument()
-    expect(within(statusPanel).getByText('Blocked')).toBeInTheDocument()
-    expect(within(statusPanel).getByText('Share secret')).toBeInTheDocument()
-    expect(within(statusPanel).getByText('Weak')).toBeInTheDocument()
-    expect(within(statusPanel).getByText('Default secret')).toBeInTheDocument()
-    expect(within(statusPanel).getByText('Yes')).toBeInTheDocument()
-    expect(within(statusPanel).getByText('Minimum length')).toBeInTheDocument()
-    expect(within(statusPanel).getByText('16')).toBeInTheDocument()
-  })
+    // The panel shell renders before the async security status request resolves.
+    await within(statusPanel).findByText('Blocked');
+    expect(within(statusPanel).getByText('Remote sharing')).toBeInTheDocument();
+    expect(within(statusPanel).getByText('Blocked')).toBeInTheDocument();
+    expect(within(statusPanel).getByText('Share secret')).toBeInTheDocument();
+    expect(within(statusPanel).getByText('Weak')).toBeInTheDocument();
+    expect(within(statusPanel).getByText('Default secret')).toBeInTheDocument();
+    expect(within(statusPanel).getByText('Yes')).toBeInTheDocument();
+    expect(within(statusPanel).getByText('Minimum length')).toBeInTheDocument();
+    expect(within(statusPanel).getByText('16')).toBeInTheDocument();
+  });
 
   it('shows an isolated security status error while audit data still loads', async () => {
-    vi.mocked(getSecurityStatus).mockRejectedValue(new Error('Mock security status failed'))
+    vi.mocked(getSecurityStatus).mockRejectedValue(new Error('Mock security status failed'));
 
-    render(<SecurityAuditSummaryPanel />)
+    render(<SecurityAuditSummaryPanel />);
 
     await expect(screen.findByTestId('settings-security-status-error')).resolves.toHaveTextContent(
-      'Mock security status failed',
-    )
+      'Mock security status failed'
+    );
     await waitFor(() => {
-      expect(getSecurityAuditSummary).toHaveBeenCalled()
-      expect(getSecurityAuditEvents).toHaveBeenCalled()
-    })
-  })
+      expect(getSecurityAuditSummary).toHaveBeenCalled();
+      expect(getSecurityAuditEvents).toHaveBeenCalled();
+    });
+  });
 
   it('reloads security status and summary from the top refresh button', async () => {
-    render(<SecurityAuditSummaryPanel />)
+    render(<SecurityAuditSummaryPanel />);
 
-    await screen.findByTestId('settings-security-status')
-    expect(getSecurityStatus).toHaveBeenCalledTimes(1)
-    expect(getSecurityAuditSummary).toHaveBeenCalledTimes(1)
+    await screen.findByTestId('settings-security-status');
+    expect(getSecurityStatus).toHaveBeenCalledTimes(1);
+    expect(getSecurityAuditSummary).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByTestId('settings-security-audit-refresh'))
+    fireEvent.click(screen.getByTestId('settings-security-audit-refresh'));
 
     await waitFor(() => {
-      expect(getSecurityStatus).toHaveBeenCalledTimes(2)
-      expect(getSecurityAuditSummary).toHaveBeenCalledTimes(2)
-    })
-  })
+      expect(getSecurityStatus).toHaveBeenCalledTimes(2);
+      expect(getSecurityAuditSummary).toHaveBeenCalledTimes(2);
+    });
+  });
 
   it('clears an event reload error after a later successful refresh', async () => {
     vi.mocked(getSecurityAuditEvents)
@@ -190,26 +194,26 @@ describe('SecurityAuditSummaryPanel', () => {
         ],
         total: 1,
         limit: 200,
-      })
+      });
 
-    render(<SecurityAuditSummaryPanel />)
+    render(<SecurityAuditSummaryPanel />);
 
-    await screen.findByTestId('settings-security-audit-empty')
+    await screen.findByTestId('settings-security-audit-empty');
 
-    fireEvent.click(screen.getByTestId('settings-security-audit-event-refresh'))
+    fireEvent.click(screen.getByTestId('settings-security-audit-event-refresh'));
 
-    await expect(screen.findByTestId('settings-security-audit-event-error')).resolves.toHaveTextContent(
-      'Mock event reload failed',
-    )
+    await expect(
+      screen.findByTestId('settings-security-audit-event-error')
+    ).resolves.toHaveTextContent('Mock event reload failed');
 
-    fireEvent.click(screen.getByTestId('settings-security-audit-event-refresh'))
+    fireEvent.click(screen.getByTestId('settings-security-audit-event-refresh'));
 
     await waitFor(() => {
-      expect(screen.queryByTestId('settings-security-audit-event-error')).not.toBeInTheDocument()
-    })
-    const rows = await screen.findAllByTestId('settings-security-audit-event-row')
-    expect(rows).toHaveLength(1)
-    expect(within(rows[0]).getByText('remote_auth_guard')).toBeInTheDocument()
-    expect(within(rows[0]).getByText('blocked')).toBeInTheDocument()
-  })
-})
+      expect(screen.queryByTestId('settings-security-audit-event-error')).not.toBeInTheDocument();
+    });
+    const rows = await screen.findAllByTestId('settings-security-audit-event-row');
+    expect(rows).toHaveLength(1);
+    expect(within(rows[0]).getByText('remote_auth_guard')).toBeInTheDocument();
+    expect(within(rows[0]).getByText('blocked')).toBeInTheDocument();
+  });
+});

@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { DEFAULT_SSO_FORM } from './ssoSettingsModel'
-import { buildGeneralSettingsPanelProps } from './generalSettingsControllerModel'
+import { buildGeneralSettingsControllerProps } from './generalSettingsControllerModel'
 import type { AdminTokenSettingsController } from './useAdminTokenSettings'
 import type { TavilySettingsController } from './useTavilySettings'
 
 describe('generalSettingsControllerModel', () => {
-  it('maps controller slices to GeneralSettingsPanel props without changing the public API', () => {
+  it('separates daily settings from the low-frequency SSO panel props', () => {
     const adminTokenSettings = {
       adminToken: 'token',
       adminTokenSaved: true,
@@ -44,7 +44,7 @@ describe('generalSettingsControllerModel', () => {
     const onClearTavilyKey = vi.fn()
     const onResetAgents = vi.fn()
 
-    const props = buildGeneralSettingsPanelProps({
+    const controller = buildGeneralSettingsControllerProps({
       language: 'en-US',
       adminTokenSettings,
       adminAccessError: 'forbidden',
@@ -57,7 +57,7 @@ describe('generalSettingsControllerModel', () => {
       onResetAgents,
     })
 
-    expect(props).toMatchObject({
+    expect(controller.generalSettings).toMatchObject({
       language: 'en-US',
       adminToken: 'token',
       adminTokenSaved: true,
@@ -70,7 +70,7 @@ describe('generalSettingsControllerModel', () => {
       saveError: null,
       resetting: true,
     })
-    expect(props.ssoSettings).toMatchObject({
+    expect(controller.ssoSettings).toMatchObject({
       config: null,
       form: DEFAULT_SSO_FORM,
       loading: false,
@@ -78,17 +78,17 @@ describe('generalSettingsControllerModel', () => {
       loginStarting: false,
       error: null,
     })
-    expect(props.onLanguageChange).toBe(onLanguageChange)
-    expect(props.onAdminTokenChange).toBe(adminTokenSettings.setAdminToken)
-    expect(props.onSaveAdminToken).toBe(adminTokenSettings.saveAdminToken)
-    expect(props.onClearAdminToken).toBe(adminTokenSettings.clearAdminToken)
-    expect(props.onTavilyKeyChange).toBe(tavilySettings.setTavilyKey)
-    expect(props.onSaveGeneral).toBe(onSaveGeneral)
-    expect(props.onClearTavilyKey).toBe(onClearTavilyKey)
-    expect(props.onResetAgents).toBe(onResetAgents)
-    expect(props.ssoSettings.onFormChange).toBe(ssoSettings.updateForm)
-    expect(props.ssoSettings.onSave).toBe(ssoSettings.save)
-    expect(props.ssoSettings.onStartLogin).toBe(ssoSettings.startLogin)
-    expect(props.ssoSettings.onRefresh).toBe(ssoSettings.load)
+    expect(controller.generalSettings.onLanguageChange).toBe(onLanguageChange)
+    expect(controller.generalSettings.onAdminTokenChange).toBe(adminTokenSettings.setAdminToken)
+    expect(controller.generalSettings.onSaveAdminToken).toBe(adminTokenSettings.saveAdminToken)
+    expect(controller.generalSettings.onClearAdminToken).toBe(adminTokenSettings.clearAdminToken)
+    expect(controller.generalSettings.onTavilyKeyChange).toBe(tavilySettings.setTavilyKey)
+    expect(controller.generalSettings.onSaveGeneral).toBe(onSaveGeneral)
+    expect(controller.generalSettings.onClearTavilyKey).toBe(onClearTavilyKey)
+    expect(controller.generalSettings.onResetAgents).toBe(onResetAgents)
+    expect(controller.ssoSettings.onFormChange).toBe(ssoSettings.updateForm)
+    expect(controller.ssoSettings.onSave).toBe(ssoSettings.save)
+    expect(controller.ssoSettings.onStartLogin).toBe(ssoSettings.startLogin)
+    expect(controller.ssoSettings.onRefresh).toBe(ssoSettings.load)
   })
 })

@@ -1099,3 +1099,11 @@ def test_delete_workspace_rejects_default_workspace(monkeypatch, tmp_path):
     response = client.delete(f"/api/workspaces/{chat_store.DEFAULT_WORKSPACE_ID}")
     assert response.status_code == 400
     assert response.json()["detail"] == "默认工作区不能删除"
+
+
+def test_delete_workspace_not_found_uses_clear_error(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    response = TestClient(api_server.app).delete("/api/workspaces/missing-workspace")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Workspace was not found."

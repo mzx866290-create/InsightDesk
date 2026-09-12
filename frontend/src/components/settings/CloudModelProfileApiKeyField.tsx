@@ -1,17 +1,17 @@
-import React from 'react'
+import React from 'react';
 
-import type { TranslationKey } from '../../i18n'
-import type { CloudModelProfile } from '../../stores/chatStore'
-import { Button } from '../ui/Button'
+import type { TranslationKey } from '../../i18n';
+import type { CloudModelProfile } from '../../stores/chatStore';
+import { Button } from '../ui/Button';
 
 interface CloudModelProfileApiKeyFieldProps {
-  apiKey: string
-  apiKeyDeletingId: string | null
-  editingProfile: CloudModelProfile | null
-  saving: boolean
-  onApiKeyChange: (value: string) => void
-  onClearApiKey: (profile: CloudModelProfile) => void
-  t: (key: TranslationKey) => string
+  apiKey: string;
+  apiKeyDeletingId: string | null;
+  editingProfile: CloudModelProfile | null;
+  saving: boolean;
+  onApiKeyChange: (value: string) => void;
+  onClearApiKey: (profile: CloudModelProfile) => void;
+  t: (key: TranslationKey) => string;
 }
 
 export const CloudModelProfileApiKeyField: React.FC<CloudModelProfileApiKeyFieldProps> = ({
@@ -29,15 +29,13 @@ export const CloudModelProfileApiKeyField: React.FC<CloudModelProfileApiKeyField
     </label>
     <input
       data-testid="settings-cloud-profile-api-key-input"
-      className="input-base w-full text-sm"
+      className="input-base min-h-11 w-full text-sm"
       type="password"
       value={apiKey}
       onChange={(event) => onApiKeyChange(event.target.value)}
       placeholder="sk-..."
     />
-    <p className="mt-1 text-[11px] text-text-secondary">
-      {t('settings.cloud.apiKeyHint')}
-    </p>
+    <p className="mt-1 text-[11px] text-text-secondary">{t('settings.cloud.apiKeyHint')}</p>
     {editingProfile ? (
       <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-text-secondary">
         <span>
@@ -61,4 +59,4 @@ export const CloudModelProfileApiKeyField: React.FC<CloudModelProfileApiKeyField
       </div>
     ) : null}
   </div>
-)
+);

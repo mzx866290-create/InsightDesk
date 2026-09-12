@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import ipaddress
+import json
 import logging
 import re
 from collections.abc import Sequence
@@ -12,10 +12,18 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import httpx
 
+from backend.core.outbound_http import (
+    OutboundRequestError,
+    OutboundRequestTimeoutError,
+    OutboundResponseTooLargeError,
+    OutboundURLBlockedError,
+    request_public_url,
+)
+
 from .registry import (
     get_search_provider,
-    normalize_provider_name,
     normalize_provider_list,
+    normalize_provider_name,
 )
 from .types import (
     SearchConfigError,
@@ -31,6 +39,8 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
+WEBPAGE_FETCH_TIMEOUT_SECONDS = 15.0
+WEBPAGE_FETCH_MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 class _AinvokeLLM(Protocol):
@@ -1934,12 +1944,27 @@ async def fetch_webpage_document(url: str, *, max_chars: int = 8000) -> SearchDo
         raise SearchRuntimeError("缺少 beautifulsoup4 依赖，请运行: pip install beautifulsoup4") from exc
 
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            response = await client.get(url)
-            response.raise_for_status()
+        response = await request_public_url(
+            url,
+            timeout_seconds=WEBPAGE_FETCH_TIMEOUT_SECONDS,
+            max_response_bytes=WEBPAGE_FETCH_MAX_RESPONSE_BYTES,
+        )
+        response.raise_for_status()
+    except OutboundRequestTimeoutError as exc:
+        logger.warning("fetch_webpage_document outbound timeout url=%s", url)
+        raise SearchTimeoutError("网页请求超时") from exc
+    except OutboundURLBlockedError as exc:
+        logger.warning("fetch_webpage_document blocked unsafe outbound url=%s", url)
+        raise SearchRuntimeError("抓取网页失败: 目标地址不允许访问") from exc
+    except OutboundResponseTooLargeError as exc:
+        logger.warning("fetch_webpage_document response too large url=%s", url)
+        raise SearchRuntimeError("抓取网页失败: 网页响应超过大小限制") from exc
+    except OutboundRequestError as exc:
+        logger.warning("fetch_webpage_document rejected outbound request url=%s", url)
+        raise SearchRuntimeError("抓取网页失败: 出站请求被安全策略拒绝") from exc
     except httpx.HTTPStatusError as exc:
         logger.error("fetch_webpage_document HTTP error status=%d url=%s", exc.response.status_code, url)
-        raise SearchProviderHTTPError(exc.response.status_code, exc.response.text) from exc
+        raise SearchProviderHTTPError(exc.response.status_code, exc.response.text[:2000]) from exc
     except httpx.TimeoutException as exc:
         logger.warning("fetch_webpage_document timeout url=%s", url)
         raise SearchTimeoutError("网页请求超时") from exc

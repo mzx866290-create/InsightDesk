@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 
 import { saveConfig } from '../../api/client'
+import { useI18n } from '../../i18n'
 
 const TAVILY_SAVED_VISIBLE_MS = 2500
 
@@ -20,6 +21,7 @@ export interface TavilySettingsController {
 }
 
 export function useTavilySettings(): TavilySettingsController {
+  const { t } = useI18n()
   const [tavilyKey, setTavilyKey] = useState('')
   const [tavilyKeySet, setTavilyKeySet] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -58,16 +60,20 @@ export function useTavilySettings(): TavilySettingsController {
 
   const saveTavilyKey = useCallback(
     async (onConfigSaved: ConfigSavedCallback) => {
-      await persistTavilyKey(tavilyKey || undefined, '娣囨繂鐡ㄧ拋鍓х枂婢惰精瑙?', onConfigSaved)
+      await persistTavilyKey(
+        tavilyKey || undefined,
+        t('settings.tavily.saveError'),
+        onConfigSaved,
+      )
     },
-    [persistTavilyKey, tavilyKey],
+    [persistTavilyKey, t, tavilyKey],
   )
 
   const clearTavilyKey = useCallback(
     async (onConfigSaved: ConfigSavedCallback) => {
-      await persistTavilyKey('', '濞撳懐鈹?Tavily Key 婢惰精瑙?', onConfigSaved)
+      await persistTavilyKey('', t('settings.tavily.clearError'), onConfigSaved)
     },
-    [persistTavilyKey],
+    [persistTavilyKey, t],
   )
 
   return {

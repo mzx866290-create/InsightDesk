@@ -112,15 +112,17 @@ export const Sidebar: React.FC = () => {
           controller={workspaceController}
           storePanelCount={storePanels.length}
         />
-        <Button
-          variant="outline"
-          className="w-full justify-center gap-2 border-dashed border-bg-border hover:border-accent-blue/50 hover:bg-accent-blue/5"
-          onClick={handleNewChat}
-          loading={loadingNew}
-        >
-          <Plus size={15} />
-          新建对话
-        </Button>
+        {!isMobile && (
+          <Button
+            variant="outline"
+            className="w-full justify-center gap-2 border-dashed border-bg-border hover:border-accent-blue/50 hover:bg-accent-blue/5"
+            onClick={handleNewChat}
+            loading={loadingNew}
+          >
+            <Plus size={15} />
+            新建对话
+          </Button>
+        )}
       </div>
 
       <SidebarSessionControls
@@ -211,15 +213,17 @@ export const Sidebar: React.FC = () => {
         )}
       </div>
 
-      <div className="border-t border-bg-border p-3">
-        <button
-          onClick={() => setSettingsOpen(true)}
-          className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 pb-[calc(env(safe-area-inset-bottom)+0.625rem)] text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-        >
-          <Settings size={15} />
-          设置与上传
-        </button>
-      </div>
+      {!isMobile && (
+        <div className="border-t border-bg-border p-3">
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 pb-[calc(env(safe-area-inset-bottom)+0.625rem)] text-sm text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+          >
+            <Settings size={15} />
+            设置
+          </button>
+        </div>
+      )}
     </>
   )
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   getConfig,
@@ -6,18 +6,19 @@ import {
 } from '../../api/client'
 import { useI18n } from '../../i18n'
 import { isAdminAccessError } from '../admin/adminAccess'
-import type { GeneralSettingsPanelProps } from './GeneralSettingsPanel'
-import { buildGeneralSettingsPanelProps } from './generalSettingsControllerModel'
+import {
+  buildGeneralSettingsControllerProps,
+  type GeneralSettingsControllerProps,
+} from './generalSettingsControllerModel'
 import type { SettingsTab } from './SettingsNavigation'
+import { shouldLoadSsoSettings } from './settingsModalControllerModel'
 import { useAdminTokenSettings } from './useAdminTokenSettings'
-import type { KbMonitorController } from './useKbMonitor'
 import type { RolePromptsController } from './useRolePrompts'
 import { useSsoSettings } from './useSsoSettings'
 import { useTavilySettings } from './useTavilySettings'
 
 interface UseGeneralSettingsControllerOptions {
   adminAccessError: string | null
-  kbMonitor: KbMonitorController
   open: boolean
   rolePrompts: RolePromptsController
   setAdminAccessError: (message: string | null) => void
@@ -26,14 +27,14 @@ interface UseGeneralSettingsControllerOptions {
 
 export function useGeneralSettingsController({
   adminAccessError,
-  kbMonitor,
   open,
   rolePrompts,
   setAdminAccessError,
   tab,
-}: UseGeneralSettingsControllerOptions): GeneralSettingsPanelProps {
+}: UseGeneralSettingsControllerOptions): GeneralSettingsControllerProps {
   const { language, setLanguage } = useI18n()
   const [resetting, setResetting] = useState(false)
+  const ssoLoadedForOpenRef = useRef(false)
   const ssoSettings = useSsoSettings()
   const tavilySettings = useTavilySettings()
 
@@ -67,10 +68,7 @@ export function useGeneralSettingsController({
     if (tab === 'roles') {
       await rolePrompts.loadKnowledgeBases()
     }
-    if (tab === 'kb_monitor') {
-      await kbMonitor.refreshCurrent()
-    }
-  }, [kbMonitor, loadConfig, rolePrompts, tab])
+  }, [loadConfig, rolePrompts, tab])
 
   const adminTokenSettings = useAdminTokenSettings({
     open,
@@ -79,18 +77,25 @@ export function useGeneralSettingsController({
   })
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      ssoLoadedForOpenRef.current = false
+      return
+    }
     setAdminAccessError(null)
     resetSsoSettings()
-    void loadSsoConfig()
     void loadConfig()
   }, [
     loadConfig,
-    loadSsoConfig,
     open,
     resetSsoSettings,
     setAdminAccessError,
   ])
+
+  useEffect(() => {
+    if (!shouldLoadSsoSettings(open, tab, ssoLoadedForOpenRef.current)) return
+    ssoLoadedForOpenRef.current = true
+    void loadSsoConfig()
+  }, [loadSsoConfig, open, tab])
 
   const handleSaveGeneral = useCallback(async () => {
     await saveTavilyKey(loadConfig)
@@ -109,8 +114,8 @@ export function useGeneralSettingsController({
     }
   }, [])
 
-  return useMemo<GeneralSettingsPanelProps>(
-    () => buildGeneralSettingsPanelProps({
+  return useMemo<GeneralSettingsControllerProps>(
+    () => buildGeneralSettingsControllerProps({
       language,
       adminTokenSettings,
       adminAccessError,

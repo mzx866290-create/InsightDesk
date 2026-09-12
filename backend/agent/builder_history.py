@@ -5,6 +5,7 @@ from typing import Any, Optional, Protocol, cast
 from langchain_core.messages import BaseMessage
 
 from backend.agent.builder_context import BuilderInvocationConfig
+from backend.core.storage_runtime import sqlite_history_db_path
 import backend.agent.runtime_support as runtime_support
 
 
@@ -80,7 +81,7 @@ def _load_chat_history(
     session_memory = runtime_support.list_session_memory(
         session_id,
         limit=10,
-        db_path=history.db_path,
+        db_path=sqlite_history_db_path(history),
     )
     memory_message = runtime_support._build_session_memory_message(session_memory)
     if panel_id and exclude_ai_answer_group_id:

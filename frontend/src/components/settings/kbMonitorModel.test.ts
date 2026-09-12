@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   EMPTY_CHUNK_CONTENT_ERROR,
   EMPTY_CHUNK_SOURCE_ERROR,
+  KNOWLEDGE_BASE_DELETE_FAILED_PREFIX,
   createChunkLoadRequest,
   createRetrievalTestOptions,
   formatCount,
@@ -77,6 +78,7 @@ describe('kbMonitorModel', () => {
   })
 
   it('validates chunk edits and delete confirmation state', () => {
+    expect(KNOWLEDGE_BASE_DELETE_FAILED_PREFIX).toBe('删除失败：')
     expect(getChunkSaveValidationError('   ', 'doc.md')).toBe(EMPTY_CHUNK_CONTENT_ERROR)
     expect(getChunkSaveValidationError('content', '   ')).toBe(EMPTY_CHUNK_SOURCE_ERROR)
     expect(getChunkSaveValidationError('content', 'doc.md')).toBeNull()

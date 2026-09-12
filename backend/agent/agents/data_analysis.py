@@ -22,6 +22,9 @@ class DataAnalysisAgentConfig:
     max_file_bytes: int = 5 * 1024 * 1024
     max_context_chars: int = 8000
     supported_file_extensions: tuple[str, ...] = (".csv", ".tsv", ".json", ".xlsx", ".xls")
+    # Local file access is disabled by default. Callers that genuinely need it
+    # must explicitly provide one or more trusted directory roots.
+    allowed_file_roots: tuple[str | Path, ...] = ()
     default_query_limit: int = 5
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -238,10 +241,10 @@ class DataAnalysisAgent:
         if not raw_path:
             return []
 
-        path = Path(raw_path).expanduser()
+        path = self._resolve_allowed_file_path(raw_path)
+        if path is None:
+            return []
         try:
-            if not path.is_file():
-                return []
             suffix = path.suffix.lower()
             if suffix not in self.config.supported_file_extensions:
                 return []
@@ -259,6 +262,35 @@ class DataAnalysisAgent:
         if suffix in {".xlsx", ".xls"}:
             return self._rows_from_excel(path)
         return []
+
+    def _resolve_allowed_file_path(self, raw_path: str) -> Path | None:
+        """Resolve a file only when it stays inside an explicitly trusted root."""
+        allowed_roots: list[Path] = []
+        for raw_root in self.config.allowed_file_roots:
+            try:
+                root = Path(raw_root).expanduser().resolve(strict=True)
+            except (OSError, RuntimeError):
+                continue
+            if root.is_dir():
+                allowed_roots.append(root)
+
+        if not allowed_roots:
+            return None
+
+        try:
+            path = Path(raw_path).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None
+        if not path.is_file():
+            return None
+
+        for root in allowed_roots:
+            try:
+                path.relative_to(root)
+            except ValueError:
+                continue
+            return path
+        return None
 
     @staticmethod
     def _read_text_file(path: Path) -> str:

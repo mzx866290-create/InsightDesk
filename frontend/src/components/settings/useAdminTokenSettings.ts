@@ -104,9 +104,9 @@ export function useAdminTokenSettings({
   }, [clearSavedStatusTimer, setAdminAccessError])
 
   const authStatusText = loadingAuthProfile
-    ? '姝ｅ湪妫€鏌ヤ护鐗?..'
+    ? '正在检查令牌...'
     : authProfile
-      ? `${authProfile.role}${authProfile.user_id ? ` 路 ${authProfile.user_id}` : ''}${authProfile.is_local ? ' 路 鏈湴' : ''}`
+      ? `${authProfile.role}${authProfile.user_id ? ` · ${authProfile.user_id}` : ''}${authProfile.is_local ? ' · 本地' : ''}`
       : null
 
   return {

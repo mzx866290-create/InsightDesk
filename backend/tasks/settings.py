@@ -10,7 +10,9 @@ DEFAULT_TASK_BACKEND: TaskBackendName = "memory"
 TASK_BACKEND_SWITCH_READY_ENV = "TASK_BACKEND_SWITCH_READY"
 DEFAULT_ARQ_QUEUE_NAME = "insightdesk:tasks"
 DEFAULT_ARQ_WORKER_MAX_JOBS = 4
+DEFAULT_ARQ_JOB_TIMEOUT_SECONDS = 960
 DEFAULT_ARQ_KEEP_RESULT_SECONDS = 3600
+DEFAULT_ARQ_CANCEL_TIMEOUT_SECONDS = 5
 DEFAULT_ARQ_RETRY_ATTEMPTS = 3
 DEFAULT_ARQ_RETRY_BACKOFF_SECONDS = 15
 DEFAULT_ARQ_WORKER_HEARTBEAT_SECONDS = 30
@@ -96,6 +98,17 @@ def arq_worker_max_jobs_from_env() -> int:
 
 def arq_keep_result_from_env() -> int:
     return _positive_int_from_env("ARQ_KEEP_RESULT_SECONDS", DEFAULT_ARQ_KEEP_RESULT_SECONDS)
+
+
+def arq_job_timeout_from_env() -> int:
+    return _positive_int_from_env("ARQ_JOB_TIMEOUT_SECONDS", DEFAULT_ARQ_JOB_TIMEOUT_SECONDS)
+
+
+def arq_cancel_timeout_from_env() -> int:
+    return _positive_int_from_env(
+        "ARQ_CANCEL_TIMEOUT_SECONDS",
+        DEFAULT_ARQ_CANCEL_TIMEOUT_SECONDS,
+    )
 
 
 def arq_retry_attempts_from_env() -> int:
@@ -308,8 +321,10 @@ def arq_worker_heartbeat_config_from_env(queue_name: str | None = None) -> dict[
 def arq_worker_runtime_settings_from_env(queue_name: str | None = None) -> dict[str, Any]:
     """Return ARQ WorkerSettings-compatible runtime settings."""
     return {
+        "allow_abort_jobs": True,
         "max_jobs": arq_worker_max_jobs_from_env(),
         "keep_result": arq_keep_result_from_env(),
+        "job_timeout": arq_job_timeout_from_env(),
         **arq_retry_runtime_settings_from_env(),
         **arq_worker_drain_settings_from_env(),
         **arq_worker_heartbeat_settings_from_env(queue_name=queue_name),
@@ -324,8 +339,11 @@ def arq_runtime_config_payload(queue_name: str | None = None) -> dict[str, Any]:
         "queue_name": resolved_queue_name,
         "retry": arq_retry_config_from_env(),
         "worker": {
+            "allow_abort_jobs": True,
+            "cancel_timeout_seconds": arq_cancel_timeout_from_env(),
             "max_jobs": arq_worker_max_jobs_from_env(),
             "keep_result_seconds": arq_keep_result_from_env(),
+            "job_timeout_seconds": arq_job_timeout_from_env(),
             "heartbeat": arq_worker_heartbeat_config_from_env(
                 queue_name=resolved_queue_name
             ),
@@ -335,6 +353,8 @@ def arq_runtime_config_payload(queue_name: str | None = None) -> dict[str, Any]:
 
 
 __all__ = [
+    "DEFAULT_ARQ_CANCEL_TIMEOUT_SECONDS",
+    "DEFAULT_ARQ_JOB_TIMEOUT_SECONDS",
     "DEFAULT_ARQ_KEEP_RESULT_SECONDS",
     "DEFAULT_ARQ_PENDING_STALE_SECONDS",
     "DEFAULT_ARQ_QUEUE_NAME",
@@ -349,6 +369,8 @@ __all__ = [
     "DEFAULT_TASK_BACKEND",
     "TASK_BACKEND_SWITCH_READY_ENV",
     "TaskBackendName",
+    "arq_cancel_timeout_from_env",
+    "arq_job_timeout_from_env",
     "arq_keep_result_from_env",
     "arq_pending_stale_seconds_from_env",
     "arq_queue_name_from_env",

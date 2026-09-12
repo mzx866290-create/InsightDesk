@@ -15,6 +15,55 @@ from backend.helpers.task_execution_helpers import (
 from backend.stores.task_store import TaskRecord, TaskStatus
 
 
+def test_task_message_persistence_uses_configured_provider_by_default(monkeypatch):
+    from backend.stores import factory
+
+    calls = []
+
+    class FakeHistory:
+        def add_user_message_once(self, message, answer_group_id, **kwargs):
+            calls.append(("user", message, answer_group_id, kwargs))
+
+        def delete_ai_messages_for_answer_group(self, panel_id, answer_group_id):
+            calls.append(("delete", panel_id, answer_group_id))
+
+        def add_ai_message(self, message, **kwargs):
+            calls.append(("ai", message, kwargs))
+
+    monkeypatch.setenv("DATABASE_PROVIDER", "postgres")
+    monkeypatch.setattr(
+        factory,
+        "create_chat_message_history",
+        lambda session_id: calls.append(("factory", session_id)) or FakeHistory(),
+    )
+    record = TaskRecord(
+        task_id="task-provider-route",
+        task_type="web_research",
+        status=TaskStatus.RUNNING,
+        params={
+            "query": "Provider routing",
+            "panel_id": "panel-main",
+            "answer_group_id": "turn-1",
+            "model_id": "web_research",
+        },
+        session_id="session-pg",
+        created_at=1.0,
+        updated_at=1.0,
+    )
+
+    task_execution_helpers.persist_web_research_task_placeholder(record)
+    task_execution_helpers.persist_web_research_task_result(
+        record,
+        content="Completed research",
+    )
+
+    assert [item for item in calls if item[0] == "factory"] == [
+        ("factory", "session-pg"),
+        ("factory", "session-pg"),
+    ]
+    assert any(item[:2] == ("ai", "Completed research") for item in calls)
+
+
 def test_run_analyze_knowledge_base_task_updates_progress_and_result(monkeypatch):
     import backend.doc_pipeline as doc_pipeline
 

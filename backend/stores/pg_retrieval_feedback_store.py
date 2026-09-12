@@ -13,6 +13,7 @@ from backend.stores.chat_messages import (
 )
 from backend.stores.chat_serialization import normalize_content as _normalize_content
 from backend.stores.pg_base import PostgresStoreMixin
+from backend.stores.pg_chat_schema import init_postgres_retrieval_feedback_schema
 
 
 class PostgresRetrievalFeedbackStore(PostgresStoreMixin):
@@ -31,35 +32,7 @@ class PostgresRetrievalFeedbackStore(PostgresStoreMixin):
     def _init_db(self) -> None:
         with self._connect() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS retrieval_feedback (
-                        id BIGSERIAL PRIMARY KEY,
-                        session_id TEXT NOT NULL,
-                        panel_id TEXT NOT NULL,
-                        answer_group_id TEXT NOT NULL,
-                        source_key TEXT NOT NULL,
-                        source_type TEXT DEFAULT '',
-                        source_title TEXT DEFAULT '',
-                        source_url TEXT DEFAULT '',
-                        feedback_value INTEGER NOT NULL DEFAULT 0,
-                        created_at DOUBLE PRECISION NOT NULL,
-                        updated_at DOUBLE PRECISION NOT NULL
-                    )
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE UNIQUE INDEX IF NOT EXISTS idx_retrieval_feedback_unique
-                    ON retrieval_feedback(session_id, panel_id, answer_group_id, source_key)
-                    """
-                )
-                cursor.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_retrieval_feedback_lookup
-                    ON retrieval_feedback(session_id, answer_group_id, panel_id, updated_at DESC)
-                    """
-                )
+                init_postgres_retrieval_feedback_schema(cursor)
             conn.commit()
 
     def set_retrieval_feedback(

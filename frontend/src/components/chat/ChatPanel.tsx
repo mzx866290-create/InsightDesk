@@ -4,7 +4,6 @@ import { MessageBubble } from './MessageBubble'
 import type { Panel, PanelMessage } from '../../stores/chatStore'
 import { Bot, Presentation } from 'lucide-react'
 import {
-  clearSessionMessages,
   createSession,
   getSystemPrompts,
   importSessionMessages,
@@ -146,7 +145,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const {
     removePanel,
     panels,
-    clearMessages,
     currentSessionId,
     currentWorkspaceId,
     updateSession,
@@ -176,8 +174,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const rerunAbortControllerRef = useRef<AbortController | null>(null)
   const lastAutoCollapsedWorkflowRef = useRef<string>('')
   const canRemove = panels.length > 1
-  const [confirmClear, setConfirmClear] = useState(false)
-  const [clearing, setClearing] = useState(false)
   const [workflowVisible, setWorkflowVisibleLocal] = useState(true)
   const [activePrompt, setActivePrompt] = useState<SystemPrompt | null>(null)
   const [searchOpen, setSearchOpen] = useState(false)
@@ -321,30 +317,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
     clearJumpTarget()
   }, [clearJumpTarget, currentSessionId, jumpTarget, panel.id, panel.messages])
-
-  const handleClearContext = async () => {
-    if (isInteractionLocked) return
-    if (!confirmClear) {
-      setConfirmClear(true)
-      setTimeout(() => setConfirmClear(false), 3000)
-      return
-    }
-    setConfirmClear(false)
-    setClearing(true)
-    try {
-      if (currentSessionId) {
-        await clearSessionMessages(currentSessionId)
-        updateSession(currentSessionId, {
-          message_count: 0,
-          updated_at: Date.now() / 1000,
-        })
-      }
-      clearMessages()
-      panels.forEach((item) => clearWorkflow(item.id))
-    } finally {
-      setClearing(false)
-    }
-  }
 
   const msgCount = panel.messages.filter((m) => m.role !== 'error').length
   const contextUsed = Math.min(msgCount, contextLimit)
@@ -1355,8 +1327,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         searchOpen={searchOpen}
         searchQuery={searchQuery}
         matchedCount={matchedMessageIds.size}
-        confirmClear={confirmClear}
-        clearing={clearing}
         onRemovePanel={() => removePanel(panel.id)}
         onToggleWorkflowVisible={() => {
           setWorkflowVisibleLocal(!workflowVisible)
@@ -1364,7 +1334,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         }}
         onToggleSearch={() => setSearchOpen((v) => !v)}
         onSearchQueryChange={setSearchQuery}
-        onClearContext={handleClearContext}
         onExport={() => {
           const currentSession = sessions.find((s) => s.session_id === currentSessionId) ?? null
           exportConversationAsMarkdown(currentSession, panel.messages, panel.modelConfig.model)

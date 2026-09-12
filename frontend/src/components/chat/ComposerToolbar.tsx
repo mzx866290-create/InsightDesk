@@ -2,13 +2,11 @@ import {
   Database,
   Eraser,
   Globe,
-  ImagePlus,
   Loader2,
-  Paperclip,
-  Send,
   Sparkles,
-  Square,
+  SlidersHorizontal,
 } from 'lucide-react'
+import { useState } from 'react'
 
 import type { ResearchMode, ResearchSourceStrategy } from '../../stores/chatStore'
 import type { ResearchSourceStrategyOption } from './composerResearchConfig'
@@ -52,120 +50,36 @@ export function ComposerToolbar({
   composerBusy,
   composerLocked,
   canResearch,
-  canSend,
   hasOnlyComposerDataFiles,
   effectiveComposerResearchMode,
   researchButtonLabel,
   researchButtonTitle,
   isResearchStarting,
-  activeStopHandler,
-  stopButtonTitle,
   onSelectResearchMode,
   onSelectResearchSourceStrategy,
   onToggleOmitHistory,
   onToggleWebSearch,
   onToggleKnowledgeBase,
-  onChooseAttachment,
-  onChooseImage,
   onStartResearch,
-  onSend,
 }: ComposerToolbarProps) {
+  const [expanded, setExpanded] = useState(false)
+
   return (
-    <div className="flex flex-wrap items-center justify-end gap-2 sm:pb-0.5">
-      <div
-        className="inline-flex items-center rounded-lg border border-bg-border bg-bg-primary/50 p-0.5"
-        title="研究模式"
-      >
-        {(['quick', 'deep'] as const).map((mode) => {
-          const active = researchMode === mode
-          const label = mode === 'quick' ? '快研' : '深研'
-          return (
-            <button
-              key={mode}
-              type="button"
-              onClick={() => onSelectResearchMode(mode)}
-              disabled={composerBusy || composerLocked}
-              data-testid={`composer-research-mode-${mode}`}
-              className={`min-h-10 rounded-md px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                active
-                  ? mode === 'deep'
-                    ? 'bg-amber-400/20 text-amber-200'
-                    : 'bg-accent-blue/20 text-accent-blue'
-                  : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-              }`}
-              title={
-                mode === 'deep'
-                  ? '深度研究：多轮检索与综合，成本更高'
-                  : '快速研究：更快返回摘要与主要来源'
-              }
-            >
-              {label}
-            </button>
-          )
-        })}
-      </div>
-
-      <div
-        className="inline-flex items-center rounded-lg border border-bg-border bg-bg-primary/50 p-0.5"
-        title="来源策略"
-      >
-        {researchSourceStrategyOptions.map((option) => {
-          const active = researchSourceStrategy === option.value
-          const isCommunity = option.value === 'community_first'
-          const isStrict = option.value === 'evidence_strict'
-          return (
-            <button
-              key={option.value}
-              type="button"
-              onClick={() => onSelectResearchSourceStrategy(option.value)}
-              disabled={composerBusy || composerLocked}
-              data-testid={`composer-research-source-${option.value}`}
-              className={`min-h-10 rounded-md px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-                active
-                  ? isCommunity
-                    ? 'bg-accent-green/20 text-accent-green'
-                    : isStrict
-                      ? 'bg-amber-400/20 text-amber-200'
-                      : 'bg-accent-blue/20 text-accent-blue'
-                  : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-              }`}
-              title={option.title}
-            >
-              {option.label}
-            </button>
-          )
-        })}
-      </div>
-
-      <button
-        type="button"
-        onClick={onToggleOmitHistory}
-        disabled={composerLocked}
-        data-testid="composer-omit-history-toggle"
-        className={`flex min-h-10 min-w-10 items-center gap-1 rounded-lg px-3 text-xs transition-colors ${
-          omitHistoryForNextSend
-            ? 'bg-accent-purple/20 text-accent-purple'
-            : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-        }`}
-        title="本次发送不带历史上下文，历史对话仍会保留"
-      >
-        <Eraser size={13} />
-        <span className="hidden sm:inline">清上下文</span>
-      </button>
-
+    <div className="flex items-center gap-1">
+      {/* Compact toggle icons — always visible */}
       <button
         type="button"
         onClick={onToggleWebSearch}
         disabled={composerLocked}
         data-testid="composer-web-search-toggle"
-        className={`flex min-h-10 min-w-10 items-center justify-center gap-1 rounded-lg px-3 text-xs transition-colors ${
+        className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
           webSearchEnabled
-            ? 'bg-accent-blue/20 text-accent-blue'
+            ? 'text-accent-blue'
             : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
         }`}
         title="联网搜索"
       >
-        <Globe size={13} />
+        <Globe size={15} />
       </button>
 
       <button
@@ -173,47 +87,42 @@ export function ComposerToolbar({
         onClick={onToggleKnowledgeBase}
         disabled={composerLocked}
         data-testid="composer-knowledge-base-toggle"
-        className={`flex min-h-10 min-w-10 items-center justify-center gap-1 rounded-lg px-3 text-xs transition-colors ${
+        className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
           knowledgeBaseEnabled
-            ? 'bg-accent-green/20 text-accent-green'
+            ? 'text-accent-green'
             : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
         }`}
         title="知识库"
       >
-        <Database size={13} />
+        <Database size={15} />
       </button>
 
       <button
         type="button"
-        onClick={onChooseAttachment}
-        disabled={composerBusy || composerLocked}
-        data-testid="composer-attachment-button"
-        className="flex min-h-10 min-w-10 items-center justify-center gap-1 rounded-lg px-3 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
-        title="附加文件"
+        onClick={onToggleOmitHistory}
+        disabled={composerLocked}
+        data-testid="composer-omit-history-toggle"
+        className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+          omitHistoryForNextSend
+            ? 'text-accent-purple'
+            : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+        }`}
+        title="清上下文"
       >
-        <Paperclip size={13} />
+        <Eraser size={15} />
       </button>
 
-      <button
-        type="button"
-        onClick={onChooseImage}
-        disabled={composerBusy || composerLocked}
-        className="flex min-h-10 min-w-10 items-center justify-center gap-1 rounded-lg px-3 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
-        title="上传图片"
-      >
-        <ImagePlus size={13} />
-      </button>
-
+      {/* Research button */}
       <button
         type="button"
         onClick={onStartResearch}
         disabled={!canResearch}
         data-testid="composer-research"
-        className={`flex min-h-10 items-center gap-1 rounded-lg px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+        className={`flex h-7 items-center gap-1 rounded-md px-2 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
           canResearch
             ? effectiveComposerResearchMode === 'deep' || hasOnlyComposerDataFiles
-              ? 'bg-amber-400/15 text-amber-300 hover:bg-amber-400/20'
-              : 'bg-accent-blue/15 text-accent-blue hover:bg-accent-blue/20'
+              ? 'text-amber-300 hover:bg-amber-400/10'
+              : 'text-accent-blue hover:bg-accent-blue/10'
             : 'text-text-secondary'
         }`}
         title={researchButtonTitle}
@@ -226,27 +135,87 @@ export function ComposerToolbar({
         <span>{researchButtonLabel}</span>
       </button>
 
-      {activeStopHandler ? (
+      {/* Expand strategy panel */}
+      <div className="relative">
         <button
           type="button"
-          onClick={activeStopHandler}
-          className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-red/20 text-accent-red transition-colors hover:bg-accent-red/30"
-          title={stopButtonTitle}
+          onClick={() => setExpanded(!expanded)}
+          className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
+            expanded
+              ? 'bg-bg-hover text-text-primary'
+              : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+          }`}
+          title="研究策略设置"
         >
-          <Square size={15} fill="currentColor" />
+          <SlidersHorizontal size={14} />
         </button>
-      ) : (
-        <button
-          type="button"
-          onClick={onSend}
-          disabled={!canSend || composerBusy || composerLocked}
-          data-testid="composer-send"
-          className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-blue text-white transition-colors hover:bg-accent-blue-hover disabled:cursor-not-allowed disabled:opacity-30"
-          title="发送"
-        >
-          <Send size={15} />
-        </button>
-      )}
+
+        {expanded && (
+          <div className="absolute bottom-full right-0 z-20 mb-2 rounded-xl border border-bg-border bg-bg-secondary p-3 shadow-xl">
+            <div className="flex flex-col gap-2.5">
+              <div>
+                <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-text-secondary">研究模式</p>
+                <div className="inline-flex items-center rounded-lg border border-bg-border bg-bg-primary/50 p-0.5">
+                  {(['quick', 'deep'] as const).map((mode) => {
+                    const active = researchMode === mode
+                    const label = mode === 'quick' ? '快研' : '深研'
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => onSelectResearchMode(mode)}
+                        disabled={composerBusy || composerLocked}
+                        data-testid={`composer-research-mode-${mode}`}
+                        className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                          active
+                            ? mode === 'deep'
+                              ? 'bg-amber-400/20 text-amber-200'
+                              : 'bg-accent-blue/20 text-accent-blue'
+                            : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-text-secondary">来源策略</p>
+                <div className="inline-flex items-center rounded-lg border border-bg-border bg-bg-primary/50 p-0.5">
+                  {researchSourceStrategyOptions.map((option) => {
+                    const active = researchSourceStrategy === option.value
+                    const isCommunity = option.value === 'community_first'
+                    const isStrict = option.value === 'evidence_strict'
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => onSelectResearchSourceStrategy(option.value)}
+                        disabled={composerBusy || composerLocked}
+                        data-testid={`composer-research-source-${option.value}`}
+                        className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                          active
+                            ? isCommunity
+                              ? 'bg-accent-green/20 text-accent-green'
+                              : isStrict
+                                ? 'bg-amber-400/20 text-amber-200'
+                                : 'bg-accent-blue/20 text-accent-blue'
+                            : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+                        }`}
+                        title={option.title}
+                      >
+                        {option.label}
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

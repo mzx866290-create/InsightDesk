@@ -13,7 +13,7 @@ from backend.agent.agents.integrator.connectors import (
     normalize_connector_type,
 )
 from backend.agent.agents.integrator.execution import (
-    UrlLibWebhookClient,
+    NoRedirectUrlLibWebhookClient,
     WebhookClient,
     WebhookExecutionResponse,
     build_webhook_execution_artifact,
@@ -28,6 +28,7 @@ from backend.agent.agents.integrator.execution import (
     resolve_webhook_retry_backoff_seconds,
     resolve_webhook_timeout_seconds,
     resolve_webhook_url,
+    validate_webhook_outbound_scope,
     validate_webhook_url,
 )
 from backend.agent.agents.integrator.push import build_push_dry_run_artifact
@@ -80,7 +81,10 @@ class IntegratorAgent:
     ) -> None:
         self.config = config or IntegratorAgentConfig()
         self.connectors = self._normalize_connectors(self.config.connectors)
-        self.webhook_client = webhook_client or UrlLibWebhookClient()
+        # Redirects are never followed: a 3xx must be re-validated by the
+        # caller before any second hop, otherwise webhook delivery can be
+        # coerced into internal network targets.
+        self.webhook_client = webhook_client or NoRedirectUrlLibWebhookClient()
 
     def can_handle(self, task_type: str) -> bool:
         normalized = str(task_type or "").strip().lower()
@@ -184,6 +188,8 @@ class IntegratorAgent:
 
         webhook_url = resolve_webhook_url(connector.settings)
         validation_error = validate_webhook_url(webhook_url)
+        if not validation_error:
+            validation_error = validate_webhook_outbound_scope(webhook_url)
         if validation_error:
             return self._error_result(
                 task,

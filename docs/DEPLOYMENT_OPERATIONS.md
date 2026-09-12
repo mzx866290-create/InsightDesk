@@ -101,7 +101,7 @@ curl http://localhost:8000/healthz
 curl http://localhost:8000/readyz
 ```
 
-`/healthz` 仅表示 API 进程存活；`/readyz` 只做本地配置与运行时轻量检查，不连接 Ollama、Redis、Qdrant 等重型外部服务，避免探针和测试被外部依赖抖动影响。Compose healthcheck 仍保持 `/api/health`，兼容现有部署。
+`/healthz` 仅表示 API 进程存活。`/readyz` 会对当前 SQLite/PostgreSQL 元数据数据库执行短连接查询、检查聊天运行时 wiring，并在 `TASK_BACKEND=arq` 时验证 Redis/ARQ 队列连通性；API 探针不会检查 Worker 心跳，也不会连接 Ollama 或 Qdrant。任一必需检查不可用时，接口返回 HTTP 503 与 `status=not_ready`。响应中的 `checks.database` 是数据库检查的规范字段，`checks.config` 仅作为旧客户端兼容别名保留。Compose healthcheck 仍保持 `/api/health`，兼容现有部署。
 
 ### 启动 API + Redis + ARQ worker
 

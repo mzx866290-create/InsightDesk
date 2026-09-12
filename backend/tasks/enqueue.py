@@ -7,7 +7,10 @@ import os
 from typing import Any
 
 from backend.stores.task_store import TaskRecord
-from backend.tasks.settings import arq_queue_name_from_env
+from backend.tasks.settings import (
+    arq_cancel_timeout_from_env,
+    arq_queue_name_from_env,
+)
 
 
 def _redis_settings_from_env():
@@ -92,10 +95,82 @@ async def enqueue_arq_task(
         await _close_redis_pool(redis)
 
 
+async def cancel_arq_task(
+    task_id: str,
+    *,
+    queue_name: str | None = None,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Request cancellation of a queued or running ARQ task."""
+
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        raise ValueError("task_id is required")
+
+    try:
+        from arq import create_pool
+        from arq.jobs import Job
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "TASK_BACKEND=arq requires the optional 'arq' package. "
+            "Install project requirements before enabling the ARQ backend."
+        ) from exc
+
+    resolved_queue_name = str(queue_name or arq_queue_name_from_env()).strip()
+    job_id = f"task:{normalized_task_id}"
+    redis = await create_pool(
+        _redis_settings_from_env(),
+        default_queue_name=resolved_queue_name,
+    )
+    try:
+        job = Job(job_id, redis, _queue_name=resolved_queue_name)
+        raw_status = await job.status()
+        job_status = str(getattr(raw_status, "value", raw_status) or "").strip().lower()
+        if job_status in {"complete", "not_found"}:
+            return {
+                "task_id": normalized_task_id,
+                "job_id": job_id,
+                "job_status": job_status,
+                "requested": False,
+                "aborted": False,
+                "timed_out": False,
+            }
+
+        timeout = float(
+            arq_cancel_timeout_from_env()
+            if timeout_seconds is None
+            else timeout_seconds
+        )
+        if timeout <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        try:
+            aborted = bool(await job.abort(timeout=timeout))
+        except TimeoutError:
+            return {
+                "task_id": normalized_task_id,
+                "job_id": job_id,
+                "job_status": job_status,
+                "requested": True,
+                "aborted": False,
+                "timed_out": True,
+            }
+        return {
+            "task_id": normalized_task_id,
+            "job_id": job_id,
+            "job_status": job_status,
+            "requested": True,
+            "aborted": aborted,
+            "timed_out": False,
+        }
+    finally:
+        await _close_redis_pool(redis)
+
+
 __all__ = [
     "_close_redis_pool",
     "_maybe_await",
     "_redis_int_call",
     "_redis_settings_from_env",
+    "cancel_arq_task",
     "enqueue_arq_task",
 ]

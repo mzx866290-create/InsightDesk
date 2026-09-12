@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { ImagePlus, Paperclip, Send, Square } from 'lucide-react'
 import { useChatStore } from '../../stores/chatStore'
 import type { ResearchMode, ResearchSourceStrategy } from '../../stores/chatStore'
 import type { ActiveStreamControl } from './streamControl'
@@ -307,102 +308,147 @@ export const MessageInput: React.FC<MessageInputProps> = ({
           onRemoveFile={handleRemoveFile}
         />
 
-        <div className="rounded-2xl border border-bg-border bg-bg-secondary px-4 py-3 transition-colors focus-within:border-accent-blue/50">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <div className="relative w-full flex-1">
-              <ComposerSuggestionMenu
-                suggestions={suggestions}
-                activeSuggestionIndex={activeSuggestionIndex}
-                onApplySuggestion={applySuggestion}
-              />
+        {/* Toolbar row above input */}
+        <div className="mb-1.5 flex items-center justify-between px-1">
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => attachmentInputRef.current?.click()}
+              disabled={composerBusy || composerLocked}
+              data-testid="composer-attachment-button"
+              className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+              title="附加文件"
+            >
+              <Paperclip size={15} />
+            </button>
+            <button
+              type="button"
+              onClick={() => imageInputRef.current?.click()}
+              disabled={composerBusy || composerLocked}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+              title="上传图片"
+            >
+              <ImagePlus size={15} />
+            </button>
+          </div>
+          <ComposerToolbar
+            researchMode={researchMode}
+            researchSourceStrategy={researchSourceStrategy}
+            researchSourceStrategyOptions={RESEARCH_SOURCE_STRATEGY_OPTIONS}
+            omitHistoryForNextSend={omitHistoryForNextSend}
+            webSearchEnabled={webSearchEnabled}
+            knowledgeBaseEnabled={knowledgeBaseEnabled}
+            composerBusy={composerBusy}
+            composerLocked={composerLocked}
+            canResearch={canResearch}
+            canSend={canSend}
+            hasOnlyComposerDataFiles={hasOnlyComposerDataFiles}
+            effectiveComposerResearchMode={effectiveComposerResearchMode}
+            researchButtonLabel={researchButtonLabel}
+            researchButtonTitle={effectiveResearchButtonTitle}
+            isResearchStarting={isResearchStarting}
+            activeStopHandler={activeStopHandler}
+            stopButtonTitle={stopButtonTitle}
+            onSelectResearchMode={handleSelectResearchMode}
+            onSelectResearchSourceStrategy={handleSelectResearchSourceStrategy}
+            onToggleOmitHistory={() => setOmitHistoryForNextSend((current) => !current)}
+            onToggleWebSearch={() => setWebSearchEnabled(!webSearchEnabled)}
+            onToggleKnowledgeBase={() => setKnowledgeBaseEnabled(!knowledgeBaseEnabled)}
+            onChooseAttachment={() => attachmentInputRef.current?.click()}
+            onChooseImage={() => imageInputRef.current?.click()}
+            onStartResearch={() => {
+              void handleStartResearch()
+            }}
+            onSend={() => {
+              void handleSend()
+            }}
+          />
+        </div>
 
-              <textarea
-                ref={textareaRef}
-                data-testid="composer-input"
-                className="min-h-[24px] max-h-[180px] w-full resize-none bg-transparent text-sm leading-relaxed text-text-primary outline-none placeholder:text-text-secondary"
-                placeholder={
-                  composerLocked
-                    ? lockedPlaceholder
-                  : '输入消息，可上传文件或图片。Enter 发送，Shift+Enter 换行。'
-                }
-                value={input}
-                onChange={(event) => {
-                  const nextValue = event.target.value
-                  setInput(nextValue)
-                  updateSuggestions(nextValue, event.target.selectionStart)
-                  adjustHeight()
-                }}
-                onClick={(event) => updateSuggestions(event.currentTarget.value, event.currentTarget.selectionStart)}
-                onKeyUp={(event) => {
-                  if (event.key === 'ArrowUp' || event.key === 'ArrowDown') return
-                  updateSuggestions(event.currentTarget.value, event.currentTarget.selectionStart)
-                }}
-                onPaste={(event) => {
-                  void handlePaste(event)
-                }}
-                onKeyDown={handleKeyDown}
-                rows={1}
-                disabled={composerBusy || composerLocked}
-              />
-            </div>
-
-            <input
-              ref={imageInputRef}
-              type="file"
-              accept="image/*"
-              multiple
-              data-testid="composer-image-input"
-              className="hidden"
-              onChange={(event) => {
-                void handleSelectImages(event)
-              }}
+        {/* Input row with inline send */}
+        <div className="flex items-end gap-2 rounded-2xl border border-bg-border bg-bg-secondary px-4 py-2.5 transition-colors focus-within:border-accent-blue/50">
+          <div className="relative w-full flex-1">
+            <ComposerSuggestionMenu
+              suggestions={suggestions}
+              activeSuggestionIndex={activeSuggestionIndex}
+              onApplySuggestion={applySuggestion}
             />
 
-            <input
-              ref={attachmentInputRef}
-              type="file"
-              accept=".pdf,.doc,.docx,.txt,.md,.csv,.tsv,.json,.xls,.xlsx"
-              multiple
-              data-testid="composer-attachment-input"
-              className="hidden"
+            <textarea
+              ref={textareaRef}
+              data-testid="composer-input"
+              className="min-h-[24px] max-h-[180px] w-full resize-none bg-transparent text-sm leading-relaxed text-text-primary outline-none placeholder:text-text-secondary"
+              placeholder={
+                composerLocked
+                  ? lockedPlaceholder
+                : '发送消息... (Ctrl + Enter 发送)'
+              }
+              value={input}
               onChange={(event) => {
-                void handleSelectFiles(event)
+                const nextValue = event.target.value
+                setInput(nextValue)
+                updateSuggestions(nextValue, event.target.selectionStart)
+                adjustHeight()
               }}
-            />
-
-            <ComposerToolbar
-              researchMode={researchMode}
-              researchSourceStrategy={researchSourceStrategy}
-              researchSourceStrategyOptions={RESEARCH_SOURCE_STRATEGY_OPTIONS}
-              omitHistoryForNextSend={omitHistoryForNextSend}
-              webSearchEnabled={webSearchEnabled}
-              knowledgeBaseEnabled={knowledgeBaseEnabled}
-              composerBusy={composerBusy}
-              composerLocked={composerLocked}
-              canResearch={canResearch}
-              canSend={canSend}
-              hasOnlyComposerDataFiles={hasOnlyComposerDataFiles}
-              effectiveComposerResearchMode={effectiveComposerResearchMode}
-              researchButtonLabel={researchButtonLabel}
-              researchButtonTitle={effectiveResearchButtonTitle}
-              isResearchStarting={isResearchStarting}
-              activeStopHandler={activeStopHandler}
-              stopButtonTitle={stopButtonTitle}
-              onSelectResearchMode={handleSelectResearchMode}
-              onSelectResearchSourceStrategy={handleSelectResearchSourceStrategy}
-              onToggleOmitHistory={() => setOmitHistoryForNextSend((current) => !current)}
-              onToggleWebSearch={() => setWebSearchEnabled(!webSearchEnabled)}
-              onToggleKnowledgeBase={() => setKnowledgeBaseEnabled(!knowledgeBaseEnabled)}
-              onChooseAttachment={() => attachmentInputRef.current?.click()}
-              onChooseImage={() => imageInputRef.current?.click()}
-              onStartResearch={() => {
-                void handleStartResearch()
+              onClick={(event) => updateSuggestions(event.currentTarget.value, event.currentTarget.selectionStart)}
+              onKeyUp={(event) => {
+                if (event.key === 'ArrowUp' || event.key === 'ArrowDown') return
+                updateSuggestions(event.currentTarget.value, event.currentTarget.selectionStart)
               }}
-              onSend={() => {
-                void handleSend()
+              onPaste={(event) => {
+                void handlePaste(event)
               }}
+              onKeyDown={handleKeyDown}
+              rows={1}
+              disabled={composerBusy || composerLocked}
             />
           </div>
+
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            data-testid="composer-image-input"
+            className="hidden"
+            onChange={(event) => {
+              void handleSelectImages(event)
+            }}
+          />
+
+          <input
+            ref={attachmentInputRef}
+            type="file"
+            accept=".pdf,.doc,.docx,.txt,.md,.csv,.tsv,.json,.xls,.xlsx"
+            multiple
+            data-testid="composer-attachment-input"
+            className="hidden"
+            onChange={(event) => {
+              void handleSelectFiles(event)
+            }}
+          />
+
+          {activeStopHandler ? (
+            <button
+              type="button"
+              onClick={activeStopHandler}
+              className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-red/20 text-accent-red transition-colors hover:bg-accent-red/30"
+              title={stopButtonTitle}
+            >
+              <Square size={14} fill="currentColor" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => { void handleSend() }}
+              disabled={!canSend || composerBusy || composerLocked}
+              data-testid="composer-send"
+              className="mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent-blue text-white transition-colors hover:bg-accent-blue-hover disabled:cursor-not-allowed disabled:opacity-30"
+              title="发送"
+            >
+              <Send size={14} />
+            </button>
+          )}
         </div>
 
         <div className="mt-2 flex items-center justify-center text-[10px] text-text-secondary/50">

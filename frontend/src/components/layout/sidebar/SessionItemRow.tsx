@@ -7,6 +7,7 @@ import {
   FolderOpen,
   GripVertical,
   MessageSquare,
+  MoreHorizontal,
   Pencil,
   Pin,
   Star,
@@ -23,6 +24,7 @@ interface SessionItemRowProps {
   isActive: boolean
   isEditing: boolean
   showActions: boolean
+  actionsMenuOpen: boolean
   canDragSort: boolean
   hasDraggingSession: boolean
   isDragging: boolean
@@ -38,6 +40,8 @@ interface SessionItemRowProps {
   workspaceNameMap: Map<string, string>
   formatTime: (timestamp: number) => string
   onSelectSession: (session: Session) => void | Promise<void>
+  onToggleActionsMenu: (sessionId: string) => void
+  onCloseActionsMenu: () => void
   onStartDraggingSession: (sessionId: string) => void
   onDragOverSession: (sessionId: string) => void
   onClearDragOver: () => void
@@ -66,6 +70,7 @@ export function SessionItemRow({
   isActive,
   isEditing,
   showActions,
+  actionsMenuOpen,
   canDragSort,
   hasDraggingSession,
   isDragging,
@@ -81,6 +86,8 @@ export function SessionItemRow({
   workspaceNameMap,
   formatTime,
   onSelectSession,
+  onToggleActionsMenu,
+  onCloseActionsMenu,
   onStartDraggingSession,
   onDragOverSession,
   onClearDragOver,
@@ -295,64 +302,98 @@ export function SessionItemRow({
             type="button"
             onClick={(event) => {
               event.stopPropagation()
-              onToggleMoveSession(session.session_id)
+              onToggleActionsMenu(session.session_id)
             }}
-            className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-            disabled={savingId === session.session_id}
-            title="移动到工作区"
+            className={`rounded-lg p-1.5 transition-colors ${
+              actionsMenuOpen
+                ? 'bg-bg-hover text-text-primary'
+                : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+            }`}
+            aria-expanded={actionsMenuOpen}
+            title="更多会话操作"
           >
-            <FolderOpen size={12} />
+            <MoreHorizontal size={13} />
           </button>
+        </div>
+      )}
+
+      {!isEditing && showActions && actionsMenuOpen && (
+        <div
+          className="mt-2 space-y-1 rounded-lg border border-bg-border bg-bg-primary p-1.5 shadow-lg"
+          data-testid="session-actions-menu"
+          onClick={(event) => event.stopPropagation()}
+        >
           <button
             type="button"
-            onClick={(event) => onStartEditing(event, session)}
-            className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+            onClick={(event) => {
+              event.stopPropagation()
+              onCloseActionsMenu()
+              onToggleMoveSession(session.session_id)
+            }}
+            className="flex min-h-11 w-full items-center gap-2 rounded-md px-2.5 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
             disabled={savingId === session.session_id}
-            title="重命名与编辑标签"
           >
-            <Pencil size={12} />
+            <FolderOpen size={13} />
+            移动到工作区
           </button>
           <button
             type="button"
             onClick={(event) => {
+              onCloseActionsMenu()
+              onStartEditing(event, session)
+            }}
+            className="flex min-h-11 w-full items-center gap-2 rounded-md px-2.5 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+            disabled={savingId === session.session_id}
+          >
+            <Pencil size={13} />
+            重命名与编辑标签
+          </button>
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation()
+              onCloseActionsMenu()
               void onPatchSession(event, session.session_id, {
                 is_archived: !session.is_archived,
               })
             }}
-            className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+            className="flex min-h-11 w-full items-center gap-2 rounded-md px-2.5 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
             disabled={savingId === session.session_id}
-            title={session.is_archived ? '恢复对话' : '归档对话'}
           >
-            {session.is_archived ? (
-              <ArchiveRestore size={12} />
-            ) : (
-              <Archive size={12} />
-            )}
+            {session.is_archived ? <ArchiveRestore size={13} /> : <Archive size={13} />}
+            {session.is_archived ? '恢复对话' : '归档对话'}
           </button>
           <button
             type="button"
-            onClick={(event) => void onExportSession(event, session)}
-            className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+            onClick={(event) => {
+              onCloseActionsMenu()
+              void onExportSession(event, session)
+            }}
+            className="flex min-h-11 w-full items-center gap-2 rounded-md px-2.5 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
             disabled={exportingId === session.session_id}
-            title="导出为 Markdown"
           >
             {exportingId === session.session_id ? (
               <span className="block h-3 w-3 rounded-full border border-current border-t-transparent animate-spin" />
             ) : (
-              <Download size={12} />
+              <Download size={13} />
             )}
+            导出整个会话
           </button>
           <button
-            onClick={(event) => onDeleteSession(event, session)}
-            className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-accent-red/10 hover:text-accent-red"
+            type="button"
+            onClick={(event) => {
+              onCloseActionsMenu()
+              void onDeleteSession(event, session)
+            }}
+            className="flex min-h-11 w-full items-center gap-2 rounded-md px-2.5 text-xs text-accent-red transition-colors hover:bg-accent-red/10"
             disabled={deletingId === session.session_id}
-            title="删除对话"
           >
             {deletingId === session.session_id ? (
               <span className="block h-3 w-3 rounded-full border border-current border-t-transparent animate-spin" />
             ) : (
-              <Trash2 size={12} />
+              <Trash2 size={13} />
             )}
+            删除对话
           </button>
         </div>
       )}

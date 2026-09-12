@@ -43,6 +43,7 @@ import type {
   BatchTaskApproval,
   BatchTaskApprovalResponse,
   CreateMultiAgentWorkflowTaskPayload,
+  TaskCancellationResponse,
   TaskRecord,
   SystemPrompt,
   DashboardTemplateConfig,
@@ -784,6 +785,7 @@ export async function saveConfig(payload: { tavily_api_key?: string }): Promise<
 export async function saveCloudModelApiKey(payload: {
   api_key: string
   api_key_ref?: string
+  base_url: string
 }): Promise<{ api_key_ref: string; api_key_set: boolean }> {
   const res = await authFetch('/config/cloud-model-api-key', {
     method: 'POST',
@@ -823,6 +825,16 @@ export async function getTask(taskId: string): Promise<TaskRecord> {
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }))
     throw new Error(err.detail ?? res.statusText)
+  }
+  return res.json()
+}
+
+export async function cancelTask(taskId: string): Promise<TaskCancellationResponse> {
+  const res = await authFetch(`/tasks/${encodeURIComponent(taskId)}/cancel`, {
+    method: 'POST',
+  })
+  if (!res.ok) {
+    throw new Error(await readErrorDetail(res, 'Failed to cancel task'))
   }
   return res.json()
 }

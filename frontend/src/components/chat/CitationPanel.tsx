@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { FileText, Globe, ChevronDown, ChevronUp, Eye, Image as ImageIcon, Link2, Loader2, Paperclip, ThumbsDown, ThumbsUp } from 'lucide-react'
 import { buildRetrievalSourceKey, getRetrievalFeedback, setRetrievalFeedback } from '../../api/client'
 import type { RetrievalFeedbackValue, SourceItem } from '../../api/client'
@@ -23,15 +23,15 @@ export const CitationPanel: React.FC<CitationPanelProps> = ({
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null)
   const [sourceFeedbackMap, setSourceFeedbackMap] = useState<Record<string, RetrievalFeedbackValue>>({})
   const [savingSourceKey, setSavingSourceKey] = useState<string | null>(null)
-
-  if (!sources || sources.length === 0) return null
-
-  const docSources = sources.filter((s) => s.type === 'doc')
-  const webSources = sources.filter((s) => s.type === 'web')
-  const attachmentSources = sources.filter((s) => s.type === 'attachment')
+  const sourcesRef = useRef(sources)
+  sourcesRef.current = sources
 
   useEffect(() => {
-    if (!currentSessionId || !panelId || !answerGroupId) {
+    // Hooks must run unconditionally: sources can transition from empty to
+    // populated while an answer is streaming, and an early return above this
+    // effect would change the hook count mid-render. The ref avoids refetching
+    // feedback on every streamed citation update.
+    if (!sourcesRef.current || sourcesRef.current.length === 0 || !currentSessionId || !panelId || !answerGroupId) {
       setSourceFeedbackMap({})
       return
     }
@@ -52,6 +52,12 @@ export const CitationPanel: React.FC<CitationPanelProps> = ({
       disposed = true
     }
   }, [currentSessionId, panelId, answerGroupId])
+
+  if (!sources || sources.length === 0) return null
+
+  const docSources = sources.filter((s) => s.type === 'doc')
+  const webSources = sources.filter((s) => s.type === 'web')
+  const attachmentSources = sources.filter((s) => s.type === 'attachment')
 
   const handleSourceFeedback = async (source: SourceItem, value: 1 | -1) => {
     if (!currentSessionId || !panelId || !answerGroupId) return

@@ -45,6 +45,9 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 python-multipart>=0.0.9
 
+# 桌面窗口（desktop/app.py，Windows 使用系统 WebView2）
+pywebview>=5.3; sys_platform == 'win32'
+
 # 工具库
 python-dotenv>=1.0.0
 nest-asyncio>=1.5.8

@@ -117,6 +117,27 @@ def test_remote_admin_routes_require_admin_token(monkeypatch):
     assert allowed.json()["ok"] is True
 
 
+def test_remote_ollama_models_route_requires_viewer_token(monkeypatch):
+    _set_remote_mode(monkeypatch)
+    _set_auth_catalog(monkeypatch)
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    client = TestClient(api_server.app)
+    params = {"base_url": "http://169.254.169.254/latest/meta-data"}
+
+    denied = client.get("/api/models/ollama", params=params)
+    allowed = client.get(
+        "/api/models/ollama",
+        params=params,
+        headers={"X-API-Token": "viewer-token"},
+    )
+
+    assert denied.status_code == 403
+    assert denied.json()["detail"] == "Missing or invalid API token."
+    assert allowed.status_code == 200
+    assert allowed.json()["models"] == []
+    assert "error" in allowed.json()
+
+
 def test_remote_share_routes_require_strong_share_secret(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(api_server, "ALLOW_REMOTE_CLIENTS", True)
@@ -293,6 +314,11 @@ def test_security_status_endpoint_reports_guard_health(monkeypatch):
     assert payload["security_audit_persisted_count"] >= 0
     assert payload["security_audit_memory_window_limit"] >= 1
     assert payload["chat_file_limits"]["max_count"] >= 1
+    assert payload["chat_image_limits"] == {
+        "max_count": api_server.CHAT_IMAGE_MAX_COUNT,
+        "max_bytes": api_server.CHAT_IMAGE_MAX_BYTES,
+        "max_total_bytes": api_server.CHAT_IMAGE_MAX_TOTAL_BYTES,
+    }
     assert payload["document_upload_limits"]["max_count"] >= 1
 
 

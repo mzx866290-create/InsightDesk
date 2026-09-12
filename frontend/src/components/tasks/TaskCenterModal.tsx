@@ -5,6 +5,7 @@ import {
   FileText,
   Layers3,
   Loader2,
+  OctagonX,
   RefreshCw,
   Share2,
   ShieldAlert,
@@ -242,11 +243,13 @@ function parseTaskTypeList(value: string): string[] {
 export const TaskCenterModal: React.FC<TaskCenterModalProps> = ({ open, onClose }) => {
   const tasksMap = useTaskStore((s) => s.tasks)
   const syncRecentTasks = useTaskStore((s) => s.syncRecentTasks)
+  const cancelTask = useTaskStore((s) => s.cancelTask)
   const currentSessionId = useChatStore((s) => s.currentSessionId)
   const panels = useChatStore((s) => s.panels)
 
   const [refreshing, setRefreshing] = useState(false)
   const [retryingTaskId, setRetryingTaskId] = useState<string | null>(null)
+  const [cancellingTaskId, setCancellingTaskId] = useState<string | null>(null)
   const [approvalAction, setApprovalAction] = useState<{
     taskId: string
     decision: TaskApprovalDecision
@@ -423,9 +426,14 @@ export const TaskCenterModal: React.FC<TaskCenterModalProps> = ({ open, onClose 
     setRetryingTaskId(task.task_id)
     setError('')
     try {
+      const retryParams = { ...(task.params ?? {}) }
+      delete retryParams.task_failure_kind
+      delete retryParams.task_cancel_requested
+      delete retryParams.task_cancel_requested_at
+      delete retryParams.task_cancel_requested_by
       await createAndTrackTask(
         task.task_type,
-        task.params ?? {},
+        retryParams,
         task.session_id ?? currentSessionId ?? undefined,
       )
       await syncRecentTasks(30)
@@ -433,6 +441,23 @@ export const TaskCenterModal: React.FC<TaskCenterModalProps> = ({ open, onClose 
       setError((err as Error).message)
     } finally {
       setRetryingTaskId(null)
+    }
+  }
+
+  const handleCancel = async (task: TaskRecord) => {
+    if (cancellingTaskId) return
+    setCancellingTaskId(task.task_id)
+    setError('')
+    try {
+      const result = await cancelTask(task.task_id)
+      if (!result.cancelled) {
+        setError('Cancellation was requested and is waiting for the worker to stop.')
+      }
+      await syncRecentTasks(30)
+    } catch (err) {
+      setError((err as Error).message || 'Failed to cancel task.')
+    } finally {
+      setCancellingTaskId(null)
     }
   }
 
@@ -837,7 +862,10 @@ export const TaskCenterModal: React.FC<TaskCenterModalProps> = ({ open, onClose 
           ) : (
             <div className="space-y-3">
               {filteredTasks.map((task) => {
-                const statusMeta = STATUS_META[task.status]
+                const wasCancelled = task.params?.task_failure_kind === 'cancelled'
+                const statusMeta = wasCancelled
+                  ? { ...STATUS_META.failed, label: 'Cancelled' }
+                  : STATUS_META[task.status]
                 const restartInterrupted = isRestartInterruptedTask(task)
                 const contextLabel = taskContextLabel(task)
                 const needsApproval =
@@ -863,6 +891,11 @@ export const TaskCenterModal: React.FC<TaskCenterModalProps> = ({ open, onClose 
                   typeof task.params?.deck_title === 'string' ? task.params.deck_title : 'Deck Draft'
                 const canOpenReport = task.status === 'completed' && Boolean(reportMarkdown)
                 const canOpenDeck = task.status === 'completed' && Boolean(deckId)
+                const isCancellable =
+                  task.status === 'pending' ||
+                  task.status === 'running' ||
+                  task.status === 'waiting_approval'
+                const cancelRequested = task.params?.task_cancel_requested === true
 
                 return (
                   <div
@@ -889,6 +922,11 @@ export const TaskCenterModal: React.FC<TaskCenterModalProps> = ({ open, onClose 
                               Restart interrupted
                             </span>
                           )}
+                          {cancelRequested && isCancellable && (
+                            <span className="rounded-full border border-amber-400/30 px-2 py-0.5 text-[11px] text-amber-300">
+                              Cancel requested
+                            </span>
+                          )}
                         </div>
 
                         <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-text-secondary">
@@ -903,6 +941,29 @@ export const TaskCenterModal: React.FC<TaskCenterModalProps> = ({ open, onClose 
                       </div>
 
                       <div className="flex flex-wrap gap-2">
+                        {isCancellable && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              void handleCancel(task)
+                            }}
+                            disabled={cancellingTaskId !== null || cancelRequested}
+                            data-testid="task-center-cancel"
+                            aria-busy={cancellingTaskId === task.task_id}
+                            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-accent-red/30 bg-accent-red/10 px-3 py-2 text-xs text-accent-red transition-colors hover:bg-accent-red/20 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {cancellingTaskId === task.task_id ? (
+                              <Loader2 size={12} className="animate-spin" />
+                            ) : (
+                              <OctagonX size={12} />
+                            )}
+                            {cancellingTaskId === task.task_id
+                              ? 'Cancelling...'
+                              : cancelRequested
+                                ? 'Cancel requested'
+                                : 'Cancel'}
+                          </button>
+                        )}
                         {needsApproval && (
                           <>
                             <button
@@ -949,14 +1010,18 @@ export const TaskCenterModal: React.FC<TaskCenterModalProps> = ({ open, onClose 
                               void handleRetry(task)
                             }}
                             disabled={retryingTaskId === task.task_id}
-                            className="inline-flex items-center gap-1.5 rounded-lg border border-bg-border px-3 py-1.5 text-xs text-text-secondary transition-colors hover:border-accent-blue/40 hover:text-text-primary disabled:opacity-50"
+                            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg border border-bg-border px-3 py-2 text-xs text-text-secondary transition-colors hover:border-accent-blue/40 hover:text-text-primary disabled:opacity-50"
                           >
                             {retryingTaskId === task.task_id ? (
                               <Loader2 size={12} className="animate-spin" />
                             ) : (
                               <RefreshCw size={12} />
                             )}
-                            {restartInterrupted ? 'Relaunch' : 'Retry'}
+                            {restartInterrupted
+                              ? 'Relaunch'
+                              : wasCancelled
+                                ? 'Run again'
+                                : 'Retry'}
                           </button>
                         )}
                       </div>

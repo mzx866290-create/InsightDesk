@@ -17,6 +17,14 @@ future enhancements, not required for local use.
 
 The Windows launcher creates and uses `venv312` automatically.
 
+### Desktop Window (Windows, optional)
+
+Double-click `启动桌面版.bat` (or run `venv312\Scripts\python.exe desktop\app.py`)
+to open InsightDesk in a native desktop window instead of a browser tab. The
+launcher picks a free port, starts the local backend, and shuts it down when the
+window closes. Prerequisites: `venv312` ready and `frontend/dist` built via
+`cd frontend && npm run build`.
+
 If you access the app remotely and have enabled protected routes, open Settings and save a configured API token before using knowledge-base or prompt-management features. The backend accepts `Authorization: Bearer <token>`, `X-API-Token`, and the legacy `X-Admin-Token` header.
 
 ## Connectivity Check

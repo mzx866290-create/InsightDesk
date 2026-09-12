@@ -1,5 +1,6 @@
 """Chat route definitions."""
 
+import asyncio
 import logging
 from typing import Any, AsyncGenerator, Awaitable, Callable
 
@@ -8,12 +9,55 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from backend.agent.providers.ollama import list_ollama_models
+from backend.core.storage_runtime import database_readiness_status
 from backend.routes.resource_access_helpers import require_resource_access
 from backend.schemas.api_models import ChatRequest, SingleChatRequest
+from backend.tasks.health import arq_queue_health_payload
+from backend.tasks.settings import task_backend_from_env
 
 
 class MCPConnectorApprovalRequest(BaseModel):
     name: str = Field(..., min_length=1)
+
+
+async def runtime_readiness_checks(
+    *,
+    runtime_ready: bool,
+    timeout_seconds: float = 3.0,
+) -> dict[str, str]:
+    """Check runtime wiring plus configured database and task-queue dependencies."""
+
+    try:
+        database_status = await asyncio.wait_for(
+            asyncio.to_thread(database_readiness_status),
+            timeout=timeout_seconds,
+        )
+    except Exception:
+        database_status = "unavailable"
+
+    task_queue_status = "ok"
+    try:
+        if task_backend_from_env() == "arq":
+            queue_health = await asyncio.wait_for(
+                arq_queue_health_payload(heartbeat_seconds=0),
+                timeout=timeout_seconds,
+            )
+            warnings = set(queue_health.get("warnings") or [])
+            if queue_health.get("status") == "unavailable" or (
+                "arq_worker_heartbeat_missing" in warnings
+            ):
+                task_queue_status = "unavailable"
+    except Exception:
+        task_queue_status = "unavailable"
+
+    return {
+        # Keep `config` as a compatibility alias for clients that consumed the
+        # original readiness payload; `database` is the canonical check name.
+        "config": database_status,
+        "database": database_status,
+        "runtime": "ok" if runtime_ready else "unavailable",
+        "task_queue": task_queue_status,
+    }
 
 
 def build_chat_router(
@@ -56,8 +100,8 @@ def build_chat_router(
 
         return time.time()
 
-    def readiness_checks() -> dict[str, str]:
-        runtime_ready = all(
+    def runtime_is_ready() -> bool:
+        return all(
             callable(check)
             for check in (
                 prepare_chat_route_runtime,
@@ -69,10 +113,6 @@ def build_chat_router(
                 invoke_agent_stream,
             )
         )
-        return {
-            "config": "ok",
-            "runtime": "ok" if runtime_ready else "unavailable",
-        }
 
     def probe_response(payload: dict[str, Any], status_code: int = 200) -> JSONResponse:
         return JSONResponse(content=payload, status_code=status_code)
@@ -101,8 +141,7 @@ def build_chat_router(
 
     @router.get("/readyz")
     async def readyz():
-        # Keep readiness local-only so probes stay fast and deterministic.
-        checks = readiness_checks()
+        checks = await runtime_readiness_checks(runtime_ready=runtime_is_ready())
         ready = all(status == "ok" for status in checks.values())
         return probe_response(
             {
@@ -197,7 +236,8 @@ def build_chat_router(
         return payload
 
     @router.get("/api/models/ollama")
-    async def get_ollama_models(base_url: str = "http://localhost:11434"):
+    async def get_ollama_models(request: Request, base_url: str | None = None):
+        require_remote_viewer(request)
         return await list_ollama_models(base_url, route_logger=logger)
 
     @router.post("/api/agents/reset")

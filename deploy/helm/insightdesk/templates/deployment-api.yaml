@@ -22,11 +22,17 @@ spec:
         {{- include "insightdesk.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: api
     spec:
+      automountServiceAccountToken: {{ .Values.pod.automountServiceAccountToken }}
+      enableServiceLinks: {{ .Values.pod.enableServiceLinks }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds }}
       containers:
         - name: api
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           command:
             {{- toYaml .Values.api.command | nindent 12 }}
           args:
@@ -34,12 +40,22 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "insightdesk.fullname" . }}-config
+            {{ if .Values.secret.existingSecret }}
+            - secretRef:
+                name: {{ .Values.secret.existingSecret | quote }}
+                optional: {{ .Values.secret.optional }}
+            {{ end }}
+            {{ with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{ end }}
           env:
             {{- toYaml .Values.env | nindent 12 }}
           ports:
             - name: http
-              containerPort: 8000
+              containerPort: {{ .Values.config.serverPort | int }}
               protocol: TCP
+          startupProbe:
+            {{- toYaml .Values.api.startupProbe | nindent 12 }}
           livenessProbe:
             {{- toYaml .Values.api.livenessProbe | nindent 12 }}
           readinessProbe:

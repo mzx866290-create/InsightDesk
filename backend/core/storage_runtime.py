@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,28 @@ SUPPORTED_QDRANT_URL_SCHEMES = {"http", "https"}
 STORAGE_MIGRATION_EXECUTE_ENV = "STORAGE_MIGRATION_EXECUTE"
 STORAGE_MIGRATION_ROLLBACK_ENV = "STORAGE_MIGRATION_ROLLBACK"
 STORAGE_INTEGRATION_TEST_ENV = "STORAGE_INTEGRATION_TEST"
+POSTGRES_STORE_COVERAGE = (
+    "app_config",
+    "artifacts",
+    "chat_messages",
+    "chat_sessions",
+    "decks",
+    "identity",
+    "resource_access",
+    "retrieval_feedback",
+    "security_audit",
+    "session_memory",
+    "session_panels",
+    "share_links",
+    "sso_sessions",
+    "tasks",
+)
+POSTGRES_STORE_PENDING = (
+    "assistant_presets",
+    "bookmarks",
+    "system_prompts",
+    "workspaces",
+)
 
 
 @dataclass(frozen=True)
@@ -217,11 +240,7 @@ def validate_qdrant_config(
 
 
 def database_provider() -> str:
-    """Return the configured metadata database provider.
-
-    SQLite remains the only implemented provider. Keeping this explicit gives the
-    rest of the app a stable boundary for a future PostgreSQL adapter.
-    """
+    """Return the configured metadata database provider."""
 
     provider = (
         str(os.getenv("DATABASE_PROVIDER") or DATABASE_PROVIDER_SQLITE).strip().lower()
@@ -251,6 +270,15 @@ def app_database_path(default: str = DEFAULT_SQLITE_DB_PATH) -> str:
     ).strip()
 
 
+def sqlite_history_db_path(history: Any) -> str | None:
+    """Return an explicit SQLite path without leaking a PostgreSQL DSN to SQLite."""
+
+    if database_provider() == DATABASE_PROVIDER_POSTGRES:
+        return None
+    db_path = str(getattr(history, "db_path", "") or "").strip()
+    return db_path or None
+
+
 def ensure_sqlite_parent(db_path: str) -> None:
     """Create the parent directory for a SQLite file path when it is explicit."""
 
@@ -264,11 +292,7 @@ def ensure_sqlite_parent(db_path: str) -> None:
 
 
 def assert_supported_database_provider() -> str:
-    """Validate the configured provider and return it.
-
-    This intentionally fails fast for non-SQLite providers until a concrete
-    adapter exists, instead of silently pretending PostgreSQL is supported.
-    """
+    """Validate the configured provider and return it."""
 
     provider = database_provider()
     if provider not in SUPPORTED_DATABASE_PROVIDERS:
@@ -303,12 +327,20 @@ def database_runtime_summary(default: str = DEFAULT_SQLITE_DB_PATH) -> dict[str,
     if provider == DATABASE_PROVIDER_POSTGRES:
         config_check = validate_postgres_config()
         warnings.extend(config_check["warnings"])
-        risks.append("postgres_store_coverage_is_partial")
+        if POSTGRES_STORE_PENDING:
+            risks.append("postgres_store_coverage_is_partial")
+        target = {
+            **config_check["target"],
+            "adapter_coverage": {
+                "covered": list(POSTGRES_STORE_COVERAGE),
+                "pending": list(POSTGRES_STORE_PENDING),
+            },
+        }
         return StorageValidationSummary(
             kind="database",
             provider=provider,
             configured=config_check["configured"],
-            target=config_check["target"],
+            target=target,
             availability=config_check["availability"],
             operations=operations,
             warnings=tuple(warnings),
@@ -344,6 +376,38 @@ def database_runtime_summary(default: str = DEFAULT_SQLITE_DB_PATH) -> dict[str,
         warnings=tuple(warnings),
         risks=tuple(risks),
     ).to_dict()
+
+
+def database_readiness_status(
+    default: str = DEFAULT_SQLITE_DB_PATH,
+    *,
+    timeout_seconds: float = 2.0,
+) -> str:
+    """Probe the configured metadata database with a short connectivity query."""
+
+    try:
+        provider = assert_supported_database_provider()
+        if provider == DATABASE_PROVIDER_POSTGRES:
+            config = validate_postgres_config()
+            if not config["valid"]:
+                return "unavailable"
+            import psycopg
+
+            connect_timeout = max(1, int(timeout_seconds))
+            with psycopg.connect(postgres_dsn(), connect_timeout=connect_timeout) as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+                    if cursor.fetchone() is None:
+                        return "unavailable"
+            return "ok"
+
+        db_path = app_database_path(default)
+        ensure_sqlite_parent(db_path)
+        with sqlite3.connect(db_path, timeout=max(0.1, timeout_seconds)) as conn:
+            row = conn.execute("SELECT 1").fetchone()
+        return "ok" if row else "unavailable"
+    except Exception:
+        return "unavailable"
 
 
 def vector_store_provider() -> str:

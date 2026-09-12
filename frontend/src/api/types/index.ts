@@ -511,6 +511,7 @@ export interface SecurityStatusResponse {
   security_audit_persisted_count: number
   security_audit_memory_window_limit: number
   chat_file_limits: Record<string, number>
+  chat_image_limits: Record<string, number>
   document_upload_limits: Record<string, number>
 }
 
@@ -1232,6 +1233,22 @@ export interface TaskRecord {
   session_id?: string | null
   created_at: number
   updated_at?: number
+}
+
+export interface TaskCancellationResponse {
+  ok: boolean
+  cancel_requested: boolean
+  cancelled: boolean
+  backend: string
+  external?: {
+    task_id?: string
+    job_id?: string
+    job_status?: string
+    requested?: boolean
+    aborted?: boolean
+    timed_out?: boolean
+  } | null
+  task: TaskRecord
 }
 
 export interface SystemPrompt {

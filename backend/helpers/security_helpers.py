@@ -447,6 +447,7 @@ def build_security_status_payload(
     security_audit_history_limit_source: str,
     security_audit_memory_window_limit: int,
     chat_file_limits: dict[str, int],
+    chat_image_limits: dict[str, int],
     document_upload_limits: dict[str, int],
     cors_allowed_origins: list[str],
     cors_allow_credentials: bool,
@@ -540,6 +541,7 @@ def build_security_status_payload(
         "security_audit_persisted_count": int(security_audit_persisted_count),
         "security_audit_memory_window_limit": int(security_audit_memory_window_limit),
         "chat_file_limits": chat_file_limits,
+        "chat_image_limits": chat_image_limits,
         "document_upload_limits": document_upload_limits,
     }
 

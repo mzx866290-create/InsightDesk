@@ -603,6 +603,54 @@ def test_enqueue_task_arq_backend_persists_and_queues_without_local_spawn():
     asyncio.run(run())
 
 
+def test_enqueue_task_marks_record_failed_when_external_dispatch_fails():
+    async def run():
+        tasks: dict[str, TaskRecord] = {}
+        lock = asyncio.Lock()
+        persisted: list[tuple[TaskStatus, str | None]] = []
+
+        async def fake_run_task(record: TaskRecord):
+            record.progress = 100
+
+        async def failing_enqueue_external_task(record: TaskRecord):
+            raise ConnectionError("redis unavailable")
+
+        try:
+            await enqueue_task(
+                tasks,
+                lock,
+                task_type="web_research",
+                params={"query": "AI agents"},
+                session_id="session-1",
+                prune_in_memory=lambda now=None: None,
+                persist_record=lambda record: persisted.append(
+                    (record.status, record.error)
+                ),
+                prune_persisted=lambda: None,
+                run_task=fake_run_task,
+                spawn_background_task=lambda coro: object(),
+                logger=logging.getLogger("test-task-runtime"),
+                task_backend="arq",
+                enqueue_external_task=failing_enqueue_external_task,
+            )
+        except ConnectionError as exc:
+            assert str(exc) == "redis unavailable"
+        else:
+            raise AssertionError("Expected enqueue_task to propagate the dispatch error")
+
+        record = next(iter(tasks.values()))
+        assert record.status == TaskStatus.FAILED
+        assert record.progress == 0
+        assert record.error is not None
+        assert "dispatch failed" in record.error.lower()
+        assert [status for status, _error in persisted] == [
+            TaskStatus.PENDING,
+            TaskStatus.FAILED,
+        ]
+
+    asyncio.run(run())
+
+
 def test_task_queue_backend_dispatches_memory_and_arq_records():
     async def run():
         record = TaskRecord(

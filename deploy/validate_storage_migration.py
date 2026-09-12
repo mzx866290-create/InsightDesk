@@ -97,6 +97,7 @@ POSTGRES_COPY_COLUMNS = {
         "files_json",
         "sources_json",
         "workflow_json",
+        "token_usage_json",
         "task_id",
         "task_type",
         "feedback_value",
@@ -317,6 +318,7 @@ POSTGRES_TABLE_DDL = {
             files_json TEXT DEFAULT '',
             sources_json TEXT DEFAULT '',
             workflow_json TEXT DEFAULT '',
+            token_usage_json TEXT DEFAULT '',
             task_id TEXT DEFAULT '',
             task_type TEXT DEFAULT '',
             feedback_value INTEGER DEFAULT 0

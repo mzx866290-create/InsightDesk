@@ -20,10 +20,14 @@ class FakeUpload:
         self._payload = payload
         self._error = error
 
-    async def read(self) -> bytes:
+    async def read(self, size: int = -1) -> bytes:
         if self._error is not None:
             raise self._error
-        return self._payload
+        if size is None or size < 0:
+            return self._payload
+        chunk = self._payload[:size]
+        self._payload = self._payload[size:]
+        return chunk
 
 
 def _install_tempfile_factory(monkeypatch, tmp_path: Path) -> None:

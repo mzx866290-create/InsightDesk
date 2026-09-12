@@ -76,6 +76,7 @@ class SaveConfigRequest(BaseModel):
 class UpsertCloudModelApiKeyRequest(BaseModel):
     api_key: str
     api_key_ref: str | None = None
+    base_url: str
 
 
 class UpsertIntegratorConnectorsRequest(BaseModel):
@@ -245,7 +246,7 @@ def build_operations_router(
     sync_runtime_secret_from_store: Callable[[str, str], str],
     validate_tavily_api_key: Callable[[str], Awaitable[None]],
     get_app_config_store: Callable[[], Any],
-    upsert_cloud_model_api_key: Callable[[str | None, str], str],
+    upsert_cloud_model_api_key: Callable[[str | None, str, str], str],
     delete_cloud_model_api_key: Callable[[str], bool],
     clear_agent_cache: Callable[[], Awaitable[Any]],
     audit_security_event: Callable[..., Any],
@@ -529,7 +530,11 @@ def build_operations_router(
         payload: UpsertCloudModelApiKeyRequest,
     ):
         require_remote_admin(request)
-        api_key_ref = upsert_cloud_model_api_key(payload.api_key_ref, payload.api_key)
+        api_key_ref = upsert_cloud_model_api_key(
+            payload.api_key_ref,
+            payload.api_key,
+            payload.base_url,
+        )
         audit_security_event(
             "save_cloud_model_api_key",
             request,

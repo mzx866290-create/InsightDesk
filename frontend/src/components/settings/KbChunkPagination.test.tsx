@@ -1,7 +1,8 @@
 import React from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { useChatStore } from '../../stores/chatStore'
 import { KbChunkPagination } from './KbChunkPagination'
 
 vi.mock('../ui/Button', () => ({
@@ -15,6 +16,10 @@ vi.mock('../ui/Button', () => ({
 }))
 
 describe('KbChunkPagination', () => {
+  beforeEach(() => {
+    useChatStore.setState({ language: 'zh-CN' })
+  })
+
   afterEach(() => {
     cleanup()
   })
@@ -34,10 +39,14 @@ describe('KbChunkPagination', () => {
       />,
     )
 
-    const buttons = screen.getAllByRole('button')
-    fireEvent.click(buttons[0])
-    fireEvent.click(buttons[1])
+    const previousButton = screen.getByRole('button', { name: '上一页' })
+    const nextButton = screen.getByRole('button', { name: '下一页' })
+    fireEvent.click(previousButton)
+    fireEvent.click(nextButton)
 
+    expect(screen.getByText('第 2 / 5 页，共 60 条')).toBeInTheDocument()
+    expect(previousButton).toHaveClass('min-h-11')
+    expect(nextButton).toHaveClass('min-h-11')
     expect(onPreviousPage).toHaveBeenCalledTimes(1)
     expect(onNextPage).toHaveBeenCalledTimes(1)
   })
@@ -54,9 +63,8 @@ describe('KbChunkPagination', () => {
       />,
     )
 
-    const firstPageButtons = screen.getAllByRole('button')
-    expect(firstPageButtons[0]).toBeDisabled()
-    expect(firstPageButtons[1]).toBeDisabled()
+    expect(screen.getByRole('button', { name: '上一页' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '下一页' })).toBeDisabled()
 
     rerender(
       <KbChunkPagination
@@ -69,8 +77,7 @@ describe('KbChunkPagination', () => {
       />,
     )
 
-    const loadingButtons = screen.getAllByRole('button')
-    expect(loadingButtons[0]).toBeDisabled()
-    expect(loadingButtons[1]).toBeDisabled()
+    expect(screen.getByRole('button', { name: '上一页' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '下一页' })).toBeDisabled()
   })
 })

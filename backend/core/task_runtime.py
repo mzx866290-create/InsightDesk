@@ -65,6 +65,7 @@ TASK_RUNTIME_CONTEXT_ATTRIBUTES = (
     "os",
     "persist_web_research_task_placeholder",
     "persist_web_research_task_result",
+    "persist_multi_agent_workflow_task_result",
     "prune_task_records",
     "run_analyze_knowledge_base_task",
     "run_generate_deck_task",
@@ -78,6 +79,14 @@ TASK_RUNTIME_CONTEXT_ATTRIBUTES = (
     "task_record_payload",
     "time",
 )
+
+
+DEFAULT_QUICK_RESEARCH_TASK_TIMEOUT_SECONDS = 180.0
+DEFAULT_DEEP_RESEARCH_TASK_TIMEOUT_SECONDS = 600.0
+DEFAULT_MULTI_AGENT_WORKFLOW_TASK_TIMEOUT_SECONDS = 900.0
+MAX_TASK_TIMEOUT_SECONDS = 24 * 60 * 60.0
+TASK_TIMEOUT_FAILURE_KIND = "timeout"
+TASK_CANCELLED_FAILURE_KIND = "cancelled"
 
 
 class TaskRuntimeContext:
@@ -139,6 +148,34 @@ async def _drop_suppressed_task(ctx, record: TaskRecord) -> bool:
     async with ctx._tasks_lock:
         ctx._tasks.pop(record.task_id, None)
         ctx._prune_task_records_locked()
+    return True
+
+
+def _task_cancel_requested(ctx, record: TaskRecord) -> bool:
+    """Read a durable cancellation request written by another API process."""
+
+    try:
+        persisted = ctx._get_task_store().get(record.task_id)
+    except Exception:
+        ctx.logger.exception(
+            "task_id=%s failed to read persisted cancellation state",
+            record.task_id,
+        )
+        return False
+    if persisted is None:
+        return False
+    persisted_params = dict(getattr(persisted, "params", {}) or {})
+    if not bool(persisted_params.get("task_cancel_requested")):
+        return False
+    merged_params = dict(record.params or {})
+    for key in (
+        "task_cancel_requested",
+        "task_cancel_requested_at",
+        "task_cancel_requested_by",
+    ):
+        if key in persisted_params:
+            merged_params[key] = persisted_params[key]
+    record.params = merged_params
     return True
 
 
@@ -264,7 +301,95 @@ def _prune_task_records_locked(ctx, now: float | None = None) -> None:
     )
 
 
-async def _run_task(ctx, record: TaskRecord) -> None:
+def _positive_timeout_from_env(ctx, name: str, default: float) -> float:
+    raw_value = str(ctx.os.getenv(name) or "").strip()
+    if not raw_value:
+        return default
+    try:
+        timeout_seconds = float(raw_value)
+    except ValueError:
+        ctx.logger.warning("Ignoring invalid %s=%r; using %.1fs", name, raw_value, default)
+        return default
+    if timeout_seconds <= 0:
+        ctx.logger.warning("Ignoring non-positive %s=%r; using %.1fs", name, raw_value, default)
+        return default
+    return min(timeout_seconds, MAX_TASK_TIMEOUT_SECONDS)
+
+
+def _task_execution_timeout_seconds(ctx, record: TaskRecord) -> float | None:
+    task_type = str(record.task_type or "").strip().lower()
+    if task_type == "web_research":
+        if str(record.params.get("research_mode") or "").strip().lower() == "deep":
+            return _positive_timeout_from_env(
+                ctx,
+                "DEEP_RESEARCH_TASK_TIMEOUT_SECONDS",
+                DEFAULT_DEEP_RESEARCH_TASK_TIMEOUT_SECONDS,
+            )
+        return _positive_timeout_from_env(
+            ctx,
+            "WEB_RESEARCH_TASK_TIMEOUT_SECONDS",
+            DEFAULT_QUICK_RESEARCH_TASK_TIMEOUT_SECONDS,
+        )
+    if task_type == "multi_agent_workflow":
+        return _positive_timeout_from_env(
+            ctx,
+            "MULTI_AGENT_WORKFLOW_TASK_TIMEOUT_SECONDS",
+            DEFAULT_MULTI_AGENT_WORKFLOW_TASK_TIMEOUT_SECONDS,
+        )
+    return None
+
+
+def _persist_task_failure_output(ctx, record: TaskRecord) -> None:
+    error = str(record.error or "Task failed before completion.").strip()
+    try:
+        if record.task_type == "web_research":
+            ctx.persist_web_research_task_result(
+                record,
+                content=f"Research task failed: {error}",
+                sources=[],
+            )
+        elif record.task_type == "multi_agent_workflow":
+            ctx.persist_multi_agent_workflow_task_result(
+                record,
+                content=f"Multi-agent workflow failed: {error}",
+            )
+    except Exception:
+        ctx.logger.exception(
+            "task_id=%s task_type=%s failed to persist terminal output",
+            record.task_id,
+            record.task_type,
+        )
+
+
+async def _finalize_interrupted_task(
+    ctx,
+    record: TaskRecord,
+    *,
+    failure_kind: str,
+    error: str,
+) -> None:
+    if await ctx._drop_suppressed_task(record):
+        return
+    async with ctx._tasks_lock:
+        if record.status in {
+            ctx.TaskStatus.COMPLETED,
+            ctx.TaskStatus.FAILED,
+            ctx.TaskStatus.WAITING_APPROVAL,
+        }:
+            return
+        params = dict(record.params or {})
+        params["task_failure_kind"] = failure_kind
+        record.params = params
+        record.status = ctx.TaskStatus.FAILED
+        record.error = error
+        record.updated_at = ctx.time.time()
+        ctx._prune_task_records_locked(record.updated_at)
+    ctx._persist_task_record(record)
+    _persist_task_failure_output(ctx, record)
+    ctx._prune_persisted_tasks()
+
+
+async def _run_task_unbounded(ctx, record: TaskRecord) -> None:
     """后台执行任务并更新状态"""
     deep_research_slot: ctx.asyncio.Semaphore | None = None
     deep_research_acquired = False
@@ -273,6 +398,8 @@ async def _run_task(ctx, record: TaskRecord) -> None:
             deep_research_slot = ctx._get_deep_research_semaphore()
             await deep_research_slot.acquire()
             deep_research_acquired = True
+        if _task_cancel_requested(ctx, record):
+            raise ctx.asyncio.CancelledError
         normalize_model_config = _runtime_model_config_resolver(ctx)
         async with ctx._tasks_lock:
             ctx._prune_task_records_locked()
@@ -285,6 +412,8 @@ async def _run_task(ctx, record: TaskRecord) -> None:
         task_type = record.task_type
 
         async def _set_progress(progress: int) -> None:
+            if _task_cancel_requested(ctx, record):
+                raise ctx.asyncio.CancelledError
             if await ctx._drop_suppressed_task(record):
                 return
             async with ctx._tasks_lock:
@@ -378,6 +507,27 @@ async def _run_task(ctx, record: TaskRecord) -> None:
             ctx._persist_task_record(record)
             ctx._prune_persisted_tasks()
             return
+        if task_type == "multi_agent_workflow" and workflow_status == "failed":
+            workflow_state = record.params.get("workflow_state")
+            raw_workflow_errors = (
+                workflow_state.get("errors") if isinstance(workflow_state, dict) else None
+            )
+            workflow_errors: list[Any] = []
+            if isinstance(raw_workflow_errors, (list, tuple)):
+                workflow_errors = list(raw_workflow_errors)
+            elif raw_workflow_errors:
+                workflow_errors = [raw_workflow_errors]
+            error = str(workflow_errors[0] if workflow_errors else "").strip()
+            workflow_failure_kind = str(
+                workflow_state.get("failure_kind")
+                if isinstance(workflow_state, dict)
+                else ""
+            ).strip().lower()
+            if workflow_failure_kind == TASK_TIMEOUT_FAILURE_KIND:
+                raise TimeoutError(error or "Multi-agent workflow timed out.")
+            raise RuntimeError(error or "Multi-agent workflow failed.")
+        if _task_cancel_requested(ctx, record):
+            raise ctx.asyncio.CancelledError
         async with ctx._tasks_lock:
             record.status = ctx.TaskStatus.COMPLETED
             record.progress = 100
@@ -395,6 +545,14 @@ async def _run_task(ctx, record: TaskRecord) -> None:
                     ctx.os.remove(str(temp_path))
                 except OSError:
                     pass
+        if isinstance(exc, TimeoutError):
+            await _finalize_interrupted_task(
+                ctx,
+                record,
+                failure_kind=TASK_TIMEOUT_FAILURE_KIND,
+                error=str(exc).strip() or "Task execution timed out.",
+            )
+            return
         if await ctx._drop_suppressed_task(record):
             return
         async with ctx._tasks_lock:
@@ -403,14 +561,50 @@ async def _run_task(ctx, record: TaskRecord) -> None:
             record.updated_at = ctx.time.time()
             ctx._prune_task_records_locked(record.updated_at)
         ctx._persist_task_record(record)
-        if record.task_type == "web_research":
-            ctx.persist_web_research_task_result(
-                record, content=f"联网研究任务失败：{record.error}", sources=[]
-            )
+        _persist_task_failure_output(ctx, record)
         ctx._prune_persisted_tasks()
     finally:
         if deep_research_slot is not None and deep_research_acquired:
             deep_research_slot.release()
+
+
+async def _run_task(ctx, record: TaskRecord) -> None:
+    """Execute a task with an end-to-end budget and durable cancellation cleanup."""
+    timeout_seconds = _task_execution_timeout_seconds(ctx, record)
+    if timeout_seconds is None:
+        await _run_task_unbounded(ctx, record)
+        return
+
+    params = dict(record.params or {})
+    params["task_timeout_seconds"] = timeout_seconds
+    record.params = params
+    try:
+        await ctx.asyncio.wait_for(
+            _run_task_unbounded(ctx, record),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError:
+        error = f"Task timed out after {timeout_seconds:g} seconds."
+        ctx.logger.warning(
+            "task_id=%s task_type=%s %s",
+            record.task_id,
+            record.task_type,
+            error,
+        )
+        await _finalize_interrupted_task(
+            ctx,
+            record,
+            failure_kind=TASK_TIMEOUT_FAILURE_KIND,
+            error=error,
+        )
+    except ctx.asyncio.CancelledError:
+        await _finalize_interrupted_task(
+            ctx,
+            record,
+            failure_kind=TASK_CANCELLED_FAILURE_KIND,
+            error="Task execution was cancelled before completion.",
+        )
+        raise
 
 
 async def create_task(ctx, request: CreateTaskRequest) -> dict[str, Any]:

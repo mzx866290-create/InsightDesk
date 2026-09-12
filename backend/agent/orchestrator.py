@@ -919,6 +919,47 @@ def build_orchestrator_graph(
                 agent_context["_plan"] = _copy_plan(state.get("plan", []))
                 agent_context["_current_step"] = step_index
                 result = await agent.execute(task, agent_context)
+                result_status = str(result.get("status") or "completed").strip().lower()
+                if result_status in {"failed", "error", "cancelled", "canceled"}:
+                    error = str(
+                        result.get("error")
+                        or result.get("output")
+                        or f"{expected_agent} agent failed."
+                    ).strip()
+                    result_metadata = _dict_or_empty(result.get("metadata"))
+                    failure_kind = str(
+                        result.get("failure_kind")
+                        or result_metadata.get("failure_kind")
+                        or ""
+                    ).strip().lower()
+                    metric = build_agent_metric(
+                        task,
+                        expected_agent,
+                        result,
+                        duration_ms=int((time.perf_counter() - started_at) * 1000),
+                        status="failed",
+                        error=error,
+                        trace_id=str(span.trace_id or ""),
+                        span_id=str(span.span_id or ""),
+                    )
+                    span.set_attributes(
+                        {
+                            "step_status": "failed",
+                            "result_status": result_status,
+                            "duration_ms": metric["duration_ms"],
+                            "total_tokens": metric["total_tokens"],
+                            "estimated_cost_usd": metric["estimated_cost_usd"],
+                        }
+                    )
+                    outcome = {
+                        "index": step_index,
+                        "task_id": task["id"],
+                        "error": error,
+                        "metric": metric,
+                    }
+                    if failure_kind:
+                        outcome["failure_kind"] = failure_kind
+                    return outcome
                 metric = build_agent_metric(
                     task,
                     expected_agent,
@@ -940,6 +981,7 @@ def build_orchestrator_graph(
                 return {"index": step_index, "task_id": task["id"], "result": result, "metric": metric}
             except Exception as exc:
                 error = str(exc)
+                failure_kind = "timeout" if isinstance(exc, TimeoutError) else ""
                 metric = build_agent_metric(
                     task,
                     expected_agent,
@@ -952,7 +994,15 @@ def build_orchestrator_graph(
                 )
                 span.set_attributes({"step_status": "failed", "duration_ms": metric["duration_ms"]})
                 span.error(exc)
-                return {"index": step_index, "task_id": task["id"], "error": error, "metric": metric}
+                outcome = {
+                    "index": step_index,
+                    "task_id": task["id"],
+                    "error": error,
+                    "metric": metric,
+                }
+                if failure_kind:
+                    outcome["failure_kind"] = failure_kind
+                return outcome
 
     def apply_step_outcome(
         state: OrchestratorState,
@@ -972,6 +1022,9 @@ def build_orchestrator_graph(
         if "error" in outcome:
             error = str(outcome.get("error") or "")
             state.setdefault("errors", []).append(error)
+            failure_kind = str(outcome.get("failure_kind") or "").strip().lower()
+            if failure_kind:
+                state["failure_kind"] = failure_kind
             return _mark_step(plan, step_index, "failed", error=error)
         state.setdefault("agent_results", {})[task_id] = outcome["result"]
         return _mark_step(plan, step_index, "completed")

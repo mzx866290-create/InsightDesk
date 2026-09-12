@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
@@ -289,6 +290,8 @@ class ResearchAgentConfig:
     time_range: str | None = None
     source_strategy: str = "web_only"
     allow_quick_fallback: bool = True
+    timeout_seconds: float = 600.0
+    llm_timeout_seconds: float = 120.0
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -348,37 +351,59 @@ class DeepResearchAgent:
             "max_fetch_pages",
             self.config.max_fetch_pages,
         )
+        timeout_seconds = self._resolve_float(
+            metadata,
+            "timeout_seconds",
+            self.config.timeout_seconds,
+        )
+        llm_timeout_seconds = self._resolve_float(
+            metadata,
+            "llm_timeout_seconds",
+            self.config.llm_timeout_seconds,
+        )
 
         try:
             if mode == "deep":
                 if self.llm is None:
                     if not self.config.allow_quick_fallback:
                         return self._failed_result(task, "Deep research requires an llm instance.")
-                    result = await self._quick_runner(
+                    result = await self._run_with_timeout(
+                        self._quick_runner(
+                            query,
+                            providers=providers,
+                            max_results=max_results,
+                            time_range=time_range,
+                        ),
+                        timeout_seconds=timeout_seconds,
+                    )
+                    mode = "quick"
+                else:
+                    result = await self._run_with_timeout(
+                        self._deep_runner(
+                            query,
+                            llm=self.llm,
+                            providers=providers,
+                            max_rounds=max_rounds,
+                            max_results_per_query=max_results,
+                            time_range=time_range,
+                            source_strategy=source_strategy,
+                            max_fetch_pages=max_fetch_pages,
+                            llm_timeout_seconds=llm_timeout_seconds,
+                        ),
+                        timeout_seconds=timeout_seconds,
+                    )
+            else:
+                result = await self._run_with_timeout(
+                    self._quick_runner(
                         query,
                         providers=providers,
                         max_results=max_results,
                         time_range=time_range,
-                    )
-                    mode = "quick"
-                else:
-                    result = await self._deep_runner(
-                        query,
-                        llm=self.llm,
-                        providers=providers,
-                        max_rounds=max_rounds,
-                        max_results_per_query=max_results,
-                        time_range=time_range,
-                        source_strategy=source_strategy,
-                        max_fetch_pages=max_fetch_pages,
-                    )
-            else:
-                result = await self._quick_runner(
-                    query,
-                    providers=providers,
-                    max_results=max_results,
-                    time_range=time_range,
+                    ),
+                    timeout_seconds=timeout_seconds,
                 )
+        except TimeoutError:
+            raise
         except Exception as exc:
             return self._failed_result(task, str(exc))
 
@@ -421,6 +446,33 @@ class DeepResearchAgent:
         except (TypeError, ValueError):
             value = int(default)
         return max(1, value)
+
+    @staticmethod
+    def _resolve_float(metadata: dict[str, Any], key: str, default: float) -> float:
+        try:
+            value = float(metadata.get(key, default))
+        except (TypeError, ValueError):
+            value = float(default)
+        if value <= 0:
+            value = float(default)
+        return min(24 * 60 * 60.0, max(0.01, value))
+
+    @staticmethod
+    async def _run_with_timeout(
+        awaitable: Awaitable[WebResearchResult],
+        *,
+        timeout_seconds: float,
+    ) -> WebResearchResult:
+        timeout_scope = asyncio.timeout(timeout_seconds)
+        try:
+            async with timeout_scope:
+                return await awaitable
+        except TimeoutError as exc:
+            if timeout_scope.expired():
+                raise TimeoutError(
+                    f"Research Agent timed out after {timeout_seconds:g} seconds."
+                ) from exc
+            raise
 
     @staticmethod
     def _task_query(task: AgentTask) -> str:

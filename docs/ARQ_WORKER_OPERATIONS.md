@@ -12,6 +12,7 @@ REDIS_URL=redis://localhost:6379/0
 ARQ_QUEUE_NAME=insightdesk:tasks
 ARQ_WORKER_MAX_JOBS=4
 ARQ_KEEP_RESULT_SECONDS=3600
+ARQ_CANCEL_TIMEOUT_SECONDS=5
 ARQ_RETRY_ATTEMPTS=3
 ARQ_RETRY_BACKOFF_SECONDS=15
 ARQ_WORKER_HEARTBEAT_KEY=insightdesk:tasks:worker:heartbeat
@@ -31,6 +32,14 @@ validation, the drain drill report, and the ops readiness real-environment
 checks are all closed.
 
 `ARQ_QUEUE_NAME` is the hard boundary between producers and workers. A mismatch means the API can enqueue tasks successfully while workers watch a different Redis queue.
+
+Workers enable ARQ's `allow_abort_jobs` contract. An editor can request task
+cancellation through `POST /api/tasks/{task_id}/cancel`; standalone tasks
+require admin access. The API asks Redis to abort the deterministic
+`task:{task_id}` job and persists `task_cancel_requested` so another process
+cannot later overwrite the task as completed. When confirmation exceeds
+`ARQ_CANCEL_TIMEOUT_SECONDS`, the response reports `cancelled=false` while the
+durable request remains active; clients should continue polling the task.
 
 `ARQ_WORKER_DRAIN_SECONDS` maps to ARQ `job_completion_wait`. Keep the container stop grace period greater than this value so `SIGTERM` gives the worker time to stop accepting new work and finish the current job.
 
@@ -218,15 +227,21 @@ worker:
         command: ["sh", "-c", "sleep 5"]
 
 config:
+  arqRedisHost: redis
+  arqRedisPort: "6379"
   arqWorkerMaxJobs: "4"
   arqKeepResultSeconds: "3600"
+
+secret:
+  existingSecret: insightdesk-runtime  # REDIS_URL/ARQ_REDIS_PASSWORD when required
 ```
 
 The expected shutdown sequence is:
 
 1. Kubernetes starts pod termination and runs `preStop`.
 2. Endpoint removal begins while `preStop` gives the control plane a short buffer.
-3. Kubernetes sends `SIGTERM` to the ARQ worker process.
+3. Kubernetes sends `SIGTERM` directly to the ARQ worker process because the
+   default container command ends with `exec arq ...`.
 4. ARQ stops taking new jobs and waits up to `ARQ_WORKER_DRAIN_SECONDS` /
    `job_completion_wait` for the current job.
 5. Kubernetes sends `SIGKILL` only after `terminationGracePeriodSeconds` expires.
@@ -234,6 +249,13 @@ The expected shutdown sequence is:
 Keep `terminationGracePeriodSeconds` greater than `ARQ_WORKER_DRAIN_SECONDS`
 plus the `preStop` sleep. During maintenance, drain workers before changing
 `ARQ_QUEUE_NAME`, Redis URL, or task-store persistence settings.
+
+The Helm worker startup and readiness probes run
+`arq backend.tasks.worker.WorkerSettings --check`, which validates the ARQ
+heartbeat stored in Redis. The chart intentionally does not use that
+dependency-backed check for liveness: a Redis outage should remove the worker
+from readiness without causing a restart storm. If the ARQ process exits, the
+container runtime and Deployment restart policy still restart the pod.
 
 ## Helm Static Operations Checks
 
@@ -246,4 +268,6 @@ pytest tests/test_deploy_helm_static.py tests/test_arq_worker_ops_static.py
 
 The static contract verifies that Helm still contains API/worker Deployments,
 PodDisruptionBudget support, NetworkPolicy support, `preStop`,
-`terminationGracePeriodSeconds`, and ConfigMap checksum rollout annotations.
+`terminationGracePeriodSeconds`, startup/readiness probes, external Secret
+references, and ConfigMap checksum rollout annotations. It also rejects
+`DATABASE_URL` and `REDIS_URL` in the chart ConfigMap.

@@ -1,7 +1,8 @@
 import React from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { useChatStore } from '../../stores/chatStore'
 import { KbChunkSearchBar } from './KbChunkSearchBar'
 
 vi.mock('../ui/Button', () => ({
@@ -17,6 +18,10 @@ vi.mock('../ui/Button', () => ({
 }))
 
 describe('KbChunkSearchBar', () => {
+  beforeEach(() => {
+    useChatStore.setState({ language: 'zh-CN' })
+  })
+
   afterEach(() => {
     cleanup()
   })
@@ -50,6 +55,11 @@ describe('KbChunkSearchBar', () => {
     fireEvent.click(screen.getByTestId('settings-kb-chunk-search'))
     fireEvent.click(screen.getByTestId('settings-kb-chunk-refresh'))
 
+    expect(screen.getByText('知识库切片浏览器')).toBeInTheDocument()
+    expect(screen.getByPlaceholderText('搜索切片内容或来源...')).toHaveClass('min-h-11')
+    expect(screen.getByRole('option', { name: '全部来源' })).toBeInTheDocument()
+    expect(screen.getByTestId('settings-kb-chunk-search')).toHaveClass('min-h-11')
+    expect(screen.getByTestId('settings-kb-chunk-refresh')).toHaveClass('min-h-11')
     expect(onQueryChange).toHaveBeenCalledWith('incident')
     expect(onSourceFilterChange).toHaveBeenCalledWith('ops.md')
     expect(onSearch).toHaveBeenCalledTimes(2)

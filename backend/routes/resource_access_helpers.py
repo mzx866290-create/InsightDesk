@@ -1,4 +1,4 @@
-﻿"""Shared resource access helpers for route modules."""
+"""Shared resource access helpers for route modules."""
 
 from __future__ import annotations
 
@@ -6,7 +6,30 @@ from typing import Any, Callable, Iterable, TypeVar
 
 from fastapi import HTTPException, Request
 
+from backend.stores.identity_store import (
+    IDENTITY_ROLE_RANKS,
+    normalize_identity_role,
+)
+
 T = TypeVar("T")
+
+
+def _global_role_meets_minimum(auth: dict[str, Any], minimum_role: str) -> bool:
+    """Compare the caller's configured global role against a resource gate.
+
+    Used for legacy resources without explicit ACL grants: the resource stays
+    usable for remote callers whose global role is high enough, instead of
+    failing open for every authenticated viewer.
+    """
+    actual_role = normalize_identity_role(
+        str(auth.get("role") or "").strip(),
+        default="viewer",
+    )
+    normalized_minimum = normalize_identity_role(
+        str(minimum_role or "").strip(),
+        default="viewer",
+    )
+    return IDENTITY_ROLE_RANKS[actual_role] >= IDENTITY_ROLE_RANKS[normalized_minimum]
 
 
 def _audit_resource_event(
@@ -70,7 +93,24 @@ def require_resource_access(
         resource_type=resource_type,
         resource_id=normalized_resource_id,
     ):
-        return auth
+        if _global_role_meets_minimum(auth, minimum_role):
+            return auth
+        _audit_resource_event(
+            audit_security_event,
+            request,
+            "resource_access_denied",
+            result="rejected",
+            details=(
+                f"resource_type={resource_type} resource_id={normalized_resource_id} "
+                f"user_id={str(auth.get('user_id') or '')} required_role={minimum_role} "
+                f"effective_role={normalize_identity_role(str(auth.get('role') or '').strip())} "
+                f"source=no_acl_global_role_fallback"
+            ),
+        )
+        raise HTTPException(
+            status_code=403,
+            detail=f"Insufficient resource role: {minimum_role} required.",
+        )
     access = store.resolve_user_access(
         resource_type=resource_type,
         resource_id=normalized_resource_id,

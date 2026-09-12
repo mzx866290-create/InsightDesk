@@ -5,7 +5,7 @@ Implements LangChain's BaseChatMessageHistory interface
 
 import sqlite3
 import logging
-from typing import List, Dict, Any, Optional
+from typing import TYPE_CHECKING, List, Dict, Any, Optional
 
 from backend.core.storage_runtime import (
     DATABASE_PROVIDER_POSTGRES,
@@ -89,6 +89,9 @@ from backend.stores.workspace_store import (
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from backend.stores.protocols import SessionStore
+
 DB_PATH = app_database_path()
 
 
@@ -100,6 +103,12 @@ def _should_use_postgres_store(db_path: str | None = None) -> bool:
         "",
         DB_PATH,
     }
+
+
+def _session_store() -> "SessionStore":
+    from backend.stores.factory import create_session_store
+
+    return create_session_store()
 
 
 # Exported constant so api_server can return it to the frontend
@@ -153,6 +162,14 @@ def get_all_sessions(
     tag: str = "",
     workspace_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
+    if _should_use_postgres_store(db_path):
+        return _session_store().get_all_sessions(
+            query=query,
+            archived=archived,
+            favorite=favorite,
+            tag=tag,
+            workspace_id=workspace_id,
+        )
     return _get_all_sessions(
         db_path=db_path,
         query=query,
@@ -167,6 +184,8 @@ def get_all_sessions(
 def get_session(
     session_id: str, db_path: str | None = None
 ) -> Optional[Dict[str, Any]]:
+    if _should_use_postgres_store(db_path):
+        return _session_store().get_session(session_id)
     return _get_session(
         session_id,
         db_path=db_path,
@@ -202,6 +221,14 @@ def truncate_session_from_answer_group(
     files: Optional[List[Dict[str, Any]]] = None,
     db_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
+    if _should_use_postgres_store(db_path):
+        return _session_store().truncate_session_from_answer_group(
+            session_id,
+            answer_group_id=answer_group_id,
+            content=content,
+            images=images,
+            files=files,
+        )
     return _truncate_session_from_answer_group(
         session_id,
         answer_group_id=answer_group_id,
@@ -224,6 +251,23 @@ def update_session_meta(
     workspace_id: Optional[str] = None,
     db_path: str | None = None,
 ) -> Optional[Dict[str, Any]]:
+    if _should_use_postgres_store(db_path):
+        if workspace_id is not None:
+            normalized_workspace_id = str(workspace_id or "").strip()
+            if not normalized_workspace_id:
+                raise ValueError("workspace_id 不能为空")
+            # Workspaces still use SQLite during the staged PostgreSQL migration.
+            if get_workspace(normalized_workspace_id) is None:
+                raise ValueError("工作区不存在")
+        return _session_store().update_session_meta(
+            session_id,
+            title=title,
+            is_archived=is_archived,
+            is_favorite=is_favorite,
+            is_pinned=is_pinned,
+            tags=tags,
+            workspace_id=workspace_id,
+        )
     return _update_session_meta(
         session_id,
         title=title,
@@ -243,6 +287,11 @@ def reorder_sessions(
     workspace_id: Optional[str] = None,
     db_path: str | None = None,
 ) -> Dict[str, Any]:
+    if _should_use_postgres_store(db_path):
+        return _session_store().reorder_sessions(
+            session_ids,
+            workspace_id=workspace_id,
+        )
     return _reorder_sessions(
         session_ids,
         workspace_id=workspace_id,
@@ -252,6 +301,9 @@ def reorder_sessions(
 
 
 def delete_session(session_id: str, db_path: str | None = None) -> None:
+    if _should_use_postgres_store(db_path):
+        _session_store().delete_session(session_id)
+        return
     _delete_session(
         session_id,
         db_path=db_path,
@@ -298,6 +350,12 @@ def promote_panel_answer(
     source_panel_id: str,
     db_path: str = DB_PATH,
 ) -> Optional[Dict[str, Any]]:
+    if _should_use_postgres_store(db_path):
+        return _session_store().promote_panel_answer(
+            session_id,
+            answer_group_id,
+            source_panel_id,
+        )
     return _promote_panel_answer(
         session_id,
         answer_group_id,

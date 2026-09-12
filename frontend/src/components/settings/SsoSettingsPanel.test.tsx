@@ -81,6 +81,10 @@ describe('SsoSettingsPanel', () => {
     fireEvent.click(screen.getByTestId('settings-sso-login'))
     fireEvent.click(screen.getByTestId('settings-sso-refresh'))
 
+    expect(screen.getByRole('heading', { name: 'Single Sign-On (SSO / OIDC)' })).toBeInTheDocument()
+    expect(screen.getByTestId('settings-sso-save')).toHaveClass('min-h-11')
+    expect(screen.getByTestId('settings-sso-login')).toHaveClass('min-h-11')
+    expect(screen.getByTestId('settings-sso-refresh')).toHaveClass('min-h-11')
     expect(props.onSave).toHaveBeenCalledTimes(1)
     expect(props.onStartLogin).toHaveBeenCalledTimes(1)
     expect(props.onRefresh).toHaveBeenCalledTimes(1)

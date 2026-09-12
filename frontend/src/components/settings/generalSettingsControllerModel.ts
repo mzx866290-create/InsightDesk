@@ -1,6 +1,7 @@
 import type { AppLanguage } from '../../stores/chatStore'
 import type { SsoConfig } from '../../api/client'
 import type { GeneralSettingsPanelProps } from './GeneralSettingsPanel'
+import type { SsoSettingsPanelProps } from './SsoSettingsPanel'
 import type { SsoConfigForm } from './ssoSettingsModel'
 import type { AdminTokenSettingsController } from './useAdminTokenSettings'
 import type { TavilySettingsController } from './useTavilySettings'
@@ -31,7 +32,12 @@ interface BuildGeneralSettingsPanelPropsOptions {
   onClearTavilyKey: () => void
 }
 
-export function buildGeneralSettingsPanelProps({
+export interface GeneralSettingsControllerProps {
+  generalSettings: GeneralSettingsPanelProps
+  ssoSettings: SsoSettingsPanelProps
+}
+
+export function buildGeneralSettingsControllerProps({
   adminAccessError,
   adminTokenSettings,
   language,
@@ -42,19 +48,29 @@ export function buildGeneralSettingsPanelProps({
   onResetAgents,
   onSaveGeneral,
   onClearTavilyKey,
-}: BuildGeneralSettingsPanelPropsOptions): GeneralSettingsPanelProps {
+}: BuildGeneralSettingsPanelPropsOptions): GeneralSettingsControllerProps {
   return {
-    language,
-    adminToken: adminTokenSettings.adminToken,
-    adminTokenSaved: adminTokenSettings.adminTokenSaved,
-    adminAccessError,
-    authStatusText: adminTokenSettings.authStatusText,
-    tavilyKey: tavilySettings.tavilyKey,
-    tavilyKeySet: tavilySettings.tavilyKeySet,
-    saving: tavilySettings.saving,
-    saveOk: tavilySettings.saveOk,
-    saveError: tavilySettings.saveError,
-    resetting,
+    generalSettings: {
+      language,
+      adminToken: adminTokenSettings.adminToken,
+      adminTokenSaved: adminTokenSettings.adminTokenSaved,
+      adminAccessError,
+      authStatusText: adminTokenSettings.authStatusText,
+      tavilyKey: tavilySettings.tavilyKey,
+      tavilyKeySet: tavilySettings.tavilyKeySet,
+      saving: tavilySettings.saving,
+      saveOk: tavilySettings.saveOk,
+      saveError: tavilySettings.saveError,
+      resetting,
+      onLanguageChange,
+      onAdminTokenChange: adminTokenSettings.setAdminToken,
+      onSaveAdminToken: adminTokenSettings.saveAdminToken,
+      onClearAdminToken: adminTokenSettings.clearAdminToken,
+      onTavilyKeyChange: tavilySettings.setTavilyKey,
+      onSaveGeneral,
+      onClearTavilyKey,
+      onResetAgents,
+    },
     ssoSettings: {
       config: ssoSettings.config,
       form: ssoSettings.form,
@@ -67,13 +83,5 @@ export function buildGeneralSettingsPanelProps({
       onStartLogin: ssoSettings.startLogin,
       onRefresh: ssoSettings.load,
     },
-    onLanguageChange,
-    onAdminTokenChange: adminTokenSettings.setAdminToken,
-    onSaveAdminToken: adminTokenSettings.saveAdminToken,
-    onClearAdminToken: adminTokenSettings.clearAdminToken,
-    onTavilyKeyChange: tavilySettings.setTavilyKey,
-    onSaveGeneral,
-    onClearTavilyKey,
-    onResetAgents,
   }
 }

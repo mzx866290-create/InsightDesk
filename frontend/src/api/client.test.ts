@@ -72,6 +72,11 @@ describe('api client security endpoints', () => {
           max_count: '6',
           max_bytes: '10485760',
         },
+        chat_image_limits: {
+          max_count: '4',
+          max_bytes: '10485760',
+          max_total_bytes: '20971520',
+        },
         document_upload_limits: {
           max_count: '12',
           max_file_bytes: '52428800',
@@ -109,6 +114,11 @@ describe('api client security endpoints', () => {
       chat_file_limits: {
         max_count: 6,
         max_bytes: 10485760,
+      },
+      chat_image_limits: {
+        max_count: 4,
+        max_bytes: 10485760,
+        max_total_bytes: 20971520,
       },
       document_upload_limits: {
         max_count: 12,
@@ -169,6 +179,64 @@ describe('api client security endpoints', () => {
     const [url, init] = vi.mocked(fetchMock).mock.calls[0]
     expect(url).toBe('/api/providers')
     expect(init?.headers).toBeUndefined()
+  })
+
+  it('rejects failed session mutation responses instead of reporting false success', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ detail: 'Session operation failed' }, { status: 503 }),
+    ) as unknown as typeof globalThis.fetch
+    const client = await importClientWithFetch(fetchMock)
+
+    await expect(client.deleteSession('session/1')).rejects.toThrow('Session operation failed')
+    await expect(client.clearSessionMessages('session/1')).rejects.toThrow(
+      'Session operation failed',
+    )
+    await expect(client.resetSession('session/1')).rejects.toThrow('Session operation failed')
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/sessions/session%2F1',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/sessions/session%2F1/messages',
+      expect.objectContaining({ method: 'DELETE' }),
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      '/api/sessions/session%2F1/reset',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
+  it('validates session message responses and forwards cancellation signals', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ messages: [{ role: 'user', content: 'hello' }], context_limit: 24 }),
+    ) as unknown as typeof globalThis.fetch
+    const client = await importClientWithFetch(fetchMock)
+    const controller = new AbortController()
+
+    await expect(
+      client.getSessionMessages('session/1', { signal: controller.signal }),
+    ).resolves.toMatchObject({
+      context_limit: 24,
+      total_messages: 1,
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/sessions/session%2F1/messages',
+      expect.objectContaining({ signal: controller.signal }),
+    )
+  })
+
+  it('rejects failed session message responses', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ detail: 'Messages unavailable' }, { status: 502 }),
+    ) as unknown as typeof globalThis.fetch
+    const client = await importClientWithFetch(fetchMock)
+
+    await expect(client.getSessionMessages('session-1')).rejects.toThrow('Messages unavailable')
   })
 
   it('loads agent catalog with API token headers for remote mode', async () => {

@@ -79,15 +79,13 @@ def test_create_session_record_rejects_missing_workspace():
         create_session_record(
             request,
             history_factory=lambda **kwargs: SimpleNamespace(db_path="db.sqlite"),
-            connect_sqlite=lambda db_path: _FakeConnectionContext(),
-            get_session=lambda session_id, db_path=None: None,
+            get_session=lambda session_id: None,
             get_workspace=lambda workspace_id: None,
             update_session_meta=lambda *args, **kwargs: None,
         )
 
 
 def test_create_session_record_sets_title_and_workspace_and_returns_session():
-    executed = []
     updated = []
 
     request = SimpleNamespace(title="Launch", workspace_id="ws-1")
@@ -95,8 +93,7 @@ def test_create_session_record_sets_title_and_workspace_and_returns_session():
     session = create_session_record(
         request,
         history_factory=lambda **kwargs: SimpleNamespace(db_path="db.sqlite"),
-        connect_sqlite=lambda db_path: _FakeConnectionContext(executed),
-        get_session=lambda session_id, db_path=None: {
+        get_session=lambda session_id: {
             "session_id": session_id,
             "title": "Launch",
             "workspace_id": "ws-1",
@@ -104,7 +101,6 @@ def test_create_session_record_sets_title_and_workspace_and_returns_session():
         get_workspace=lambda workspace_id: {"workspace_id": workspace_id},
         update_session_meta=lambda session_id, **kwargs: updated.append((session_id, kwargs)),
         session_id_factory=lambda: "session-1",
-        current_time=lambda: 123.0,
     )
 
     assert session == {
@@ -112,14 +108,9 @@ def test_create_session_record_sets_title_and_workspace_and_returns_session():
         "title": "Launch",
         "workspace_id": "ws-1",
     }
-    assert executed == [
-        (
-            "UPDATE sessions SET title = ?, updated_at = ? WHERE session_id = ?",
-            ("Launch", 123.0, "session-1"),
-        ),
-        ("COMMIT", None),
+    assert updated == [
+        ("session-1", {"title": "Launch", "workspace_id": "ws-1"})
     ]
-    assert updated == [("session-1", {"workspace_id": "ws-1", "db_path": "db.sqlite"})]
 
 
 def test_create_session_record_returns_fallback_payload_when_session_lookup_is_empty():
@@ -128,8 +119,7 @@ def test_create_session_record_returns_fallback_payload_when_session_lookup_is_e
     session = create_session_record(
         request,
         history_factory=lambda **kwargs: SimpleNamespace(db_path="db.sqlite"),
-        connect_sqlite=lambda db_path: _FakeConnectionContext(),
-        get_session=lambda session_id, db_path=None: None,
+        get_session=lambda session_id: None,
         get_workspace=lambda workspace_id: {"workspace_id": workspace_id},
         update_session_meta=lambda *args, **kwargs: None,
         session_id_factory=lambda: "session-2",
@@ -140,6 +130,30 @@ def test_create_session_record_returns_fallback_payload_when_session_lookup_is_e
         "title": "新对话",
         "workspace_id": None,
     }
+
+
+def test_create_session_record_uses_resolved_active_workspace():
+    updated = []
+
+    session = create_session_record(
+        SimpleNamespace(title="", workspace_id=None),
+        history_factory=lambda **kwargs: SimpleNamespace(),
+        get_session=lambda session_id: {
+            "session_id": session_id,
+            "workspace_id": "ws-active",
+        },
+        get_workspace=lambda workspace_id: {"workspace_id": workspace_id},
+        update_session_meta=lambda session_id, **kwargs: updated.append(
+            (session_id, kwargs)
+        ),
+        resolved_workspace_id="ws-active",
+        session_id_factory=lambda: "session-active",
+    )
+
+    assert session["workspace_id"] == "ws-active"
+    assert updated == [
+        ("session-active", {"workspace_id": "ws-active"})
+    ]
 
 
 def test_require_workspace_session_enforces_workspace_membership(monkeypatch):
@@ -176,20 +190,3 @@ def test_require_workspace_session_enforces_workspace_membership(monkeypatch):
     with pytest.raises(HTTPException) as exc_info:
         require_workspace_session("session-1", "ws-2")
     assert exc_info.value.status_code == 404
-
-
-class _FakeConnectionContext:
-    def __init__(self, executed=None):
-        self.executed = executed if executed is not None else []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def execute(self, sql, params):
-        self.executed.append((sql, params))
-
-    def commit(self):
-        self.executed.append(("COMMIT", None))

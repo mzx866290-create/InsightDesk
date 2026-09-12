@@ -8,8 +8,6 @@ import { SessionMemoryWorkspace } from './SessionMemoryWorkspace'
 import { createSession, getSessionMessages } from '../../api/client'
 import {
   GitCompare,
-  Globe,
-  Database,
   MessageSquare,
   Paperclip,
   FileText,
@@ -18,25 +16,17 @@ import {
 import type { ActiveStreamControl } from './streamControl'
 
 interface WelcomeGuideProps {
-  webSearchEnabled: boolean
-  knowledgeBaseEnabled: boolean
   onDismiss: () => void
   onEnableFocusChat: () => void
   onEnableDocAnalysis: () => void
   onEnableDeliveryMode: () => void
-  onToggleWebSearch: () => void
-  onToggleKnowledgeBase: () => void
 }
 
 const WelcomeGuide: React.FC<WelcomeGuideProps> = ({
-  webSearchEnabled,
-  knowledgeBaseEnabled,
   onDismiss,
   onEnableFocusChat,
   onEnableDocAnalysis,
   onEnableDeliveryMode,
-  onToggleWebSearch,
-  onToggleKnowledgeBase,
 }) => (
   <div className="flex flex-1 items-center justify-center p-3 pt-2" data-testid="welcome-guide">
     <section className="relative w-full max-w-5xl rounded-[28px] border border-bg-border bg-gradient-to-br from-bg-secondary via-bg-secondary to-bg-primary p-5 shadow-[0_18px_70px_rgba(15,23,42,0.18)]">
@@ -126,33 +116,6 @@ const WelcomeGuide: React.FC<WelcomeGuideProps> = ({
               <div className="mt-1">平时保持简单模式，熟悉后再用多面板、记忆、任务中心这些进阶能力。</div>
             </div>
           </div>
-
-          <div className="mt-4 flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={onToggleWebSearch}
-              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs transition-colors ${
-                webSearchEnabled
-                  ? 'bg-accent-blue/18 text-accent-blue'
-                  : 'bg-bg-secondary text-text-secondary hover:text-text-primary'
-              }`}
-            >
-              <Globe size={12} />
-              联网 {webSearchEnabled ? '已开启' : '未开启'}
-            </button>
-            <button
-              type="button"
-              onClick={onToggleKnowledgeBase}
-              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs transition-colors ${
-                knowledgeBaseEnabled
-                  ? 'bg-accent-green/18 text-accent-green'
-                  : 'bg-bg-secondary text-text-secondary hover:text-text-primary'
-              }`}
-            >
-              <Database size={12} />
-              知识库 {knowledgeBaseEnabled ? '已开启' : '未开启'}
-            </button>
-          </div>
         </aside>
       </div>
     </section>
@@ -195,9 +158,11 @@ export const ChatArea: React.FC = () => {
 
   useEffect(() => {
     if (!currentSessionId) return
-    getSessionMessages(currentSessionId)
+    const controller = new AbortController()
+    getSessionMessages(currentSessionId, { signal: controller.signal })
       .then(({ context_limit }) => setContextLimit(context_limit))
       .catch(() => {})
+    return () => controller.abort()
   }, [currentSessionId])
 
   // 全局键盘快捷键
@@ -391,8 +356,6 @@ export const ChatArea: React.FC = () => {
         <div className="flex flex-1 min-h-0 flex-col gap-2 overflow-y-auto p-2 pt-1 lg:flex-row lg:overflow-hidden">
           {showWelcomeGuide ? (
             <WelcomeGuide
-              webSearchEnabled={webSearchEnabled}
-              knowledgeBaseEnabled={knowledgeBaseEnabled}
               onDismiss={() => setWelcomeGuideDismissed(true)}
               onEnableFocusChat={() =>
                 seedComposer(
@@ -411,8 +374,6 @@ export const ChatArea: React.FC = () => {
                   { enableKnowledgeBase: true },
                 )
               }
-              onToggleWebSearch={() => setWebSearchEnabled(!webSearchEnabled)}
-              onToggleKnowledgeBase={() => setKnowledgeBaseEnabled(!knowledgeBaseEnabled)}
             />
           ) : diffViewOpen ? (
             <PanelDiffView panels={panels} />

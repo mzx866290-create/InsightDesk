@@ -376,6 +376,7 @@ class SecurityStatusResponse(BaseModel):
     security_audit_persisted_count: int
     security_audit_memory_window_limit: int
     chat_file_limits: dict[str, int]
+    chat_image_limits: dict[str, int]
     document_upload_limits: dict[str, int]
 
 

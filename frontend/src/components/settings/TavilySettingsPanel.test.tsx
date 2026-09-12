@@ -1,8 +1,8 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { useChatStore } from '../../stores/chatStore'
-import { TavilySettingsPanel } from './TavilySettingsPanel'
+import { useChatStore } from '../../stores/chatStore';
+import { TavilySettingsPanel } from './TavilySettingsPanel';
 
 describe('TavilySettingsPanel', () => {
   const defaultProps = {
@@ -14,29 +14,31 @@ describe('TavilySettingsPanel', () => {
     onTavilyKeyChange: vi.fn(),
     onSaveGeneral: vi.fn(),
     onClearTavilyKey: vi.fn(),
-  }
+  };
 
   beforeEach(() => {
-    vi.clearAllMocks()
-    useChatStore.setState({ language: 'en-US' })
-  })
+    vi.clearAllMocks();
+    useChatStore.setState({ language: 'en-US' });
+  });
 
   afterEach(() => {
-    cleanup()
-  })
+    cleanup();
+  });
 
   it('keeps input and save behavior wired to the existing props', () => {
-    render(<TavilySettingsPanel {...defaultProps} />)
+    render(<TavilySettingsPanel {...defaultProps} />);
 
     fireEvent.change(screen.getByTestId('settings-tavily-key-input'), {
       target: { value: 'tvly-test-key' },
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Save Settings' }))
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Settings' }));
 
-    expect(defaultProps.onTavilyKeyChange).toHaveBeenCalledWith('tvly-test-key')
-    expect(defaultProps.onSaveGeneral).toHaveBeenCalledTimes(1)
-    expect(screen.queryByRole('button', { name: 'Clear Tavily Key' })).not.toBeInTheDocument()
-  })
+    expect(defaultProps.onTavilyKeyChange).toHaveBeenCalledWith('tvly-test-key');
+    expect(defaultProps.onSaveGeneral).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('settings-tavily-key-input')).toHaveClass('min-h-11');
+    expect(screen.getByTestId('settings-tavily-save')).toHaveClass('min-h-11');
+    expect(screen.queryByRole('button', { name: 'Clear Tavily Key' })).not.toBeInTheDocument();
+  });
 
   it('shows configured status, clear action, saved state, and save errors', () => {
     render(
@@ -45,16 +47,19 @@ describe('TavilySettingsPanel', () => {
         tavilyKeySet
         saveOk
         saveError="Unable to save Tavily key"
-      />,
-    )
+      />
+    );
 
-    expect(screen.getByText('Configured')).toBeInTheDocument()
-    expect(screen.getByPlaceholderText('Configured; leave blank to keep current value')).toBeInTheDocument()
-    expect(screen.getByText('Unable to save Tavily key')).toBeInTheDocument()
+    expect(screen.getByText('Configured')).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText('Configured; leave blank to keep current value')
+    ).toBeInTheDocument();
+    expect(screen.getByText('Unable to save Tavily key')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Clear Tavily Key' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Tavily Key' }));
 
-    expect(defaultProps.onClearTavilyKey).toHaveBeenCalledTimes(1)
-    expect(screen.getByRole('button', { name: 'Saved' })).toBeInTheDocument()
-  })
-})
+    expect(defaultProps.onClearTavilyKey).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: 'Saved' })).toBeInTheDocument();
+    expect(screen.getByTestId('settings-tavily-clear')).toHaveClass('min-h-11');
+  });
+});

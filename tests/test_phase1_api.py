@@ -2,8 +2,8 @@ import asyncio
 import base64
 import json
 import sys
-import types
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -12,8 +12,8 @@ from fastapi.testclient import TestClient
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage
 
-import backend.agent_core as agent_core
 import backend.agent.providers.ollama as ollama_provider
+import backend.agent_core as agent_core
 import backend.api_server as api_server
 import backend.chat_store as chat_store
 import backend.core.app_config_runtime as app_config_runtime
@@ -134,24 +134,31 @@ def test_save_cloud_model_api_key_persists_encrypted_secret(monkeypatch, tmp_pat
     client = TestClient(api_server.app)
     response = client.post(
         "/api/config/cloud-model-api-key",
-        json={"api_key": "sk-cloud-secret"},
+        json={
+            "api_key": "sk-cloud-secret",
+            "base_url": "https://gateway.example:443/v1/",
+        },
     )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["api_key_set"] is True
     assert payload["api_key_ref"].startswith("cmk-")
-    assert (
-        store.get_value(f"cloud_model_api_key:{payload['api_key_ref']}")
-        == "sk-cloud-secret"
-    )
+    stored_value = store.get_value(f"cloud_model_api_key:{payload['api_key_ref']}")
+    assert stored_value.startswith("bound:v1:")
+    assert '"base_url":"https://gateway.example/v1"' in stored_value
 
 
 def test_delete_cloud_model_api_key_removes_persisted_secret(monkeypatch, tmp_path):
     db_path = tmp_path / "chat_history.db"
     store = api_config_store.SQLiteAppConfigStore(db_path=str(db_path))
     monkeypatch.setattr(api_server, "_app_config_store", store)
-    store.set("cloud_model_api_key:cmk-delete-test", "sk-delete-me")
+    app_config_runtime.upsert_cloud_model_api_key(
+        lambda: store,
+        "cmk-delete-test",
+        "sk-delete-me",
+        "https://gateway.example/v1",
+    )
 
     client = TestClient(api_server.app)
     response = client.delete("/api/config/cloud-model-api-key/cmk-delete-test")
@@ -165,6 +172,9 @@ def test_resolve_runtime_model_config_uses_stored_cloud_model_key(monkeypatch, t
     db_path = tmp_path / "chat_history.db"
     store = api_config_store.SQLiteAppConfigStore(db_path=str(db_path))
     monkeypatch.setattr(api_server, "_app_config_store", store)
+    monkeypatch.delenv("OPENAI_COMPAT_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     store.set("cloud_model_api_key:cmk-runtime-test", "sk-runtime-secret")
 
     resolved = model_config_runtime.resolve_runtime_model_config(
@@ -185,6 +195,77 @@ def test_resolve_runtime_model_config_uses_stored_cloud_model_key(monkeypatch, t
 
     assert resolved.api_key == "sk-runtime-secret"
     assert resolved.api_key_ref == "cmk-runtime-test"
+
+
+def test_bound_cloud_model_key_allows_matching_custom_base_url(tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    store = api_config_store.SQLiteAppConfigStore(db_path=str(db_path))
+    api_key_ref = app_config_runtime.upsert_cloud_model_api_key(
+        lambda: store,
+        None,
+        "sk-bound-secret",
+        "https://gateway.example/v1",
+    )
+
+    resolved = model_config_runtime.resolve_runtime_model_config(
+        store,
+        api_server.logger,
+        {
+            "panel_id": "panel-bound-match",
+            "provider": "openai_compatible",
+            "base_url": "https://GATEWAY.example:443/v1/",
+            "api_key_ref": api_key_ref,
+        },
+    )
+
+    assert resolved.api_key == "sk-bound-secret"
+    assert resolved.base_url == "https://GATEWAY.example:443/v1/"
+
+
+def test_bound_cloud_model_key_rejects_mismatched_base_url(tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    store = api_config_store.SQLiteAppConfigStore(db_path=str(db_path))
+    api_key_ref = app_config_runtime.upsert_cloud_model_api_key(
+        lambda: store,
+        None,
+        "sk-bound-secret",
+        "https://gateway.example/v1",
+    )
+
+    with pytest.raises(ValueError, match="bound to a different base_url") as exc_info:
+        model_config_runtime.resolve_runtime_model_config(
+            store,
+            api_server.logger,
+            {
+                "panel_id": "panel-bound-mismatch",
+                "provider": "openai_compatible",
+                "base_url": "https://attacker.example/v1",
+                "api_key_ref": api_key_ref,
+            },
+        )
+
+    assert "sk-bound-secret" not in str(exc_info.value)
+
+
+def test_legacy_cloud_model_key_rejects_custom_base_url(monkeypatch, tmp_path):
+    db_path = tmp_path / "chat_history.db"
+    store = api_config_store.SQLiteAppConfigStore(db_path=str(db_path))
+    store.set("cloud_model_api_key:cmk-legacy-test", "sk-legacy-secret")
+    monkeypatch.delenv("OPENAI_COMPAT_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    with pytest.raises(ValueError, match="Legacy cloud model API key refs"):
+        model_config_runtime.resolve_runtime_model_config(
+            store,
+            api_server.logger,
+            {
+                "panel_id": "panel-legacy-mismatch",
+                "provider": "openai_compatible",
+                "base_url": "https://attacker.example/v1",
+                "api_key_ref": "cmk-legacy-test",
+            },
+        )
 
 
 def test_session_messages_restore_assistant_metadata(monkeypatch, tmp_path):
@@ -1224,8 +1305,9 @@ def test_promote_attachment_endpoint_reuses_existing_completed_promotion(
     assert scheduled == []
 
 
-def test_get_ollama_models_uses_async_http_client(monkeypatch):
+def test_get_ollama_models_uses_safe_outbound_request(monkeypatch):
     captured: dict[str, object] = {}
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
     class FakeResponse:
         def raise_for_status(self):
@@ -1234,21 +1316,18 @@ def test_get_ollama_models_uses_async_http_client(monkeypatch):
         def json(self):
             return {"models": [{"name": "qwen2.5:7b"}, {"name": "llama3.2:3b"}]}
 
-    class FakeAsyncClient:
-        def __init__(self, timeout):
-            captured["timeout"] = timeout
+    async def fake_request_public_url(
+        url: str,
+        *,
+        timeout_seconds: float,
+        max_response_bytes: int,
+    ) -> FakeResponse:
+        captured["url"] = url
+        captured["timeout_seconds"] = timeout_seconds
+        captured["max_response_bytes"] = max_response_bytes
+        return FakeResponse()
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def get(self, url):
-            captured["url"] = url
-            return FakeResponse()
-
-    monkeypatch.setattr(ollama_provider.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(ollama_provider, "request_public_url", fake_request_public_url)
 
     payload = asyncio.run(
         ollama_provider.list_ollama_models(
@@ -1259,9 +1338,24 @@ def test_get_ollama_models_uses_async_http_client(monkeypatch):
 
     assert payload == {"models": ["qwen2.5:7b", "llama3.2:3b"]}
     assert captured == {
-        "timeout": 5.0,
         "url": "http://example.test:11434/api/tags",
+        "timeout_seconds": 5.0,
+        "max_response_bytes": ollama_provider.OLLAMA_MODELS_MAX_RESPONSE_BYTES,
     }
+
+
+def test_get_ollama_models_endpoint_blocks_metadata_target(monkeypatch):
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    client = TestClient(api_server.app)
+
+    response = client.get(
+        "/api/models/ollama",
+        params={"base_url": "http://169.254.169.254/latest/meta-data"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["models"] == []
+    assert "error" in response.json()
 
 
 def test_knowledge_base_delete_enforces_project_boundaries(monkeypatch, tmp_path):
@@ -2677,6 +2771,91 @@ def test_task_approval_endpoint_reschedules_waiting_workflow(monkeypatch, tmp_pa
         coro.close()
 
 
+def test_task_cancel_endpoint_marks_memory_task_cancelled(monkeypatch, tmp_path):
+    task_store = api_server.SQLiteTaskStore(db_path=str(tmp_path / "tasks.db"))
+    record = api_server.TaskRecord(
+        task_id="task-cancel-memory",
+        task_type="web_research",
+        status=api_server.TaskStatus.RUNNING,
+        params={"query": "AI"},
+        session_id=None,
+        created_at=time.time(),
+        updated_at=time.time(),
+        progress=30,
+    )
+    task_store.save(record)
+    monkeypatch.setattr(api_server, "_task_store", task_store)
+    monkeypatch.setattr(api_server, "_tasks", {record.task_id: record})
+    monkeypatch.setattr(api_server, "_suppressed_task_ids", set())
+    monkeypatch.setattr(api_server, "TASK_BACKEND", "memory")
+
+    app = FastAPI()
+    monkeypatch.setattr(api_server, "app", app)
+    api_server.register_deferred_routers(api_server)
+
+    response = TestClient(app).post(f"/api/tasks/{record.task_id}/cancel")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["cancelled"] is True
+    assert payload["task"]["status"] == "failed"
+    assert payload["task"]["params"]["task_failure_kind"] == "cancelled"
+    assert record.task_id in api_server._suppressed_task_ids
+
+
+def test_task_cancel_endpoint_aborts_arq_job(monkeypatch, tmp_path):
+    task_store = api_server.SQLiteTaskStore(db_path=str(tmp_path / "tasks.db"))
+    record = api_server.TaskRecord(
+        task_id="task-cancel-arq",
+        task_type="web_research",
+        status=api_server.TaskStatus.RUNNING,
+        params={"query": "AI"},
+        session_id=None,
+        created_at=time.time(),
+        updated_at=time.time(),
+        progress=30,
+    )
+    task_store.save(record)
+    cancelled_task_ids: list[str] = []
+
+    async def fake_cancel_external_task(task_id: str):
+        cancelled_task_ids.append(task_id)
+        return {
+            "task_id": task_id,
+            "job_id": f"task:{task_id}",
+            "job_status": "in_progress",
+            "requested": True,
+            "aborted": True,
+            "timed_out": False,
+        }
+
+    monkeypatch.setattr(api_server, "_task_store", task_store)
+    monkeypatch.setattr(api_server, "_tasks", {})
+    monkeypatch.setattr(api_server, "_suppressed_task_ids", set())
+    monkeypatch.setattr(api_server, "TASK_BACKEND", "arq")
+    monkeypatch.setattr(
+        api_server,
+        "cancel_external_task",
+        fake_cancel_external_task,
+        raising=False,
+    )
+
+    app = FastAPI()
+    monkeypatch.setattr(api_server, "app", app)
+    api_server.register_deferred_routers(api_server)
+
+    response = TestClient(app).post(f"/api/tasks/{record.task_id}/cancel")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["cancelled"] is True
+    assert payload["external"]["aborted"] is True
+    assert cancelled_task_ids == [record.task_id]
+    stored = task_store.get(record.task_id)
+    assert stored is not None
+    assert stored.params["task_failure_kind"] == "cancelled"
+
+
 def test_task_approval_endpoint_dispatches_persisted_workflow_to_arq(
     monkeypatch, tmp_path
 ):
@@ -3321,6 +3500,284 @@ def test_deep_research_task_waits_for_concurrency_slot(monkeypatch):
     assert record.progress == 100
     assert ("running", 10) in persisted_statuses
     assert ("completed", 100) in persisted_statuses
+
+
+def test_deep_research_task_timeout_is_persisted_as_terminal_failure(monkeypatch):
+    record = api_server.TaskRecord(
+        task_id="task-deep-timeout",
+        task_type="web_research",
+        status=api_server.TaskStatus.PENDING,
+        params={"query": "AI", "research_mode": "deep"},
+        session_id="session-1",
+        created_at=time.time(),
+        updated_at=time.time(),
+        progress=0,
+    )
+    persisted_statuses: list[str] = []
+    persisted_results: list[str] = []
+
+    async def slow_run_web_research_task(*args, **kwargs):
+        del args, kwargs
+        await asyncio.sleep(1)
+
+    async def fake_drop_suppressed_task(_record):
+        return False
+
+    monkeypatch.setenv("DEEP_RESEARCH_TASK_TIMEOUT_SECONDS", "0.01")
+    monkeypatch.setattr(api_server, "run_web_research_task", slow_run_web_research_task)
+    monkeypatch.setattr(api_server, "_drop_suppressed_task", fake_drop_suppressed_task)
+    monkeypatch.setattr(
+        api_server,
+        "_persist_task_record",
+        lambda current: persisted_statuses.append(current.status.value),
+    )
+    monkeypatch.setattr(api_server, "_prune_persisted_tasks", lambda: None)
+    monkeypatch.setattr(api_server, "_prune_task_records_locked", lambda now=None: None)
+    monkeypatch.setattr(
+        api_server,
+        "persist_web_research_task_result",
+        lambda current, *, content, sources: persisted_results.append(content),
+    )
+
+    asyncio.run(api_server._run_task(record))
+
+    assert record.status == api_server.TaskStatus.FAILED
+    assert record.params["task_failure_kind"] == "timeout"
+    assert record.params["task_timeout_seconds"] == 0.01
+    assert record.error == "Task timed out after 0.01 seconds."
+    assert "failed" in persisted_statuses
+    assert persisted_results == ["Research task failed: Task timed out after 0.01 seconds."]
+
+
+def test_internal_research_timeout_is_persisted_as_non_retryable_failure(monkeypatch):
+    record = api_server.TaskRecord(
+        task_id="task-internal-research-timeout",
+        task_type="web_research",
+        status=api_server.TaskStatus.PENDING,
+        params={"query": "AI", "research_mode": "deep"},
+        session_id="session-1",
+        created_at=time.time(),
+        updated_at=time.time(),
+        progress=0,
+    )
+    persisted_results: list[str] = []
+
+    async def timed_out_research(*args, **kwargs):
+        del args, kwargs
+        raise TimeoutError("Research Agent timed out after 120 seconds.")
+
+    async def fake_drop_suppressed_task(_record):
+        return False
+
+    monkeypatch.setattr(api_server, "run_web_research_task", timed_out_research)
+    monkeypatch.setattr(api_server, "_drop_suppressed_task", fake_drop_suppressed_task)
+    monkeypatch.setattr(api_server, "_persist_task_record", lambda current: None)
+    monkeypatch.setattr(api_server, "_prune_persisted_tasks", lambda: None)
+    monkeypatch.setattr(api_server, "_prune_task_records_locked", lambda now=None: None)
+    monkeypatch.setattr(
+        api_server,
+        "persist_web_research_task_result",
+        lambda current, *, content, sources: persisted_results.append(content),
+    )
+
+    asyncio.run(api_server._run_task(record))
+
+    assert record.status == api_server.TaskStatus.FAILED
+    assert record.params["task_failure_kind"] == "timeout"
+    assert record.error == "Research Agent timed out after 120 seconds."
+    assert persisted_results == [
+        "Research task failed: Research Agent timed out after 120 seconds."
+    ]
+
+
+def test_deep_research_task_cancellation_persists_failure_and_releases_slot(monkeypatch):
+    record = api_server.TaskRecord(
+        task_id="task-deep-cancelled",
+        task_type="web_research",
+        status=api_server.TaskStatus.PENDING,
+        params={"query": "AI", "research_mode": "deep"},
+        session_id="session-1",
+        created_at=time.time(),
+        updated_at=time.time(),
+        progress=0,
+    )
+    persisted_statuses: list[str] = []
+    started = asyncio.Event()
+
+    async def slow_run_web_research_task(*args, **kwargs):
+        del args, kwargs
+        started.set()
+        await asyncio.Event().wait()
+
+    async def fake_drop_suppressed_task(_record):
+        return False
+
+    monkeypatch.setattr(api_server, "run_web_research_task", slow_run_web_research_task)
+    monkeypatch.setattr(api_server, "_drop_suppressed_task", fake_drop_suppressed_task)
+    monkeypatch.setattr(
+        api_server,
+        "_persist_task_record",
+        lambda current: persisted_statuses.append(current.status.value),
+    )
+    monkeypatch.setattr(api_server, "_prune_persisted_tasks", lambda: None)
+    monkeypatch.setattr(api_server, "_prune_task_records_locked", lambda now=None: None)
+    monkeypatch.setattr(api_server, "persist_web_research_task_result", lambda *args, **kwargs: None)
+
+    async def exercise() -> None:
+        gate = asyncio.Semaphore(1)
+        monkeypatch.setattr(api_server, "_get_deep_research_semaphore", lambda: gate)
+        task = asyncio.create_task(api_server._run_task(record))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert gate.locked() is False
+
+    asyncio.run(exercise())
+
+    assert record.status == api_server.TaskStatus.FAILED
+    assert record.params["task_failure_kind"] == "cancelled"
+    assert record.error == "Task execution was cancelled before completion."
+    assert "failed" in persisted_statuses
+
+
+def test_cross_process_cancel_request_is_honored_before_task_start(monkeypatch):
+    record = api_server.TaskRecord(
+        task_id="task-cross-process-cancel",
+        task_type="web_research",
+        status=api_server.TaskStatus.PENDING,
+        params={"query": "AI"},
+        session_id="session-1",
+        created_at=time.time(),
+        updated_at=time.time(),
+        progress=0,
+    )
+    persisted_cancel = api_server.TaskRecord(
+        task_id=record.task_id,
+        task_type=record.task_type,
+        status=api_server.TaskStatus.RUNNING,
+        params={
+            "task_cancel_requested": True,
+            "task_cancel_requested_at": 123.0,
+            "task_cancel_requested_by": "user",
+        },
+        session_id=record.session_id,
+        created_at=record.created_at,
+        updated_at=123.0,
+        progress=10,
+    )
+
+    async def fake_drop_suppressed_task(_record):
+        return False
+
+    monkeypatch.setattr(
+        api_server,
+        "_get_task_store",
+        lambda: types.SimpleNamespace(get=lambda task_id: persisted_cancel),
+    )
+    monkeypatch.setattr(api_server, "_drop_suppressed_task", fake_drop_suppressed_task)
+    monkeypatch.setattr(api_server, "_persist_task_record", lambda current: None)
+    monkeypatch.setattr(api_server, "_prune_persisted_tasks", lambda: None)
+    monkeypatch.setattr(api_server, "_prune_task_records_locked", lambda now=None: None)
+    monkeypatch.setattr(api_server, "persist_web_research_task_result", lambda *args, **kwargs: None)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(api_server._run_task(record))
+
+    assert record.status == api_server.TaskStatus.FAILED
+    assert record.params["task_failure_kind"] == "cancelled"
+    assert record.params["task_cancel_requested_at"] == 123.0
+    assert record.error == "Task execution was cancelled before completion."
+
+
+def test_failed_multi_agent_workflow_is_not_marked_completed(monkeypatch):
+    record = api_server.TaskRecord(
+        task_id="task-workflow-failed",
+        task_type="multi_agent_workflow",
+        status=api_server.TaskStatus.PENDING,
+        params={"user_request": "Research and write"},
+        session_id="session-1",
+        created_at=time.time(),
+        updated_at=time.time(),
+        progress=0,
+    )
+    persisted_results: list[str] = []
+
+    async def fake_run_multi_agent_workflow_task(*args, **kwargs):
+        del args, kwargs
+        record.params["workflow_status"] = "failed"
+        record.params["workflow_state"] = {"status": "failed", "errors": ["research timed out"]}
+        record.result = "Workflow failed."
+
+    async def fake_drop_suppressed_task(_record):
+        return False
+
+    monkeypatch.setattr(
+        api_server,
+        "run_multi_agent_workflow_task",
+        fake_run_multi_agent_workflow_task,
+    )
+    monkeypatch.setattr(api_server, "_drop_suppressed_task", fake_drop_suppressed_task)
+    monkeypatch.setattr(api_server, "_persist_task_record", lambda current: None)
+    monkeypatch.setattr(api_server, "_prune_persisted_tasks", lambda: None)
+    monkeypatch.setattr(api_server, "_prune_task_records_locked", lambda now=None: None)
+    monkeypatch.setattr(
+        api_server,
+        "persist_multi_agent_workflow_task_result",
+        lambda current, *, content: persisted_results.append(content),
+    )
+
+    asyncio.run(api_server._run_task(record))
+
+    assert record.status == api_server.TaskStatus.FAILED
+    assert record.error == "research timed out"
+    assert persisted_results == ["Multi-agent workflow failed: research timed out"]
+
+
+def test_failed_multi_agent_workflow_timeout_is_non_retryable(monkeypatch):
+    record = api_server.TaskRecord(
+        task_id="task-workflow-timeout",
+        task_type="multi_agent_workflow",
+        status=api_server.TaskStatus.PENDING,
+        params={"user_request": "Research and write"},
+        session_id="session-1",
+        created_at=time.time(),
+        updated_at=time.time(),
+        progress=0,
+    )
+
+    async def fake_run_multi_agent_workflow_task(*args, **kwargs):
+        del args, kwargs
+        record.params["workflow_status"] = "failed"
+        record.params["workflow_state"] = {
+            "status": "failed",
+            "errors": ["research timed out"],
+            "failure_kind": "timeout",
+        }
+
+    async def fake_drop_suppressed_task(_record):
+        return False
+
+    monkeypatch.setattr(
+        api_server,
+        "run_multi_agent_workflow_task",
+        fake_run_multi_agent_workflow_task,
+    )
+    monkeypatch.setattr(api_server, "_drop_suppressed_task", fake_drop_suppressed_task)
+    monkeypatch.setattr(api_server, "_persist_task_record", lambda current: None)
+    monkeypatch.setattr(api_server, "_prune_persisted_tasks", lambda: None)
+    monkeypatch.setattr(api_server, "_prune_task_records_locked", lambda now=None: None)
+    monkeypatch.setattr(
+        api_server,
+        "persist_multi_agent_workflow_task_result",
+        lambda current, *, content: None,
+    )
+
+    asyncio.run(api_server._run_task(record))
+
+    assert record.status == api_server.TaskStatus.FAILED
+    assert record.params["task_failure_kind"] == "timeout"
+    assert record.error == "research timed out"
 
 
 def test_get_task_includes_retry_context(monkeypatch, tmp_path):

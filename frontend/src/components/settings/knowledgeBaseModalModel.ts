@@ -1,6 +1,6 @@
 import type { KnowledgeBaseChunk } from '../../api/client'
 
-export type TabKey = 'documents' | 'upload' | 'retrieval' | 'health'
+export type TabKey = 'documents' | 'upload' | 'monitor'
 
 export interface DocGroup {
   source: string

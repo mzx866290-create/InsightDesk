@@ -13,10 +13,11 @@ describe('KnowledgeBaseTabs', () => {
 
     expect(screen.getByTestId('settings-kb-tabs')).toBeInTheDocument()
     expect(screen.getByTestId('settings-kb-tab-documents')).toHaveClass('bg-bg-secondary')
+    expect(screen.getByTestId('settings-kb-tab-documents')).toHaveClass('min-h-11')
+    expect(screen.getByTestId('settings-kb-tab-monitor')).toHaveAccessibleName('监控与检索')
     expect(screen.getByText('文档列表')).toBeInTheDocument()
     expect(screen.getByText('上传文档')).toBeInTheDocument()
-    expect(screen.getByText('检索测试')).toBeInTheDocument()
-    expect(screen.getByText('健康状态')).toBeInTheDocument()
+    expect(screen.getByText('监控与检索')).toBeInTheDocument()
   })
 
   it('emits tab changes', () => {
@@ -24,8 +25,8 @@ describe('KnowledgeBaseTabs', () => {
 
     render(<KnowledgeBaseTabs activeTab="documents" onTabChange={onTabChange} />)
 
-    fireEvent.click(screen.getByTestId('settings-kb-tab-health'))
+    fireEvent.click(screen.getByTestId('settings-kb-tab-monitor'))
 
-    expect(onTabChange).toHaveBeenCalledWith('health')
+    expect(onTabChange).toHaveBeenCalledWith('monitor')
   })
 })

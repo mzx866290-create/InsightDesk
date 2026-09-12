@@ -25,6 +25,7 @@ describe('CloudModelProfilesPanel', () => {
     useChatStore.setState({
       language: 'zh-CN',
       cloudModelProfiles: [],
+      modelProviderOpen: false,
     })
     apiMocks.saveCloudModelApiKey.mockResolvedValue({ api_key_ref: 'managed-key-ref' })
   })
@@ -37,6 +38,8 @@ describe('CloudModelProfilesPanel', () => {
     render(<CloudModelProfilesPanel />)
 
     expect(screen.getByText('云端模型配置')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('供应商管理'))
+    expect(useChatStore.getState().modelProviderOpen).toBe(true)
     expect(screen.getByText('还没有已保存的云端模型配置。可先在这里保存，再到聊天模型选择器中复用。')).toBeInTheDocument()
     expect(screen.queryByText(/褰|鍓|宸|娓|缂|鍒|杩|涔/)).not.toBeInTheDocument()
   })
@@ -64,6 +67,7 @@ describe('CloudModelProfilesPanel', () => {
     expect(apiMocks.saveCloudModelApiKey).toHaveBeenCalledWith({
       api_key: 'sk-test',
       api_key_ref: undefined,
+      base_url: 'https://openrouter.ai/api/v1',
     })
     expect(savedCard).toHaveAttribute('data-profile-name', 'Prod OpenRouter')
     expect(within(savedCard).getByText('openai/gpt-4.1')).toBeInTheDocument()

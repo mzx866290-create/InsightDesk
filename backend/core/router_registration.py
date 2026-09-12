@@ -75,7 +75,7 @@ _CORE_ROUTER_CONTEXT_ATTRIBUTES: tuple[str, ...] = (
     "asyncio", "build_access_router", "build_agent_catalog_router", "build_assistant_preset_router", "build_delivery_template_router",
     "build_identity_router", "build_kb_router", "build_operations_router", "build_prompt_router",
     "build_provider_router", "build_security_router", "delete_kb_chunk_payload", "delete_kb_directory",
-    "enqueue_external_task", "enqueue_task", "filter_kb_chunks",
+    "cancel_external_task", "enqueue_external_task", "enqueue_task", "filter_kb_chunks",
     "install_agent_plugin_manifest_payload", "install_delivery_template_manifest_payload", "kb_health_payload", "knowledge_bases_payload", "list_agent_catalog", "list_delivery_template_catalog", "list_kb_chunks_payload", "list_llm_provider_catalog",
     "logger", "retrieval_test_payload", "time", "update_kb_chunk_payload", "arq_queue_health_payload",
     "uninstall_agent_plugin_manifest_payload", "uninstall_delivery_template_manifest_payload",
@@ -84,13 +84,14 @@ _CORE_ROUTER_CONTEXT_ATTRIBUTES: tuple[str, ...] = (
 _DEFERRED_ROUTER_CONTEXT_ATTRIBUTES: tuple[str, ...] = (
     "ApprovalPolicyRequest", "ApprovalTaskDecisionRequest", "CHAT_ATTACHMENT_PREVIEW_CHARS", "CHAT_FILE_CONTEXT_END_MARKER",
     "CHAT_FILE_CONTEXT_START_MARKER", "CHAT_FILE_MAX_BYTES", "CHAT_FILE_MAX_CHARS_PER_FILE", "CHAT_FILE_MAX_COUNT",
-    "CHAT_FILE_MAX_TOTAL_CHARS", "ChatFileConfig", "ChatRequest", "CreateBookmarkRequest",
+    "CHAT_FILE_MAX_TOTAL_CHARS", "CHAT_IMAGE_MAX_BYTES", "CHAT_IMAGE_MAX_COUNT", "CHAT_IMAGE_MAX_TOTAL_BYTES",
+    "ChatFileConfig", "ChatImageConfig", "ChatRequest", "CreateBookmarkRequest",
     "CreateDeckRequest", "CreateMultiAgentWorkflowTaskRequest", "CreateSessionRequest", "CreateTaskRequest",
     "CreateWorkspaceRequest", "DOCUMENT_UPLOAD_MAX_COUNT", "DOCUMENT_UPLOAD_MAX_FILE_BYTES", "DOCUMENT_UPLOAD_MAX_TOTAL_BYTES",
     "DOCUMENT_UPLOAD_STAGING_DIR",
     "GenerateArtifactRequest", "GenerateReportRequest", "ImportSessionMessagesRequest", "PinSessionMemoryRequest",
     "RegenerateDeckSlideRequest", "ReorderSessionsRequest", "RevokeShareLinkResponse", "SHARE_LINK_TTL_SECONDS",
-    "SUPPORTED_CHAT_FILE_EXTENSIONS", "SetMessageFeedbackRequest", "SetRetrievalFeedbackRequest", "ShareLinkAuditListResponse",
+    "SUPPORTED_CHAT_FILE_EXTENSIONS", "SUPPORTED_CHAT_IMAGE_MEDIA_TYPES", "SetMessageFeedbackRequest", "SetRetrievalFeedbackRequest", "ShareLinkAuditListResponse",
     "ShareLinkResponse", "SingleChatRequest", "TASK_BACKEND", "TASK_HISTORY_LIMIT",
     "TruncateSessionMessagesRequest", "UpdateArtifactRequest", "UpdateDeckRequest", "UpdateSessionMemoryRequest",
     "UpdateSessionRequest", "UpdateWorkspaceRequest", "_artifact_store",
@@ -111,7 +112,7 @@ _DEFERRED_ROUTER_CONTEXT_ATTRIBUTES: tuple[str, ...] = (
     "build_session_router", "build_share_url", "build_single_agent_stream", "build_upload_documents_task_record",
     "cleanup_temp_paths", "create_session_record", "create_share_link_payload", "current_mcp_approved_connectors_payload",
     "decode_share_token", "default_mcp_server_names", "delete_session_memory_payload", "encode_share_token",
-    "enqueue_external_task", "enqueue_task", "ensure_deckable_chat", "export_deck_payload",
+    "cancel_external_task", "enqueue_external_task", "enqueue_task", "ensure_deckable_chat", "export_deck_payload",
     "export_deck_to_pptx", "get_mcp_runtime_health_history", "list_mcp_server_catalog", "list_mcp_server_runtime_health",
     "list_tasks_payload", "logger", "normalize_deck_theme", "open_shared_resource_payload",
     "persist_multi_agent_workflow_task_placeholder", "persist_web_research_task_placeholder", "pin_session_memory_payload", "populate_chat_report_presentation",
@@ -493,11 +494,12 @@ def _include_operations_router(ctx: RouterContext) -> None:
                 app_config_runtime.validate_tavily_api_key(api_key)
             ),
             get_app_config_store=_app_config_store_getter(ctx),
-            upsert_cloud_model_api_key=lambda api_key_ref, api_key: (
+            upsert_cloud_model_api_key=lambda api_key_ref, api_key, base_url: (
                 app_config_runtime.upsert_cloud_model_api_key(
                     _app_config_store_getter(ctx),
                     api_key_ref,
                     api_key,
+                    base_url,
                 )
             ),
             delete_cloud_model_api_key=lambda api_key_ref: (
@@ -728,7 +730,21 @@ def _include_chat_router(ctx: RouterContext) -> None:
                 ctx.revoke_runtime_mcp_connector(connector_name)
             ),
             resolve_active_prompt_runtime=prompt_runtime.resolve_active_prompt_runtime,
-            validate_chat_payload=ctx._validate_chat_payload_impl,
+            validate_chat_payload=lambda message, images, files: (
+                ctx._validate_chat_payload_impl(
+                    message,
+                    images,
+                    files,
+                    image_config=ctx.ChatImageConfig(
+                        max_bytes=ctx.CHAT_IMAGE_MAX_BYTES,
+                        max_count=ctx.CHAT_IMAGE_MAX_COUNT,
+                        max_total_bytes=ctx.CHAT_IMAGE_MAX_TOTAL_BYTES,
+                        supported_media_types=frozenset(
+                            ctx.SUPPORTED_CHAT_IMAGE_MEDIA_TYPES
+                        ),
+                    ),
+                )
+            ),
             prepare_chat_files=lambda files: ctx._prepare_chat_files_impl(
                 files,
                 config=ctx.ChatFileConfig(
@@ -834,7 +850,21 @@ def _include_session_router(ctx: RouterContext) -> None:
             summarize_session_memory_payload=ctx.summarize_session_memory_payload,
             delete_session_memory_payload=ctx.delete_session_memory_payload,
             generate_session_phase_summary_memory=_session_phase_summary_generator(ctx),
-            validate_chat_payload=ctx._validate_chat_payload_impl,
+            validate_chat_payload=lambda message, images, files: (
+                ctx._validate_chat_payload_impl(
+                    message,
+                    images,
+                    files,
+                    image_config=ctx.ChatImageConfig(
+                        max_bytes=ctx.CHAT_IMAGE_MAX_BYTES,
+                        max_count=ctx.CHAT_IMAGE_MAX_COUNT,
+                        max_total_bytes=ctx.CHAT_IMAGE_MAX_TOTAL_BYTES,
+                        supported_media_types=frozenset(
+                            ctx.SUPPORTED_CHAT_IMAGE_MEDIA_TYPES
+                        ),
+                    ),
+                )
+            ),
             base_model_payload=model_config_runtime.base_model_payload,
             normalize_model_config=model_config_runtime.normalize_model_config,
             model_config_payload=model_config_runtime.model_config_payload,
@@ -878,6 +908,18 @@ def _content_external_task_enqueue(ctx: RouterContext):
     return _enqueue_external_task
 
 
+def _content_external_task_cancel(ctx: RouterContext):
+    async def _cancel_external_task(task_id: str):
+        cancel = getattr(ctx, "cancel_external_task", None)
+        if cancel is None:
+            from backend.tasks.enqueue import cancel_arq_task
+
+            return await cancel_arq_task(task_id)
+        return await cancel(task_id)
+
+    return _cancel_external_task
+
+
 def _content_stage_upload_files(ctx: RouterContext):
     async def _stage_upload_files(*args, **kwargs):
         kwargs.setdefault(
@@ -912,6 +954,7 @@ def _include_content_router(ctx: RouterContext) -> None:
             task_history_limit=ctx.TASK_HISTORY_LIMIT,
             task_backend=lambda: ctx.TASK_BACKEND,
             enqueue_external_task=_content_external_task_enqueue(ctx),
+            cancel_external_task=_content_external_task_cancel(ctx),
             arq_queue_health_payload=ctx.arq_queue_health_payload,
             artifact_payload=lambda artifact: build_artifact_payload(
                 artifact,

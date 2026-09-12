@@ -38,7 +38,7 @@ export const SsoSettingsPanel: React.FC<SsoSettingsPanelProps> = ({
     <div className="rounded-xl border border-bg-border bg-bg-tertiary/30 p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold text-text-primary">SSO / OIDC</h3>
+          <h3 className="text-sm font-semibold text-text-primary">{t('settings.sso.title')}</h3>
           <p className="mt-1 text-xs leading-5 text-text-secondary">
             {t('settings.sso.description')}
           </p>
@@ -74,6 +74,7 @@ export const SsoSettingsPanel: React.FC<SsoSettingsPanelProps> = ({
           variant="outline"
           onClick={onSave}
           loading={saving}
+          className="min-h-11"
         >
           <Check size={14} />
           {t('settings.sso.save')}
@@ -84,6 +85,7 @@ export const SsoSettingsPanel: React.FC<SsoSettingsPanelProps> = ({
           onClick={onStartLogin}
           loading={loginStarting}
           disabled={!config?.ready}
+          className="min-h-11"
         >
           <LogIn size={14} />
           {t('settings.sso.login')}
@@ -93,6 +95,7 @@ export const SsoSettingsPanel: React.FC<SsoSettingsPanelProps> = ({
           variant="ghost"
           onClick={onRefresh}
           loading={loading}
+          className="min-h-11"
         >
           <RefreshCw size={14} />
           {t('settings.sso.refresh')}

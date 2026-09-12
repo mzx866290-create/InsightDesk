@@ -1,4 +1,5 @@
 import type React from 'react'
+import { useState } from 'react'
 import type { Session, Workspace } from '../../../api/client'
 import { SessionItemRow, type SessionMetaPatch } from './SessionItemRow'
 
@@ -85,6 +86,8 @@ export function SessionList({
   onDeleteSession,
   onMoveSession,
 }: SessionListProps) {
+  const [openActionsSessionId, setOpenActionsSessionId] = useState<string | null>(null)
+
   if (sessions.length === 0) {
     return <div className="py-8 text-center text-xs text-text-secondary">{emptyStateMessage}</div>
   }
@@ -102,7 +105,8 @@ export function SessionList({
           savingId === session.session_id ||
           exportingId === session.session_id ||
           deletingId === session.session_id ||
-          isActive
+          isActive ||
+          openActionsSessionId === session.session_id
 
         return (
           <SessionItemRow
@@ -111,6 +115,7 @@ export function SessionList({
             isActive={isActive}
             isEditing={isEditing}
             showActions={showActions}
+            actionsMenuOpen={openActionsSessionId === session.session_id}
             canDragSort={canDragSort}
             hasDraggingSession={Boolean(draggingSessionId)}
             isDragging={draggingSessionId === session.session_id}
@@ -129,7 +134,14 @@ export function SessionList({
             workspaces={workspaces}
             workspaceNameMap={workspaceNameMap}
             formatTime={formatTime}
-            onSelectSession={onSelectSession}
+            onSelectSession={(selectedSession) => {
+              setOpenActionsSessionId(null)
+              return onSelectSession(selectedSession)
+            }}
+            onToggleActionsMenu={(sessionId) =>
+              setOpenActionsSessionId((current) => current === sessionId ? null : sessionId)
+            }
+            onCloseActionsMenu={() => setOpenActionsSessionId(null)}
             onStartDraggingSession={onStartDraggingSession}
             onDragOverSession={onDragOverSession}
             onClearDragOver={onClearDragOver}

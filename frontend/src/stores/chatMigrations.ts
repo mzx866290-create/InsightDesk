@@ -235,6 +235,7 @@ export function migrateChatStoreState(
     memoryWorkspaceOpen: false,
     modelPresets: migrateModelPresets(state.modelPresets, now),
     cloudModelProfiles: migrateCloudModelProfiles(state.cloudModelProfiles, now),
+    providerConfigs: state.providerConfigs ?? [],
     panels: migratePanels(state.panels, createPanel),
   }
 }
@@ -263,6 +264,7 @@ export function partializeChatStoreState(state: ChatStorePersistedState): ChatSt
       ...profile,
       modelConfig: sanitizePersistedModelConfig(profile.modelConfig),
     })),
+    providerConfigs: state.providerConfigs ?? [],
     panels: state.panels.map((panel) => ({
       ...panel,
       messages: [],

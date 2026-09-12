@@ -104,28 +104,31 @@ async def stage_upload_files_with_limits(
                 raise ValueError(f"不支持的文件类型: {suffix or '无扩展名'}")
             fd, temp_path = tempfile.mkstemp(suffix=suffix, dir=resolved_staging_dir)
             try:
-                content = await upload.read()
-                if not isinstance(content, (bytes, bytearray)):
-                    raise ValueError(f"文件读取失败: {file_name}")
-                file_size = len(content)
-                if file_size <= 0:
-                    raise ValueError(f"文件内容为空: {file_name}")
-                if file_size > max(1, int(max_file_bytes)):
-                    raise ValueError(
-                        f"文件过大: {file_name}，单文件限制 {int(max_file_bytes)} 字节"
-                    )
-                total_bytes += file_size
-                if total_bytes > max(1, int(max_total_bytes)):
-                    raise ValueError(
-                        f"上传总大小超限，最多 {int(max_total_bytes)} 字节"
-                    )
+                file_size = 0
+                wrote_any = False
                 with os.fdopen(fd, "wb") as handle:
-                    handle.write(content)
+                    while True:
+                        chunk = await upload.read(1024 * 1024)
+                        if chunk is None or (isinstance(chunk, bytes) and not chunk):
+                            break
+                        if not isinstance(chunk, (bytes, bytearray)):
+                            raise ValueError(f"文件读取失败: {file_name}")
+                        chunk_size = len(chunk)
+                        file_size += chunk_size
+                        if file_size > max(1, int(max_file_bytes)):
+                            raise ValueError(
+                                f"文件过大: {file_name}，单文件限制 {int(max_file_bytes)} 字节"
+                            )
+                        if total_bytes + chunk_size > max(1, int(max_total_bytes)):
+                            raise ValueError(
+                                f"上传总大小超限，最多 {int(max_total_bytes)} 字节"
+                            )
+                        handle.write(chunk)
+                        wrote_any = True
+                        total_bytes += chunk_size
+                if not wrote_any:
+                    raise ValueError(f"文件内容为空: {file_name}")
             except Exception:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
                 cleanup_temp_paths([temp_path, *temp_paths])
                 raise
 

@@ -1,8 +1,9 @@
 import React from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { KnowledgeBaseChunk } from '../../api/client'
+import { useChatStore } from '../../stores/chatStore'
 import { KbChunkList } from './KbChunkList'
 
 vi.mock('../ui/Button', () => ({
@@ -58,6 +59,10 @@ function renderList(overrides: Partial<React.ComponentProps<typeof KbChunkList>>
 }
 
 describe('KbChunkList', () => {
+  beforeEach(() => {
+    useChatStore.setState({ language: 'zh-CN' })
+  })
+
   afterEach(() => {
     cleanup()
   })
@@ -65,7 +70,9 @@ describe('KbChunkList', () => {
   it('renders empty, loading, and preview states', () => {
     const { rerender, props } = renderList({ chunks: [], loading: false })
 
-    expect(screen.getByTestId('settings-kb-chunk-empty')).toBeInTheDocument()
+    expect(screen.getByTestId('settings-kb-chunk-empty')).toHaveTextContent(
+      '没有找到匹配的知识库切片。',
+    )
 
     rerender(<KbChunkList {...props} chunks={[]} loading />)
     expect(screen.queryByTestId('settings-kb-chunk-empty')).not.toBeInTheDocument()
@@ -84,6 +91,10 @@ describe('KbChunkList', () => {
     fireEvent.click(screen.getByTestId('settings-kb-chunk-edit'))
     fireEvent.click(screen.getByTestId('settings-kb-chunk-delete'))
 
+    expect(screen.getByTestId('settings-kb-chunk-edit')).toHaveAccessibleName('编辑切片')
+    expect(screen.getByTestId('settings-kb-chunk-delete')).toHaveAccessibleName('删除切片')
+    expect(screen.getByTestId('settings-kb-chunk-edit')).toHaveClass('min-h-11', 'min-w-11')
+    expect(screen.getByTestId('settings-kb-chunk-delete')).toHaveClass('min-h-11', 'min-w-11')
     expect(onStartEdit).toHaveBeenCalledWith(chunk)
     expect(onDelete).toHaveBeenCalledWith('chunk-1')
   })
@@ -113,6 +124,12 @@ describe('KbChunkList', () => {
     fireEvent.click(screen.getByTestId('settings-kb-chunk-edit-save'))
     fireEvent.click(screen.getByTestId('settings-kb-chunk-edit-cancel'))
 
+    expect(screen.getByTestId('settings-kb-chunk-edit-source')).toHaveAttribute(
+      'placeholder',
+      '切片来源',
+    )
+    expect(screen.getByTestId('settings-kb-chunk-edit-save')).toHaveTextContent('保存')
+    expect(screen.getByTestId('settings-kb-chunk-edit-cancel')).toHaveTextContent('取消')
     expect(onEditingSourceChange).toHaveBeenCalledWith('updated.md')
     expect(onEditingContentChange).toHaveBeenCalledWith('Updated content')
     expect(onSave).toHaveBeenCalledTimes(1)

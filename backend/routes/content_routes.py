@@ -72,6 +72,7 @@ from backend.helpers.task_approval_route_helpers import (
 from backend.helpers.workflow_task_payload_helpers import build_multi_agent_workflow_task_params
 from backend.helpers.task_route_helpers import (
     apply_task_approval_decision_result,
+    cancel_task_route_payload,
     create_background_task_result,
     dispatch_existing_task_record_result,
     get_task_route_payload,
@@ -185,6 +186,7 @@ def build_content_router(
     logger: logging.Logger,
     task_backend: str | Callable[[], str] = "memory",
     enqueue_external_task: Callable[[Any], Awaitable[Any]] | None = None,
+    cancel_external_task: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
     arq_queue_health_payload: Callable[[], Awaitable[dict[str, Any]]] | None = None,
 ) -> APIRouter:
     router = APIRouter()
@@ -484,6 +486,26 @@ def build_content_router(
             require_session_access=require_session_access,
             require_remote_viewer=require_remote_viewer,
             task_record_payload=task_record_payload,
+        )
+
+    @router.post("/api/tasks/{task_id}/cancel")
+    async def cancel_task(task_id: str, request: Request):
+        return await cancel_task_route_payload(
+            task_id=task_id,
+            request=request,
+            resolve_tasks=resolve_tasks,
+            tasks_lock=tasks_lock,
+            suppressed_task_ids=suppressed_task_ids,
+            prune_task_records_locked=prune_task_records_locked,
+            prune_persisted_tasks=prune_persisted_tasks,
+            get_task_store=get_task_store,
+            persist_task_record=persist_task_record,
+            require_session_access=require_session_access,
+            require_remote_admin=require_remote_admin,
+            audit_security_event=audit_security_event,
+            task_record_payload=task_record_payload,
+            task_backend=resolve_task_backend(),
+            cancel_external_task=cancel_external_task,
         )
 
     @router.post("/api/tasks/{task_id}/approval")

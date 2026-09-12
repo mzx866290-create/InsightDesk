@@ -31,6 +31,7 @@ def test_standalone_arq_worker_compose_locks_runtime_contract() -> None:
     required_snippets = [
         "TASK_BACKEND: arq",
         'TASK_STORE_FAIL_INCOMPLETE_ON_START: "false"',
+        "ARQ_JOB_TIMEOUT_SECONDS: ${ARQ_JOB_TIMEOUT_SECONDS:-960}",
         "ARQ_QUEUE_NAME: ${ARQ_QUEUE_NAME:-insightdesk:tasks}",
         "ARQ_WORKER_DRAIN_SECONDS: ${ARQ_WORKER_DRAIN_SECONDS:-30}",
         "ARQ_WORKER_HEARTBEAT_KEY: ${ARQ_WORKER_HEARTBEAT_KEY:-insightdesk:tasks:worker:heartbeat}",
@@ -53,8 +54,12 @@ def test_standalone_arq_worker_compose_locks_runtime_contract() -> None:
     dockerfile = _read(ARQ_WORKER_DOCKERFILE)
     dockerfile_required = [
         "FROM python:3.12-slim",
-        "pip install \"arq>=0.26.0\"",
+        "COPY requirements.txt ./",
+        "pip install -r requirements.txt",
         "COPY backend ./backend",
+        "COPY search_runtime ./search_runtime",
+        "COPY config ./config",
+        "COPY mcp_servers ./mcp_servers",
         "COPY deploy ./deploy",
         'CMD ["arq", "backend.tasks.worker.WorkerSettings"]',
     ]

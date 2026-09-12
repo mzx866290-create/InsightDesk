@@ -16,6 +16,7 @@ from backend.stores.pg_identity_store import PostgresIdentityStore
 from backend.stores.pg_resource_access_store import PostgresResourceAccessStore
 from backend.stores.pg_retrieval_feedback_store import PostgresRetrievalFeedbackStore
 from backend.stores.pg_share_link_store import PostgresShareLinkStore
+from backend.stores.pg_session_store import PostgresSessionStore
 from backend.stores.pg_session_memory_store import PostgresSessionMemoryStore
 from backend.stores.pg_sso_session_store import PostgresSsoSessionStore
 from backend.stores.pg_task_store import PostgresTaskStore
@@ -750,6 +751,7 @@ def test_factory_selects_postgres_app_config_and_task_store(monkeypatch):
     monkeypatch.setattr(PostgresResourceAccessStore, "_init_db", lambda self: None)
     monkeypatch.setattr(PostgresRetrievalFeedbackStore, "_init_db", lambda self: None)
     monkeypatch.setattr(PostgresShareLinkStore, "_init_db", lambda self: None)
+    monkeypatch.setattr(PostgresSessionStore, "_init_db", lambda self: None)
     monkeypatch.setattr(PostgresSessionMemoryStore, "_init_db", lambda self: None)
     monkeypatch.setattr(PostgresSsoSessionStore, "_init_db", lambda self: None)
     monkeypatch.setattr(PostgresTaskStore, "_init_db", lambda self: None)
@@ -769,6 +771,7 @@ def test_factory_selects_postgres_app_config_and_task_store(monkeypatch):
     assert isinstance(factory.create_identity_store(), PostgresIdentityStore)
     assert isinstance(factory.create_share_link_store(), PostgresShareLinkStore)
     assert isinstance(factory.create_sso_session_store(), PostgresSsoSessionStore)
+    assert isinstance(factory.create_session_store(), PostgresSessionStore)
     assert isinstance(factory.create_session_memory_store(), PostgresSessionMemoryStore)
     assert isinstance(
         factory.create_retrieval_feedback_store(),
@@ -787,6 +790,95 @@ def test_factory_keeps_sqlite_chat_history_as_default(monkeypatch, tmp_path):
 
     assert isinstance(history, chat_store.SQLiteChatMessageHistory)
     assert history.db_path == str(db_path)
+
+
+def test_chat_store_routes_core_session_operations_to_postgres(monkeypatch):
+    import backend.chat_store as chat_store
+
+    monkeypatch.setenv("DATABASE_PROVIDER", "postgres")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example/db")
+
+    class FakeSessionStore:
+        def __init__(self):
+            self.calls = []
+
+        def get_all_sessions(self, **kwargs):
+            self.calls.append(("list", kwargs))
+            return [{"session_id": "session-1"}]
+
+        def get_session(self, session_id):
+            self.calls.append(("get", session_id))
+            return {"session_id": session_id}
+
+        def truncate_session_from_answer_group(self, session_id, **kwargs):
+            self.calls.append(("truncate", session_id, kwargs))
+            return {"anchor_message_id": 1}
+
+        def update_session_meta(self, session_id, **kwargs):
+            self.calls.append(("update", session_id, kwargs))
+            return {"session_id": session_id, "title": kwargs["title"]}
+
+        def reorder_sessions(self, session_ids, **kwargs):
+            self.calls.append(("reorder", session_ids, kwargs))
+            return {"count": len(session_ids)}
+
+        def delete_session(self, session_id):
+            self.calls.append(("delete", session_id))
+
+        def promote_panel_answer(self, session_id, answer_group_id, source_panel_id):
+            self.calls.append(
+                ("promote", session_id, answer_group_id, source_panel_id)
+            )
+            return {"target_panel_id": "panel-main"}
+
+    store = FakeSessionStore()
+    monkeypatch.setattr(factory, "create_session_store", lambda: store)
+
+    assert chat_store.get_all_sessions(query="budget") == [
+        {"session_id": "session-1"}
+    ]
+    assert chat_store.get_session("session-1") == {"session_id": "session-1"}
+    assert chat_store.truncate_session_from_answer_group(
+        "session-1",
+        answer_group_id="turn-1",
+        content="Updated",
+    ) == {"anchor_message_id": 1}
+    assert chat_store.update_session_meta(
+        "session-1",
+        title="Renamed",
+    ) == {"session_id": "session-1", "title": "Renamed"}
+    assert chat_store.reorder_sessions(["session-1", "session-2"]) == {"count": 2}
+    chat_store.delete_session("session-1")
+    assert chat_store.promote_panel_answer(
+        "session-1",
+        "turn-1",
+        "panel-side",
+    ) == {"target_panel_id": "panel-main"}
+
+    assert ("get", "session-1") in store.calls
+    assert ("delete", "session-1") in store.calls
+    assert ("promote", "session-1", "turn-1", "panel-side") in store.calls
+
+
+def test_chat_store_keeps_explicit_sqlite_session_path(monkeypatch):
+    import backend.chat_store as chat_store
+
+    monkeypatch.setenv("DATABASE_PROVIDER", "postgres")
+    monkeypatch.setattr(
+        chat_store,
+        "_get_session",
+        lambda session_id, **kwargs: {"session_id": session_id, "backend": "sqlite"},
+    )
+    monkeypatch.setattr(
+        factory,
+        "create_session_store",
+        lambda: pytest.fail("explicit SQLite paths must not use PostgreSQL"),
+    )
+
+    assert chat_store.get_session("session-1", db_path="custom.db") == {
+        "session_id": "session-1",
+        "backend": "sqlite",
+    }
 
 
 def test_chat_store_routes_session_memory_and_panels_to_postgres(monkeypatch):
@@ -1610,6 +1702,24 @@ def test_validate_postgres_config_is_offline_and_redacts_secret():
         "connectivity_checked": False,
     }
     assert summary["warnings"] == ()
+
+
+def test_database_runtime_summary_reports_postgres_adapter_coverage(monkeypatch):
+    monkeypatch.setenv("DATABASE_PROVIDER", "postgres")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://app:secret@postgres/db")
+
+    summary = storage_runtime.database_runtime_summary()
+
+    coverage = summary["target"]["adapter_coverage"]
+    assert "chat_sessions" in coverage["covered"]
+    assert "chat_messages" in coverage["covered"]
+    assert coverage["pending"] == [
+        "assistant_presets",
+        "bookmarks",
+        "system_prompts",
+        "workspaces",
+    ]
+    assert "postgres_store_coverage_is_partial" in summary["risks"]
 
 
 def test_validate_postgres_config_rejects_invalid_scheme():

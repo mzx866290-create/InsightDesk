@@ -31,6 +31,29 @@ MULTI_AGENT_WORKFLOW_PLACEHOLDER_TEXT = (
     "Multi-agent workflow started. Results will appear here when the workflow finishes."
 )
 
+DEFAULT_RESEARCH_AGENT_TIMEOUT_SECONDS = 600.0
+DEFAULT_RESEARCH_LLM_TIMEOUT_SECONDS = 120.0
+MAX_RESEARCH_TIMEOUT_SECONDS = 24 * 60 * 60.0
+
+
+def _research_timeout_setting(
+    record: TaskRecord,
+    *,
+    param_name: str,
+    env_name: str,
+    default: float,
+) -> float:
+    raw_value = record.params.get(param_name)
+    if raw_value is None or raw_value == "":
+        raw_value = os.getenv(env_name)
+    try:
+        value = float(raw_value) if raw_value is not None and raw_value != "" else default
+    except (TypeError, ValueError):
+        value = default
+    if value <= 0:
+        value = default
+    return min(value, MAX_RESEARCH_TIMEOUT_SECONDS)
+
 
 def _web_research_message_context(record: TaskRecord) -> dict[str, str]:
     return {
@@ -104,13 +127,28 @@ def _workflow_sources(record: TaskRecord) -> list[dict[str, Any]]:
     return sources
 
 
+def _create_task_message_history(
+    session_id: str,
+    *,
+    db_path: str | None,
+) -> Any:
+    """Use the configured provider unless a caller explicitly requests SQLite."""
+
+    if db_path is not None:
+        from backend.chat_store import SQLiteChatMessageHistory
+
+        return SQLiteChatMessageHistory(session_id=session_id, db_path=db_path)
+
+    from backend.stores.factory import create_chat_message_history
+
+    return create_chat_message_history(session_id=session_id)
+
+
 def persist_web_research_task_placeholder(
     record: TaskRecord,
     *,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> None:
-    from backend.chat_store import SQLiteChatMessageHistory
-
     session_id = str(record.session_id or "").strip()
     if not session_id:
         return
@@ -123,7 +161,7 @@ def persist_web_research_task_placeholder(
     if not query or not panel_id or not answer_group_id:
         return
 
-    history = SQLiteChatMessageHistory(session_id=session_id, db_path=db_path)
+    history = _create_task_message_history(session_id, db_path=db_path)
     history.add_user_message_once(query, answer_group_id=answer_group_id)
     history.delete_ai_messages_for_answer_group(panel_id, answer_group_id)
     history.add_ai_message(
@@ -142,10 +180,8 @@ def persist_web_research_task_result(
     content: str,
     sources: list[dict[str, Any]] | None = None,
     workflow_nodes: list[dict[str, Any]] | None = None,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> None:
-    from backend.chat_store import SQLiteChatMessageHistory
-
     session_id = str(record.session_id or "").strip()
     if not session_id:
         return
@@ -157,7 +193,7 @@ def persist_web_research_task_result(
     if not panel_id or not answer_group_id or not str(content or "").strip():
         return
 
-    history = SQLiteChatMessageHistory(session_id=session_id, db_path=db_path)
+    history = _create_task_message_history(session_id, db_path=db_path)
     history.delete_ai_messages_for_answer_group(panel_id, answer_group_id)
     history.add_ai_message(
         str(content).strip(),
@@ -174,10 +210,8 @@ def persist_web_research_task_result(
 def persist_multi_agent_workflow_task_placeholder(
     record: TaskRecord,
     *,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> None:
-    from backend.chat_store import SQLiteChatMessageHistory
-
     session_id = str(record.session_id or "").strip()
     if not session_id:
         return
@@ -190,7 +224,7 @@ def persist_multi_agent_workflow_task_placeholder(
     if not user_request or not panel_id or not answer_group_id:
         return
 
-    history = SQLiteChatMessageHistory(session_id=session_id, db_path=db_path)
+    history = _create_task_message_history(session_id, db_path=db_path)
     history.add_user_message_once(user_request, answer_group_id=answer_group_id)
     history.delete_ai_messages_for_answer_group(panel_id, answer_group_id)
     history.add_ai_message(
@@ -208,10 +242,8 @@ def persist_multi_agent_workflow_task_result(
     record: TaskRecord,
     *,
     content: str,
-    db_path: str = "./chat_history.db",
+    db_path: str | None = None,
 ) -> None:
-    from backend.chat_store import SQLiteChatMessageHistory
-
     session_id = str(record.session_id or "").strip()
     if not session_id:
         return
@@ -223,7 +255,7 @@ def persist_multi_agent_workflow_task_result(
     if not panel_id or not answer_group_id or not str(content or "").strip():
         return
 
-    history = SQLiteChatMessageHistory(session_id=session_id, db_path=db_path)
+    history = _create_task_message_history(session_id, db_path=db_path)
     history.delete_ai_messages_for_answer_group(panel_id, answer_group_id)
     history.add_ai_message(
         str(content).strip(),
@@ -710,6 +742,18 @@ async def run_multi_agent_workflow_task(
         time_range=str(record.params.get("time_range") or "").strip() or None,
         source_strategy=research_source_strategy,
         allow_quick_fallback=bool(record.params.get("allow_quick_fallback", True)),
+        timeout_seconds=_research_timeout_setting(
+            record,
+            param_name="research_timeout_seconds",
+            env_name="RESEARCH_AGENT_TIMEOUT_SECONDS",
+            default=DEFAULT_RESEARCH_AGENT_TIMEOUT_SECONDS,
+        ),
+        llm_timeout_seconds=_research_timeout_setting(
+            record,
+            param_name="research_llm_timeout_seconds",
+            env_name="RESEARCH_LLM_TIMEOUT_SECONDS",
+            default=DEFAULT_RESEARCH_LLM_TIMEOUT_SECONDS,
+        ),
         metadata={"task_id": record.task_id},
     )
     integrator_connectors = (
@@ -852,6 +896,12 @@ async def run_web_research_task(
 
     research_fallback_note = ""
     search_planning_note = ""
+    research_llm_timeout_seconds = _research_timeout_setting(
+        record,
+        param_name="research_llm_timeout_seconds",
+        env_name="RESEARCH_LLM_TIMEOUT_SECONDS",
+        default=DEFAULT_RESEARCH_LLM_TIMEOUT_SECONDS,
+    )
 
     def build_research_llm(*, required: bool) -> Any | None:
         raw_panel_config = record.params.get("panel_config")
@@ -912,7 +962,11 @@ async def run_web_research_task(
         if llm is None:
             return None
 
-        strategy = await plan_search_strategy_with_llm(llm, query)
+        strategy = await plan_search_strategy_with_llm(
+            llm,
+            query,
+            timeout_seconds=max(1, min(30, int(research_llm_timeout_seconds))),
+        )
         planned_query = rewrite_search_query_for_web(strategy.primary_query)
         if planned_query and planned_query != query:
             record.params["search_planned_query"] = planned_query
@@ -971,8 +1025,11 @@ async def run_web_research_task(
                     time_range=time_range,
                     source_strategy=research_source_strategy,
                     knowledge_search=knowledge_search,
+                    llm_timeout_seconds=research_llm_timeout_seconds,
                 )
                 await set_progress(55)
+            except TimeoutError:
+                raise
             except Exception as exc:
                 effective_research_mode = "quick"
                 research_fallback_note = (
@@ -982,6 +1039,8 @@ async def run_web_research_task(
                 research = await run_quick_research_mode()
         else:
             research = await run_quick_research_mode()
+    except TimeoutError:
+        raise
     except Exception as exc:
         raise ValueError(describe_runtime_error(exc)) from exc
 

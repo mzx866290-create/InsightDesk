@@ -4,19 +4,19 @@
  * 根据 20260413plan.md P0 改进项实施
  */
 
-import React, { useEffect, useState } from 'react'
+import React, { useCallback, useEffect, useState } from 'react'
 import { AdminTokenPanel } from '../admin/AdminTokenPanel'
 import { Modal } from '../ui/Modal'
 import {
   getAdminApiToken,
   saveAdminApiToken,
 } from '../../api/client'
+import { KbMonitorPanel } from './KbMonitorPanel'
 import { KnowledgeBaseDocumentsTab } from './KnowledgeBaseDocumentsTab'
-import { KnowledgeBaseHealthTab } from './KnowledgeBaseHealthTab'
-import { KnowledgeBaseRetrievalTab } from './KnowledgeBaseRetrievalTab'
 import { KnowledgeBaseTabs } from './KnowledgeBaseTabs'
 import { KnowledgeBaseUploadTab } from './KnowledgeBaseUploadTab'
 import { type TabKey } from './knowledgeBaseModalModel'
+import { useKbMonitor } from './useKbMonitor'
 
 // ── 主组件 ───────────────────────────────────────────
 
@@ -32,7 +32,11 @@ export const KnowledgeBaseModal: React.FC<KnowledgeBaseModalProps> = ({ open, on
   const [adminTokenSaved, setAdminTokenSaved] = useState(false)
   const [adminAccessError, setAdminAccessError] = useState<string | null>(null)
 
-  const handleDataChanged = () => setRefreshKey(k => k + 1)
+  const handleDataChanged = useCallback(() => setRefreshKey((key) => key + 1), [])
+  const kbMonitor = useKbMonitor({
+    enabled: open && activeTab === 'monitor',
+    onKnowledgeBasesChanged: handleDataChanged,
+  })
 
   useEffect(() => {
     if (!open) return
@@ -48,11 +52,19 @@ export const KnowledgeBaseModal: React.FC<KnowledgeBaseModalProps> = ({ open, on
     setAdminTokenSaved(true)
     setAdminAccessError(null)
     setRefreshKey((key) => key + 1)
+    if (activeTab === 'monitor') {
+      void kbMonitor.refreshCurrent()
+    }
     window.setTimeout(() => setAdminTokenSaved(false), 2500)
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="知识库管理" width="max-w-2xl">
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="知识库管理"
+      width={activeTab === 'monitor' ? 'max-w-4xl' : 'max-w-2xl'}
+    >
       <AdminTokenPanel
         token={adminToken}
         saved={adminTokenSaved}
@@ -68,6 +80,9 @@ export const KnowledgeBaseModal: React.FC<KnowledgeBaseModalProps> = ({ open, on
           setAdminTokenSaved(false)
           setAdminAccessError(null)
           setRefreshKey((key) => key + 1)
+          if (activeTab === 'monitor') {
+            void kbMonitor.refreshCurrent()
+          }
         }}
       />
 
@@ -84,10 +99,7 @@ export const KnowledgeBaseModal: React.FC<KnowledgeBaseModalProps> = ({ open, on
       {activeTab === 'upload' && (
         <KnowledgeBaseUploadTab onUploaded={handleDataChanged} onAdminAccessError={setAdminAccessError} />
       )}
-      {activeTab === 'retrieval' && <KnowledgeBaseRetrievalTab onAdminAccessError={setAdminAccessError} />}
-      {activeTab === 'health' && (
-        <KnowledgeBaseHealthTab key={`health-${refreshKey}`} onAdminAccessError={setAdminAccessError} />
-      )}
+      {activeTab === 'monitor' && <KbMonitorPanel monitor={kbMonitor} />}
     </Modal>
   )
 }

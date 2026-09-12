@@ -72,6 +72,16 @@ start.bat
 http://localhost:5173
 ```
 
+### 桌面窗口模式（Windows）
+
+双击 `启动桌面版.bat`，InsightDesk 会在独立桌面窗口中打开（pywebview + 系统 WebView2），无需浏览器。启动器会自动选择空闲端口、拉起本地后端，关闭窗口后后端进程自动退出。前置条件：`venv312` 已就绪（跑过 `setup.bat`）且前端已构建（`cd frontend && npm run build`）。
+
+也可以手动运行：
+
+```bash
+venv312\Scripts\python.exe desktop\app.py
+```
+
 手动启动：
 
 ```bash

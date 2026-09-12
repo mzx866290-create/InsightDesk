@@ -65,6 +65,7 @@ export function useCloudModelProfileActions({
         const result = await saveCloudModelApiKey({
           api_key: normalizedApiKey,
           api_key_ref: apiKeyRef || undefined,
+          base_url: form.baseUrl.trim(),
         })
         apiKeyRef = result.api_key_ref
       }

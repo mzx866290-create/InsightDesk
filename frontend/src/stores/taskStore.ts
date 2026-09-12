@@ -1,9 +1,15 @@
 import { create } from 'zustand'
 
 import { fetchWithApiToken } from '../api/auth'
-import { createMultiAgentWorkflowTask, getTask, listTasks } from '../api/client'
+import {
+  cancelTask as cancelTaskRequest,
+  createMultiAgentWorkflowTask,
+  getTask,
+  listTasks,
+} from '../api/client'
 import type {
   CreateMultiAgentWorkflowTaskPayload,
+  TaskCancellationResponse,
   TaskRecord,
   TaskStatus,
 } from '../api/client'
@@ -17,6 +23,7 @@ interface TaskState {
   stopPolling: (taskId: string) => void
   getTask: (taskId: string) => TaskRecord | undefined
   syncRecentTasks: (limit?: number, status?: TaskStatus) => Promise<void>
+  cancelTask: (taskId: string) => Promise<TaskCancellationResponse>
 }
 
 const POLL_INTERVAL_MS = 1500
@@ -155,6 +162,17 @@ export const useTaskStore = create<TaskState>((set, get) => ({
         get().stopPolling(task.task_id)
       }
     }
+  },
+
+  cancelTask: async (taskId) => {
+    const result = await cancelTaskRequest(taskId)
+    get().addTask(result.task)
+    if (isActiveTaskStatus(result.task.status) && !result.cancelled) {
+      get().startPolling(taskId)
+    } else {
+      get().stopPolling(taskId)
+    }
+    return result
   },
 }))
 

@@ -109,7 +109,10 @@ def knowledge_bases_payload(
         try:
             abs_path = str(resolve_project_subdir(path))
         except HTTPException:
-            abs_path = os.path.abspath(path)
+            # Never fall back to an arbitrary absolute path: loading or listing
+            # a store outside the project would hand FAISS pickle loading an
+            # attacker-controlled location.
+            continue
         if abs_path in seen_paths:
             continue
         seen_paths.add(abs_path)

@@ -1,6 +1,8 @@
 import asyncio
 from datetime import UTC, datetime
 
+import pytest
+
 from backend.agent import (
     DeepResearchAgent,
     ResearchAgentConfig,
@@ -41,7 +43,7 @@ def _research_result(query: str) -> WebResearchResult:
                 url="https://example.com/one",
                 snippet="Source snippet",
                 domain="pbc.gov.cn",
-                published_at="2026-04-20",
+                published_at=datetime.now(UTC).date().isoformat(),
             )
         ],
         highlights=["Important highlight"],
@@ -313,6 +315,27 @@ def test_deep_research_agent_calls_deep_runner_with_task_metadata():
     assert calls[0][1]["providers"] == ["tavily"]
     assert calls[0][1]["max_results_per_query"] == 3
     assert calls[0][1]["max_fetch_pages"] == 1
+
+
+def test_deep_research_agent_enforces_total_timeout():
+    async def slow_deep_runner(query, **kwargs):
+        del query, kwargs
+        await asyncio.sleep(1)
+        return _research_result("unreachable")
+
+    agent = DeepResearchAgent(
+        llm=object(),
+        config=ResearchAgentConfig(mode="deep", timeout_seconds=0.01),
+        deep_runner=slow_deep_runner,
+    )
+
+    with pytest.raises(TimeoutError, match="Research Agent timed out after 0.01 seconds"):
+        asyncio.run(
+            agent.execute(
+                {"id": "step-timeout", "type": "research", "input": "OpenAI agents"},
+                {},
+            )
+        )
 
 
 def test_research_agent_attaches_reusable_archive_context():

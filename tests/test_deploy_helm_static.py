@@ -1,3 +1,5 @@
+import yaml
+
 from deploy.validate_helm_static import validate_chart
 
 
@@ -27,6 +29,14 @@ def test_helm_network_policy_values_cover_core_paths() -> None:
     ]
     missing = [snippet for snippet in required_snippets if snippet not in values]
     assert missing == []
+
+
+def test_helm_default_ingress_is_same_namespace_only() -> None:
+    values_path = validate_chart.__globals__["CHART_DIR"] / "values.yaml"
+    values = yaml.safe_load(values_path.read_text(encoding="utf-8"))
+
+    api_ingress = values["networkPolicy"]["api"]["ingress"]
+    assert api_ingress[0]["from"] == [{"podSelector": {}}]
 
 
 def test_helm_network_policy_template_is_optional_and_templatable() -> None:
@@ -97,6 +107,125 @@ def test_helm_config_hot_reload_contract_is_static_and_optional() -> None:
         "{{ .Values.config.hotReload.fileName }}: |-",
     ]
     assert [snippet for snippet in required_configmap if snippet not in configmap] == []
+
+
+def test_helm_sensitive_dsn_values_use_external_secret_instead_of_configmap() -> None:
+    chart_dir = validate_chart.__globals__["CHART_DIR"]
+    values = yaml.safe_load((chart_dir / "values.yaml").read_text(encoding="utf-8"))
+    configmap = (chart_dir / "templates" / "configmap.yaml").read_text(
+        encoding="utf-8"
+    )
+    helpers = (chart_dir / "templates" / "_helpers.tpl").read_text(
+        encoding="utf-8"
+    )
+    api = (chart_dir / "templates" / "deployment-api.yaml").read_text(
+        encoding="utf-8"
+    )
+    worker = (chart_dir / "templates" / "deployment-worker.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert values["secret"] == {"existingSecret": "", "optional": False}
+    assert "databaseUrl" not in values["config"]
+    assert "redisUrl" not in values["config"]
+    assert values["config"]["arqRedisHost"] == "redis"
+    assert values["config"]["arqRedisPort"] == "6379"
+    assert values["config"]["arqRedisDatabase"] == "0"
+    assert values["config"]["arqCancelTimeoutSeconds"] == "5"
+    assert "DATABASE_URL:" not in configmap
+    assert "REDIS_URL:" not in configmap
+    assert "config.databaseUrl/config.redisUrl are not rendered" in configmap
+    assert "ARQ_REDIS_HOST:" in configmap
+    assert "ARQ_CANCEL_TIMEOUT_SECONDS:" in configmap
+    assert "insightdesk.validateSensitiveEnv" in configmap
+    assert "env[].valueFrom.secretKeyRef" in helpers
+    assert "(_API_KEY|_TOKEN|_PASSWORD|_SECRET|_TOKENS_JSON)$" in helpers
+    for name in (
+        "APP_AUTH_TOKENS_JSON",
+        "DATABASE_URL",
+        "OPENAI_API_KEY",
+        "REDIS_URL",
+        "SHARE_LINK_SECRET",
+    ):
+        assert name in helpers
+    for deployment in (api, worker):
+        assert ".Values.secret.existingSecret" in deployment
+        assert "secretRef:" in deployment
+        assert ".Values.extraEnvFrom" in deployment
+
+
+def test_helm_chart_managed_env_names_cannot_be_overridden() -> None:
+    chart_dir = validate_chart.__globals__["CHART_DIR"]
+    helpers = (chart_dir / "templates" / "_helpers.tpl").read_text(
+        encoding="utf-8"
+    )
+    values = (chart_dir / "values.yaml").read_text(encoding="utf-8")
+    readme = (chart_dir / "README.md").read_text(encoding="utf-8")
+
+    for name in ("TASK_BACKEND", "POD_NAME", "ARQ_WORKER_HEARTBEAT_KEY"):
+        assert name in helpers
+        assert name in values
+        assert name in readme
+    assert '{{- $reservedNames := list' in helpers
+    assert '{{- if has $name $reservedNames -}}' in helpers
+    assert "is chart-managed and cannot be overridden through env[]" in helpers
+    assert "config.taskBackend" in readme
+
+
+def test_helm_probe_and_pod_hardening_defaults() -> None:
+    chart_dir = validate_chart.__globals__["CHART_DIR"]
+    values = yaml.safe_load((chart_dir / "values.yaml").read_text(encoding="utf-8"))
+    api = (chart_dir / "templates" / "deployment-api.yaml").read_text(
+        encoding="utf-8"
+    )
+    worker = (chart_dir / "templates" / "deployment-worker.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert values["api"]["startupProbe"]["httpGet"]["path"] == "/healthz"
+    assert values["api"]["livenessProbe"]["httpGet"]["path"] == "/healthz"
+    assert values["api"]["readinessProbe"]["httpGet"]["path"] == "/readyz"
+    expected_worker_check = [
+        "arq",
+        "backend.tasks.worker.WorkerSettings",
+        "--check",
+    ]
+    assert values["worker"]["startupProbe"]["exec"]["command"] == expected_worker_check
+    assert values["worker"]["readinessProbe"]["exec"]["command"] == expected_worker_check
+    assert values["pod"] == {
+        "automountServiceAccountToken": False,
+        "enableServiceLinks": False,
+    }
+    assert values["podSecurityContext"]["seccompProfile"]["type"] == "RuntimeDefault"
+    assert values["containerSecurityContext"]["allowPrivilegeEscalation"] is False
+    assert values["containerSecurityContext"]["capabilities"]["drop"] == ["ALL"]
+    assert "&& exec uvicorn" in values["api"]["args"][0]
+    assert "&& exec arq" in values["worker"]["args"][0]
+    for deployment in (api, worker):
+        assert ".Values.pod.automountServiceAccountToken" in deployment
+        assert ".Values.pod.enableServiceLinks" in deployment
+        assert ".Values.containerSecurityContext" in deployment
+        assert "startupProbe:" in deployment
+    assert "readinessProbe:" in worker
+    assert "fieldPath: metadata.name" in worker
+    assert "ARQ_WORKER_HEARTBEAT_KEY" in worker
+    assert ":worker:heartbeat:$(POD_NAME)" in worker
+
+
+def test_helm_external_service_requires_explicit_opt_in() -> None:
+    chart_dir = validate_chart.__globals__["CHART_DIR"]
+    values = yaml.safe_load((chart_dir / "values.yaml").read_text(encoding="utf-8"))
+    service = (chart_dir / "templates" / "service.yaml").read_text(
+        encoding="utf-8"
+    )
+
+    assert values["service"]["type"] == "ClusterIP"
+    assert values["service"]["allowExternal"] is False
+    assert values["service"]["loadBalancerSourceRanges"] == []
+    assert "service.type must be ClusterIP, NodePort, or LoadBalancer" in service
+    assert ".Values.service.allowExternal" in service
+    assert "service.allowExternal=true" in service
+    assert "loadBalancerSourceRanges:" in service
 
 
 def test_k8s_rollout_drill_exposes_config_reload_contract() -> None:

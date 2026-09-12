@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, Cloud, Cpu, X } from 'lucide-react'
+import { ChevronDown, Cloud, Cpu, Settings2, X } from 'lucide-react'
 import { useChatStore } from '../../stores/chatStore'
 import {
   defaultBaseUrlForConnectionType,
@@ -78,11 +78,12 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     updatePanelModel,
     modelPresets,
     cloudModelProfiles,
+    providerConfigs,
     saveModelPreset,
     deleteModelPreset,
     applyModelPreset,
     applyCloudModelProfile,
-    setSettingsOpen,
+    openSettings,
   } = useChatStore()
   const [open, setOpen] = useState(false)
   const [ollamaModels, setOllamaModels] = useState<string[]>([])
@@ -107,6 +108,10 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     const availableButtons = PROVIDER_BUTTONS.filter((button) => availableTypes.has(button.id))
     return availableButtons.length > 0 ? availableButtons : PROVIDER_BUTTONS
   }, [providerCatalog])
+  const enabledProviderConfigs = useMemo(
+    () => providerConfigs.filter((provider) => provider.enabled),
+    [providerConfigs],
+  )
 
   useEffect(() => {
     if (!open || providerCatalogLoaded) return
@@ -166,6 +171,33 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       api_key: preset.baseUrl.startsWith('http://localhost') ? '' : modelConfig.api_key,
       api_key_ref: modelConfig.api_key_ref,
     })
+  }
+
+  const applyEnabledProvider = (providerId: string) => {
+    const provider = enabledProviderConfigs.find((item) => item.id === providerId)
+    if (!provider) return
+
+    const nextType = isConnectionType(provider.connectionType)
+      ? provider.connectionType
+      : 'openai_compatible'
+    const catalogItem = providerCatalog?.providers.find(
+      (item) => item.connection_type === nextType,
+    )
+    updatePanelModel(panelId, {
+      connection_type: nextType,
+      provider: nextType,
+      model:
+        connectionType === nextType && modelConfig.model.trim()
+          ? modelConfig.model
+          : catalogItem?.default_model || defaultModelForConnectionType(nextType),
+      base_url:
+        provider.baseUrl ||
+        catalogItem?.default_base_url ||
+        defaultBaseUrlForConnectionType(nextType),
+      api_key: '',
+      api_key_ref: provider.apiKeyRef,
+    })
+    setOpen(false)
   }
 
   const shortModel =
@@ -347,25 +379,68 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
               <div>
                 <div className="mb-1 flex items-center justify-between gap-2">
                   <div className="text-[10px] uppercase tracking-wide text-text-secondary">
-                    已保存云端配置
+                    已启用供应商与云端配置
                   </div>
                   <button
                     type="button"
+                    data-testid={`model-selector-provider-manager-${panelId}`}
                     onClick={() => {
-                      setSettingsOpen(true)
+                      openSettings('cloud_models')
                       setOpen(false)
                     }}
-                    className="text-[11px] text-accent-blue transition-colors hover:text-accent-blue-hover"
+                    className="flex min-h-8 items-center gap-1 rounded-md px-2 text-[11px] text-accent-blue transition-colors hover:bg-accent-blue/10 hover:text-accent-blue-hover"
                   >
-                    管理
+                    <Settings2 size={12} />
+                    模型配置
                   </button>
                 </div>
 
-                {cloudModelProfiles.length > 0 ? (
+                {enabledProviderConfigs.length > 0 || cloudModelProfiles.length > 0 ? (
                   <div
                     data-testid={`model-selector-cloud-profile-list-${panelId}`}
-                    className="max-h-36 space-y-1.5 overflow-y-auto"
+                    className="max-h-44 space-y-1.5 overflow-y-auto"
                   >
+                    {enabledProviderConfigs.map((provider) => {
+                      const nextType = isConnectionType(provider.connectionType)
+                        ? provider.connectionType
+                        : 'openai_compatible'
+                      const catalogItem = providerCatalog?.providers.find(
+                        (item) => item.connection_type === nextType,
+                      )
+                      const baseUrl =
+                        provider.baseUrl ||
+                        catalogItem?.default_base_url ||
+                        defaultBaseUrlForConnectionType(nextType)
+                      const isActive =
+                        modelConfig.base_url === baseUrl &&
+                        modelConfig.api_key_ref === provider.apiKeyRef
+
+                      return (
+                        <button
+                          key={provider.id}
+                          type="button"
+                          data-testid={`model-selector-provider-${panelId}-${provider.id}`}
+                          onClick={() => applyEnabledProvider(provider.id)}
+                          disabled={disabled}
+                          className={`w-full rounded-lg border px-2.5 py-2 text-left transition-colors ${
+                            isActive
+                              ? 'border-accent-blue/40 bg-accent-blue/10'
+                              : 'border-bg-border bg-bg-primary/30 hover:border-accent-blue/35 hover:bg-bg-hover'
+                          } disabled:cursor-not-allowed disabled:opacity-50`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="truncate text-xs font-medium text-text-primary">
+                              {provider.name}
+                            </span>
+                            <span className="shrink-0 text-[10px] text-accent-green">已启用</span>
+                          </div>
+                          <div className="mt-0.5 truncate text-[11px] text-text-secondary">
+                            {baseUrl}
+                          </div>
+                        </button>
+                      )
+                    })}
+
                     {cloudModelProfiles.map((profile) => (
                       <button
                         key={profile.id}
@@ -396,89 +471,100 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                   </div>
                 ) : (
                   <p className="rounded-lg border border-dashed border-bg-border px-2.5 py-2 text-[11px] leading-5 text-text-secondary">
-                    还没有已保存的云端配置。先点“管理”创建，再回来在这里应用。
+                    暂无可用配置。请先到“设置 → 模型配置”保存 API 配置。
                   </p>
                 )}
               </div>
 
-              <div>
-                <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
-                  常用预设
-                </div>
-                <div className="grid gap-1.5">
-                  {COMPATIBLE_PRESETS.map((preset) => (
-                    <button
-                      key={preset.label}
-                      type="button"
-                      onClick={() => applyCompatiblePreset(preset)}
+              <details className="group rounded-lg border border-bg-border bg-bg-primary/30">
+                <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between gap-2 rounded-lg px-2.5 text-xs font-medium text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary">
+                  <span>当前面板临时覆盖</span>
+                  <ChevronDown
+                    size={13}
+                    className="transition-transform group-open:rotate-180"
+                  />
+                </summary>
+                <div className="space-y-2 border-t border-bg-border p-2.5">
+                  <div>
+                    <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
+                      常用预设
+                    </div>
+                    <div className="grid gap-1.5">
+                      {COMPATIBLE_PRESETS.map((preset) => (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() => applyCompatiblePreset(preset)}
+                          disabled={disabled}
+                          className="rounded-lg border border-bg-border px-2.5 py-2 text-left transition-colors hover:border-accent-blue/35 hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <div className="text-xs font-medium text-text-primary">{preset.label}</div>
+                          <div className="mt-0.5 text-[11px] text-text-secondary">
+                            {preset.description}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
+                      模型 ID
+                    </div>
+                    <input
+                      className="input-base w-full text-xs"
+                      value={modelConfig.model}
+                      onChange={(event) => updatePanelModel(panelId, { model: event.target.value })}
+                      placeholder="gpt-4o-mini / qwen/qwen-2.5-72b-instruct"
                       disabled={disabled}
-                      className="rounded-lg border border-bg-border px-2.5 py-2 text-left transition-colors hover:border-accent-blue/35 hover:bg-bg-hover disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      <div className="text-xs font-medium text-text-primary">{preset.label}</div>
-                      <div className="mt-0.5 text-[11px] text-text-secondary">
-                        {preset.description}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
+                    />
+                  </div>
 
-              <div>
-                <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
-                  模型 ID
-                </div>
-                <input
-                  className="input-base w-full text-xs"
-                  value={modelConfig.model}
-                  onChange={(event) => updatePanelModel(panelId, { model: event.target.value })}
-                  placeholder="gpt-4o-mini / qwen/qwen-2.5-72b-instruct"
-                  disabled={disabled}
-                />
-              </div>
+                  <div>
+                    <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
+                      基础 URL
+                    </div>
+                    <input
+                      className="input-base w-full text-xs"
+                      value={modelConfig.base_url}
+                      onChange={(event) => updatePanelModel(panelId, { base_url: event.target.value })}
+                      placeholder="https://openrouter.ai/api/v1"
+                      disabled={disabled}
+                    />
+                  </div>
 
-              <div>
-                <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
-                  基础 URL
-                </div>
-                <input
-                  className="input-base w-full text-xs"
-                  value={modelConfig.base_url}
-                  onChange={(event) => updatePanelModel(panelId, { base_url: event.target.value })}
-                  placeholder="https://openrouter.ai/api/v1"
-                  disabled={disabled}
-                />
-              </div>
+                  <div>
+                    <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
+                      API Key
+                    </div>
+                    <input
+                      data-testid={`model-selector-api-key-input-${panelId}`}
+                      className="input-base w-full text-xs"
+                      type="password"
+                      value={modelConfig.api_key}
+                      onChange={(event) =>
+                        updatePanelModel(panelId, {
+                          api_key: event.target.value,
+                          api_key_ref: '',
+                        })}
+                      placeholder="本地兼容服务可留空"
+                      disabled={disabled}
+                    />
+                    {modelConfig.api_key_ref ? (
+                      <p
+                        data-testid={`model-selector-managed-key-notice-${panelId}`}
+                        className="mt-1 text-[11px] leading-5 text-text-secondary"
+                      >
+                        当前已关联后端托管密钥，在此输入会解除关联。
+                      </p>
+                    ) : null}
+                  </div>
 
-              <div>
-                <div className="mb-1 text-[10px] uppercase tracking-wide text-text-secondary">
-                  API Key
-                </div>
-                <input
-                  data-testid={`model-selector-api-key-input-${panelId}`}
-                  className="input-base w-full text-xs"
-                  type="password"
-                  value={modelConfig.api_key}
-                  onChange={(event) =>
-                    updatePanelModel(panelId, {
-                      api_key: event.target.value,
-                      api_key_ref: '',
-                    })}
-                  placeholder="本地兼容服务可留空"
-                  disabled={disabled}
-                />
-                {modelConfig.api_key_ref ? (
-                  <p
-                    data-testid={`model-selector-managed-key-notice-${panelId}`}
-                    className="mt-1 text-[11px] leading-5 text-text-secondary"
-                  >
-                    当前已关联后端托管密钥，在此输入会解除关联。
+                  <p className="text-[11px] leading-5 text-text-secondary">
+                    这里的修改只影响当前面板；长期使用的 API 配置请保存到设置中心。
                   </p>
-                ) : null}
-              </div>
-
-              <p className="text-[11px] leading-5 text-text-secondary">
-                支持 OpenRouter、OneAPI、NewAPI、LM Studio、vLLM 等 OpenAI 兼容网关和服务。
-              </p>
+                </div>
+              </details>
             </div>
           )}
 

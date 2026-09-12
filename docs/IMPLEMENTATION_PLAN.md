@@ -752,7 +752,7 @@ mcp_servers/
 当前实际状态说明：
 
 - Docker Compose MVP 已完成第一轮拆分：默认服务名调整为 `api`，异步任务使用 `worker` + `redis` 的 `tasks` profile，Qdrant 使用 `storage` profile
-- `api` 已使用现有 `/api/health` 做 Compose 容器健康检查，并等待 `ollama` 健康后启动；同时已新增 `/healthz` 与 `/readyz` 供 Kubernetes / 运维探针使用，其中 `/readyz` 仅做本地配置与运行时轻检查；`redis` 使用 `redis-cli ping`，`qdrant` 使用 `/readyz`，`postgres` 使用 `pg_isready`
+- `api` 已使用现有 `/api/health` 做 Compose 容器健康检查，并等待 `ollama` 健康后启动；同时已新增 `/healthz` 与 `/readyz` 供 Kubernetes / 运维探针使用，其中 `/readyz` 会短查询 SQLite/PostgreSQL、检查运行时 wiring，并在 ARQ 模式下验证 Redis 连通性（不检查 Worker 心跳，也不探测 Ollama/Qdrant）；`redis` 使用 `redis-cli ping`，`qdrant` 使用 `/readyz`，`postgres` 使用 `pg_isready`
 - `worker` 已强制 `TASK_BACKEND=arq`，并通过 `depends_on` 等待 `redis` / `ollama` 健康；worker 容器健康检查覆盖 Redis 连通性，并已接入可配置 ARQ health check 心跳键与 pending/running 滞留阈值解析
 - `.env.example` 已补充 Compose 专用的 `DOCKER_REDIS_URL`、`DOCKER_QDRANT_URL`、`DOCKER_DATABASE_URL`、端口与 ARQ worker 参数
 - 已新增 `docs/DEPLOYMENT_OPERATIONS.md`，说明 API、ARQ worker、Redis、Qdrant 的环境变量、启动命令、任务滞留告警 payload 与静态校验命令

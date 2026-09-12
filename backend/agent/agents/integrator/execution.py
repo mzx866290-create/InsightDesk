@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import hashlib
+import ipaddress
 import json
 import time
 from collections.abc import Iterable, Mapping
@@ -39,6 +40,16 @@ _SECRET_KEYWORDS = (
 )
 _RETRYABLE_STATUS_CODES = {0, 408, 409, 425, 429}
 _REDACTED = "***redacted***"
+_NON_PUBLIC_HOST_SUFFIXES = (
+    ".localhost",
+    ".local",
+    ".internal",
+    ".lan",
+    ".home.arpa",
+    ".corp",
+    ".onion",
+)
+_RESERVED_SINGLE_LABEL_HOSTS = {"localhost", "metadata", "kubernetes", "docker"}
 
 
 @dataclass(slots=True)
@@ -177,6 +188,44 @@ def validate_webhook_url(url: str) -> str:
         return "Webhook URL must use http or https."
     if not parsed.netloc or not parsed.hostname:
         return "Webhook URL must include a host."
+    return ""
+
+
+def validate_webhook_outbound_scope(url: str) -> str:
+    """Reject webhook targets that clearly point at non-public infrastructure.
+
+    The check is deliberately hostname-only so it can run synchronously before
+    any outbound connection. It blocks literal private/loopback/link-local and
+    cloud-metadata addresses, plus hostnames that commonly resolve inside a
+    private network. Deployments that need DNS-resolution guarantees on top of
+    this should enforce an outbound allowlist at the network edge.
+    """
+    if not url:
+        return ""
+    parsed = urlsplit(url)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return "Webhook target must use http or https."
+    if parsed.username or parsed.password:
+        return "Webhook target must not include user info."
+    host = (parsed.hostname or "").strip()
+    if not host:
+        return "Webhook target must include a host."
+    literal_host = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+    try:
+        address = ipaddress.ip_address(literal_host)
+    except ValueError:
+        address = None
+    if address is not None:
+        if not address.is_global:
+            return "Webhook target must use a public IP address."
+        return ""
+    normalized_host = host.lower().rstrip(".")
+    if normalized_host in _RESERVED_SINGLE_LABEL_HOSTS:
+        return "Webhook target must be a public hostname."
+    if "." not in normalized_host:
+        return "Webhook target must use a fully qualified public hostname."
+    if normalized_host == "localhost" or normalized_host.endswith(_NON_PUBLIC_HOST_SUFFIXES):
+        return "Webhook target must be a public hostname."
     return ""
 
 
@@ -585,5 +634,6 @@ __all__ = [
     "resolve_webhook_timeout_seconds",
     "resolve_webhook_url",
     "summarize_webhook_response",
+    "validate_webhook_outbound_scope",
     "validate_webhook_url",
 ]

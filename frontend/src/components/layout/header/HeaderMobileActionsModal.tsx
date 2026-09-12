@@ -20,7 +20,6 @@ interface HeaderMobileActionsModalProps {
   onShareSession: () => void | Promise<void>
   onGenerateReport: () => void | Promise<void>
   onResetSession: () => void | Promise<void>
-  onNewChat: () => void | Promise<void>
   onSetTheme: (theme: 'dark' | 'light' | 'system') => void
 }
 
@@ -44,7 +43,6 @@ export function HeaderMobileActionsModal({
   onShareSession,
   onGenerateReport,
   onResetSession,
-  onNewChat,
   onSetTheme,
 }: HeaderMobileActionsModalProps) {
   const closeAfter = (action: () => void | Promise<void>) => {
@@ -116,12 +114,6 @@ export function HeaderMobileActionsModal({
               className="rounded-xl border border-accent-red/20 bg-bg-primary px-3 py-2 text-sm text-accent-red transition-colors hover:bg-accent-red/5 disabled:opacity-40"
             >
               {resetConfirm ? '确认重置？' : '重置会话'}
-            </button>
-            <button
-              onClick={() => closeAfter(onNewChat)}
-              className="rounded-xl border border-bg-border bg-bg-primary px-3 py-2 text-sm text-text-primary transition-colors hover:bg-bg-hover"
-            >
-              新建对话
             </button>
           </div>
         </div>

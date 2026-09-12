@@ -1,94 +1,90 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
-import { useI18n } from '../../i18n'
-import { useChatStore } from '../../stores/chatStore'
-import type { SettingsModalContentProps } from './SettingsModalContent'
-import type { SettingsNavigationProps, SettingsTab, SettingsTabItem } from './SettingsNavigation'
+import { useI18n } from '../../i18n';
+import { useChatStore } from '../../stores/chatStore';
+import type { SettingsModalContentProps } from './SettingsModalContent';
+import type { SettingsNavigationProps, SettingsTab, SettingsTabItem } from './SettingsNavigation';
 import {
   ADVANCED_SETTINGS_TABS,
   PRIMARY_SETTINGS_TABS,
   getSettingsModalWidth,
   isAdvancedSettingsTab,
-} from './settingsTabs'
-import {
-  buildSettingsTabItems,
-  getAdvancedTabsVisible,
-} from './settingsModalControllerModel'
-import { useGeneralSettingsController } from './useGeneralSettingsController'
-import { useKbMonitor } from './useKbMonitor'
-import { useRolePrompts } from './useRolePrompts'
-import type { RolePromptTemplate } from './useRolePrompts'
+} from './settingsTabs';
+import { buildSettingsTabItems, getAdvancedTabsVisible } from './settingsModalControllerModel';
+import { useGeneralSettingsController } from './useGeneralSettingsController';
+import { useRolePrompts } from './useRolePrompts';
+import type { RolePromptTemplate } from './useRolePrompts';
 
 interface UseSettingsModalControllerOptions {
-  open: boolean
-  quickTemplates: RolePromptTemplate[]
+  open: boolean;
+  quickTemplates: RolePromptTemplate[];
 }
 
 interface SettingsModalController {
-  tab: SettingsTab
-  modalTitle: string
-  modalWidth: string
-  navigationProps: SettingsNavigationProps
-  contentProps: SettingsModalContentProps
+  tab: SettingsTab;
+  modalTitle: string;
+  modalWidth: string;
+  navigationProps: SettingsNavigationProps;
+  contentProps: SettingsModalContentProps;
 }
 
 export function useSettingsModalController({
   open,
   quickTemplates,
 }: UseSettingsModalControllerOptions): SettingsModalController {
-  const { t } = useI18n()
-  const [tab, setTab] = useState<SettingsTab>('general')
-  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false)
-  const [adminAccessError, setAdminAccessError] = useState<string | null>(null)
+  const { t } = useI18n();
+  const settingsInitialTab = useChatStore((state) => state.settingsInitialTab);
+  const [tab, setTab] = useState<SettingsTab>(settingsInitialTab);
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  const [adminAccessError, setAdminAccessError] = useState<string | null>(null);
 
-  const setActivePromptId = useChatStore((state) => state.setActivePromptId)
+  const setActivePromptId = useChatStore((state) => state.setActivePromptId);
   const rolePrompts = useRolePrompts({
     setAdminAccessError,
     setActivePromptId,
-  })
-  const kbMonitor = useKbMonitor({
-    enabled: open && tab === 'kb_monitor',
-    onKnowledgeBasesChanged: rolePrompts.loadKnowledgeBases,
-  })
-  const generalSettings = useGeneralSettingsController({
+  });
+  const loadRoleKnowledgeBases = rolePrompts.loadKnowledgeBases;
+  const loadRolePrompts = rolePrompts.loadPrompts;
+  const generalSettingsController = useGeneralSettingsController({
     adminAccessError,
-    kbMonitor,
     open,
     rolePrompts,
     setAdminAccessError,
     tab,
-  })
+  });
 
   useEffect(() => {
-    if (open) {
-      setTab('general')
-      setShowAdvancedSettings(false)
-      setAdminAccessError(null)
-      rolePrompts.loadPrompts()
+    setTab(settingsInitialTab);
+    setShowAdvancedSettings(isAdvancedSettingsTab(settingsInitialTab));
+    if (!open) {
+      return;
     }
-  }, [open, rolePrompts.loadPrompts])
+
+    setAdminAccessError(null);
+  }, [open, settingsInitialTab]);
 
   useEffect(() => {
     if (open && tab === 'roles') {
-      rolePrompts.loadKnowledgeBases()
+      loadRolePrompts();
+      loadRoleKnowledgeBases();
     }
-  }, [open, tab, rolePrompts.loadKnowledgeBases])
+  }, [loadRoleKnowledgeBases, loadRolePrompts, open, tab]);
 
   const primaryTabs: SettingsTabItem[] = useMemo(
     () => buildSettingsTabItems(PRIMARY_SETTINGS_TABS, t),
-    [t],
-  )
+    [t]
+  );
   const advancedTabs: SettingsTabItem[] = useMemo(
     () => buildSettingsTabItems(ADVANCED_SETTINGS_TABS, t),
-    [t],
-  )
-  const advancedTabsVisible = getAdvancedTabsVisible(showAdvancedSettings, tab)
+    [t]
+  );
+  const advancedTabsVisible = getAdvancedTabsVisible(showAdvancedSettings, tab);
   const selectSettingsTab = useCallback((nextTab: SettingsTab) => {
     if (isAdvancedSettingsTab(nextTab)) {
-      setShowAdvancedSettings(true)
+      setShowAdvancedSettings(true);
     }
-    setTab(nextTab)
-  }, [])
+    setTab(nextTab);
+  }, []);
 
   const navigationProps = useMemo<SettingsNavigationProps>(
     () => ({
@@ -104,19 +100,19 @@ export function useSettingsModalController({
       onSelectTab: selectSettingsTab,
       onToggleAdvanced: () => setShowAdvancedSettings((value) => !value),
     }),
-    [advancedTabs, advancedTabsVisible, primaryTabs, selectSettingsTab, t, tab],
-  )
+    [advancedTabs, advancedTabsVisible, primaryTabs, selectSettingsTab, t, tab]
+  );
 
   const contentProps = useMemo<SettingsModalContentProps>(
     () => ({
       tab,
-      generalSettings,
-      kbMonitor,
+      generalSettings: generalSettingsController.generalSettings,
+      ssoSettings: generalSettingsController.ssoSettings,
       rolePrompts,
       quickTemplates,
     }),
-    [generalSettings, kbMonitor, quickTemplates, rolePrompts, tab],
-  )
+    [generalSettingsController, quickTemplates, rolePrompts, tab]
+  );
 
   return {
     tab,
@@ -124,5 +120,5 @@ export function useSettingsModalController({
     modalWidth: getSettingsModalWidth(tab),
     navigationProps,
     contentProps,
-  }
+  };
 }

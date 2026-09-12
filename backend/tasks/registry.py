@@ -7,6 +7,7 @@ from backend.tasks.enqueue import (
     _maybe_await,
     _redis_int_call,
     _redis_settings_from_env,
+    cancel_arq_task,
     enqueue_arq_task,
 )
 from backend.tasks.health import (
@@ -16,6 +17,7 @@ from backend.tasks.health import (
 )
 from backend.tasks.settings import (
     DEFAULT_ARQ_KEEP_RESULT_SECONDS,
+    DEFAULT_ARQ_CANCEL_TIMEOUT_SECONDS,
     DEFAULT_ARQ_PENDING_STALE_SECONDS,
     DEFAULT_ARQ_QUEUE_NAME,
     DEFAULT_ARQ_QUEUE_WARNING_LENGTH,
@@ -29,6 +31,7 @@ from backend.tasks.settings import (
     DEFAULT_TASK_BACKEND,
     TASK_BACKEND_SWITCH_READY_ENV,
     TaskBackendName,
+    arq_cancel_timeout_from_env,
     arq_keep_result_from_env,
     arq_pending_stale_seconds_from_env,
     arq_queue_name_from_env,
@@ -61,6 +64,7 @@ from backend.tasks.settings import (
 )
 
 __all__ = [
+    "DEFAULT_ARQ_CANCEL_TIMEOUT_SECONDS",
     "DEFAULT_ARQ_KEEP_RESULT_SECONDS",
     "DEFAULT_ARQ_PENDING_STALE_SECONDS",
     "DEFAULT_ARQ_QUEUE_NAME",
@@ -79,6 +83,7 @@ __all__ = [
     "_maybe_await",
     "_redis_int_call",
     "_redis_settings_from_env",
+    "arq_cancel_timeout_from_env",
     "arq_keep_result_from_env",
     "arq_pending_stale_seconds_from_env",
     "arq_queue_health_payload",
@@ -106,6 +111,7 @@ __all__ = [
     "arq_worker_max_jobs_from_env",
     "arq_worker_runtime_settings_from_env",
     "build_arq_worker_heartbeat_key",
+    "cancel_arq_task",
     "enqueue_arq_task",
     "normalize_task_backend",
     "task_backend_default_switch_contract_from_env",

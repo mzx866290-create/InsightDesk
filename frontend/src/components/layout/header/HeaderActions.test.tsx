@@ -28,7 +28,6 @@ function renderMobileActions(
       onShareSession={vi.fn()}
       onGenerateReport={vi.fn()}
       onResetSession={vi.fn()}
-      onNewChat={vi.fn()}
       onSetTheme={vi.fn()}
       {...overrides}
     />,
@@ -72,6 +71,7 @@ describe('Header action surfaces', () => {
     expect(screen.getByText('快捷操作')).toBeInTheDocument()
     expect(screen.getByText('布局与工具')).toBeInTheDocument()
     expect(screen.getByText('会话操作')).toBeInTheDocument()
+    expect(screen.queryByText('新建对话')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByText('知识库管理'))
 

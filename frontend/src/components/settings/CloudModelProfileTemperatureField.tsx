@@ -1,18 +1,16 @@
-import React from 'react'
+import React from 'react';
 
-import type { TranslationKey } from '../../i18n'
+import type { TranslationKey } from '../../i18n';
 
 interface CloudModelProfileTemperatureFieldProps {
-  temperature: number
-  onTemperatureChange: (value: number) => void
-  t: (key: TranslationKey) => string
+  temperature: number;
+  onTemperatureChange: (value: number) => void;
+  t: (key: TranslationKey) => string;
 }
 
-export const CloudModelProfileTemperatureField: React.FC<CloudModelProfileTemperatureFieldProps> = ({
-  temperature,
-  onTemperatureChange,
-  t,
-}) => (
+export const CloudModelProfileTemperatureField: React.FC<
+  CloudModelProfileTemperatureFieldProps
+> = ({ temperature, onTemperatureChange, t }) => (
   <div>
     <label className="mb-1 block text-[11px] uppercase tracking-wide text-text-secondary">
       {t('settings.cloud.temperature')}
@@ -23,14 +21,15 @@ export const CloudModelProfileTemperatureField: React.FC<CloudModelProfileTemper
         <span>{temperature.toFixed(1)}</span>
       </div>
       <input
+        data-testid="settings-cloud-profile-temperature-input"
         type="range"
         min="0"
         max="1"
         step="0.1"
         value={temperature}
         onChange={(event) => onTemperatureChange(parseFloat(event.target.value))}
-        className="w-full accent-accent-blue"
+        className="h-11 w-full cursor-pointer accent-accent-blue"
       />
     </div>
   </div>
-)
+);

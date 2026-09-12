@@ -13,6 +13,10 @@ from backend.helpers.task_approval_route_helpers import (
     ensure_task_accepts_approval_decision,
 )
 from backend.tasks.backends import dispatch_task_record
+from backend.stores.task_store import TaskStatus
+
+
+TASK_CANCELLED_ERROR = "Task was cancelled by user."
 
 
 def filter_visible_task_records(
@@ -207,6 +211,144 @@ async def get_task_route_payload(
     return task_record_payload(record)
 
 
+async def cancel_task_route_payload(
+    *,
+    task_id: str,
+    request: Request,
+    resolve_tasks: Callable[[], dict[str, Any]],
+    tasks_lock: Any,
+    suppressed_task_ids: set[str],
+    prune_task_records_locked: Callable[..., None],
+    prune_persisted_tasks: Callable[[], None],
+    get_task_store: Callable[[], Any],
+    persist_task_record: Callable[..., None],
+    require_session_access: Callable[[Request, str, str], dict[str, Any]],
+    require_remote_admin: Callable[[Request], dict[str, Any]],
+    audit_security_event: Callable[..., Any],
+    task_record_payload: Callable[[Any], dict[str, Any]],
+    task_backend: str,
+    cancel_external_task: Callable[[str], Awaitable[dict[str, Any]]] | None,
+    now: Callable[[], float] = time.time,
+) -> dict[str, Any]:
+    """Request durable cancellation for a local or ARQ-backed task."""
+
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        raise HTTPException(status_code=400, detail="task_id is required")
+
+    task_state = resolve_tasks()
+    record = await _find_task_record(
+        task_id=normalized_task_id,
+        resolve_tasks=lambda: task_state,
+        tasks_lock=tasks_lock,
+        prune_task_records_locked=prune_task_records_locked,
+        prune_persisted_tasks=prune_persisted_tasks,
+        get_task_store=get_task_store,
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail=TASK_NOT_FOUND_DETAIL)
+
+    session_id = str(getattr(record, "session_id", "") or "").strip()
+    if session_id:
+        require_session_access(request, session_id, "editor")
+    else:
+        require_remote_admin(request)
+
+    status = str(getattr(getattr(record, "status", ""), "value", record.status)).strip().lower()
+    params = dict(getattr(record, "params", {}) or {})
+    if status == TaskStatus.FAILED.value and str(
+        params.get("task_failure_kind") or ""
+    ).strip().lower() == "cancelled":
+        return {
+            "ok": True,
+            "cancel_requested": True,
+            "cancelled": True,
+            "backend": task_backend,
+            "external": None,
+            "task": task_record_payload(record),
+        }
+    if status in {TaskStatus.COMPLETED.value, TaskStatus.FAILED.value}:
+        raise HTTPException(status_code=409, detail="Task is already terminal.")
+
+    external_result: dict[str, Any] | None = None
+    if task_backend in {"arq", "redis"} and status != TaskStatus.WAITING_APPROVAL.value:
+        if cancel_external_task is None:
+            raise HTTPException(
+                status_code=503,
+                detail="ARQ cancellation is not configured.",
+            )
+        try:
+            external_result = await cancel_external_task(normalized_task_id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Unable to request ARQ cancellation.",
+            ) from exc
+
+        # The task may have completed while the abort request was in flight.
+        latest = get_task_store().get(normalized_task_id)
+        if latest is not None:
+            latest_status = str(
+                getattr(getattr(latest, "status", ""), "value", latest.status)
+            ).strip().lower()
+            latest_params = dict(getattr(latest, "params", {}) or {})
+            if latest_status == TaskStatus.COMPLETED.value:
+                raise HTTPException(status_code=409, detail="Task completed before cancellation.")
+            if latest_status == TaskStatus.FAILED.value and str(
+                latest_params.get("task_failure_kind") or ""
+            ).strip().lower() != "cancelled":
+                raise HTTPException(status_code=409, detail="Task failed before cancellation.")
+            record = latest
+            status = latest_status
+            params = latest_params
+
+    requested_at = float(now())
+    params["task_cancel_requested"] = True
+    params["task_cancel_requested_at"] = requested_at
+    params["task_cancel_requested_by"] = "user"
+    record.params = params
+
+    external_aborted = bool((external_result or {}).get("aborted"))
+    external_job_status = str((external_result or {}).get("job_status") or "").strip().lower()
+    cancellation_confirmed = (
+        task_backend not in {"arq", "redis"}
+        or status == TaskStatus.WAITING_APPROVAL.value
+        or external_aborted
+        or (status == TaskStatus.PENDING.value and external_job_status == "not_found")
+    )
+    if cancellation_confirmed:
+        params["task_failure_kind"] = "cancelled"
+        record.status = TaskStatus.FAILED
+        record.error = TASK_CANCELLED_ERROR
+    record.updated_at = requested_at
+
+    async with tasks_lock:
+        task_state[normalized_task_id] = record
+        prune_task_records_locked(requested_at)
+    persist_task_record(record)
+    if cancellation_confirmed:
+        # Suppression prevents a local coroutine from overwriting the durable
+        # terminal record, so it must be added only after persistence succeeds.
+        suppressed_task_ids.add(normalized_task_id)
+    prune_persisted_tasks()
+    audit_security_event(
+        "task_cancel",
+        request,
+        details=(
+            f"task_id={normalized_task_id} backend={task_backend} "
+            f"cancelled={cancellation_confirmed} session_id={session_id or '<none>'}"
+        ),
+    )
+    return {
+        "ok": True,
+        "cancel_requested": True,
+        "cancelled": cancellation_confirmed,
+        "backend": task_backend,
+        "external": external_result,
+        "task": task_record_payload(record),
+    }
+
+
 async def apply_task_approval_decision_result(
     *,
     task_id: str,
@@ -282,7 +424,9 @@ async def _find_task_record(
 
 
 __all__ = [
+    "TASK_CANCELLED_ERROR",
     "apply_task_approval_decision_result",
+    "cancel_task_route_payload",
     "create_background_task_result",
     "dispatch_existing_task_record_result",
     "filter_visible_task_records",

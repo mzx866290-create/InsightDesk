@@ -335,9 +335,32 @@ def delete_bookmark(bookmark_id: str, db_path: str | None = None) -> bool:
         return deleted
 
 
+def delete_bookmarks_for_session(
+    session_id: str,
+    db_path: str | None = None,
+) -> int:
+    """Delete legacy SQLite bookmarks owned by a session."""
+
+    normalized_session_id = str(session_id or "").strip()
+    if not normalized_session_id:
+        return 0
+
+    with connect_sqlite(db_path) as conn:
+        init_bookmarks_table(conn)
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM bookmarks WHERE session_id = ?",
+            (normalized_session_id,),
+        )
+        deleted_count = max(0, int(cursor.rowcount or 0))
+        conn.commit()
+        return deleted_count
+
+
 __all__ = [
     "create_or_update_bookmark",
     "delete_bookmark",
+    "delete_bookmarks_for_session",
     "get_bookmark",
     "list_bookmarks",
 ]

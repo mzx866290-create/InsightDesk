@@ -3,7 +3,7 @@ export const KB_CHUNK_DELETE_CONFIRM_TIMEOUT_MS = 4000
 export const KB_DELETE_CONFIRM_TIMEOUT_MS = 4000
 export const EMPTY_CHUNK_CONTENT_ERROR = '\u5207\u7247\u5185\u5bb9\u4e0d\u80fd\u4e3a\u7a7a'
 export const EMPTY_CHUNK_SOURCE_ERROR = '\u6765\u6e90\u4e0d\u80fd\u4e3a\u7a7a'
-export const KNOWLEDGE_BASE_DELETE_FAILED_PREFIX = '鍒犻櫎澶辫触锛?'
+export const KNOWLEDGE_BASE_DELETE_FAILED_PREFIX = '删除失败：'
 
 export type DeleteKnowledgeBaseResult = 'confirmation_requested' | 'deleted' | 'failed'
 export type KbRetrievalModeValue = 'semantic' | 'keyword' | 'hybrid'

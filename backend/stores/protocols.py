@@ -155,6 +155,65 @@ class TaskStore(Protocol):
 
 
 @runtime_checkable
+class SessionStore(Protocol):
+    def get_all_sessions(
+        self,
+        *,
+        query: str = "",
+        archived: bool | None = None,
+        favorite: bool | None = None,
+        tag: str = "",
+        workspace_id: str | None = None,
+    ) -> list[dict[str, Any]]: ...
+
+    def get_session(self, session_id: str) -> dict[str, Any] | None: ...
+
+    def truncate_session_from_answer_group(
+        self,
+        session_id: str,
+        *,
+        answer_group_id: str,
+        content: str,
+        images: list[dict[str, Any]] | None = None,
+        files: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None: ...
+
+    def update_session_meta(
+        self,
+        session_id: str,
+        *,
+        title: str | None = None,
+        is_archived: bool | None = None,
+        is_favorite: bool | None = None,
+        is_pinned: bool | None = None,
+        tags: list[str] | None = None,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any] | None: ...
+
+    def reorder_sessions(
+        self,
+        session_ids: list[str],
+        *,
+        workspace_id: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def reassign_workspace_sessions(
+        self,
+        source_workspace_id: str,
+        target_workspace_id: str,
+    ) -> int: ...
+
+    def delete_session(self, session_id: str) -> None: ...
+
+    def promote_panel_answer(
+        self,
+        session_id: str,
+        answer_group_id: str,
+        source_panel_id: str,
+    ) -> dict[str, Any] | None: ...
+
+
+@runtime_checkable
 class SessionMemoryStore(Protocol):
     def list_session_memory(
         self,

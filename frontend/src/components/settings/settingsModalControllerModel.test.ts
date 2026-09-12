@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildSettingsTabItems,
   getAdvancedTabsVisible,
+  shouldLoadSsoSettings,
 } from './settingsModalControllerModel'
 
 describe('settingsModalControllerModel', () => {
@@ -19,6 +20,14 @@ describe('settingsModalControllerModel', () => {
     expect(getAdvancedTabsVisible(false, 'general')).toBe(false)
     expect(getAdvancedTabsVisible(true, 'general')).toBe(true)
     expect(getAdvancedTabsVisible(false, 'integrations')).toBe(true)
+    expect(getAdvancedTabsVisible(false, 'sso')).toBe(true)
+  })
+
+  it('loads SSO configuration only on the first visit to its advanced tab', () => {
+    expect(shouldLoadSsoSettings(true, 'general', false)).toBe(false)
+    expect(shouldLoadSsoSettings(false, 'sso', false)).toBe(false)
+    expect(shouldLoadSsoSettings(true, 'sso', false)).toBe(true)
+    expect(shouldLoadSsoSettings(true, 'sso', true)).toBe(false)
   })
 
 })

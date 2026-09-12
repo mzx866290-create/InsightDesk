@@ -1,7 +1,8 @@
 import React from 'react'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { useChatStore } from '../../stores/chatStore'
 import { TraceOperationsToolbar } from './TraceOperationsToolbar'
 
 vi.mock('../ui/Button', () => ({
@@ -24,6 +25,10 @@ vi.mock('../ui/Button', () => ({
 }))
 
 describe('TraceOperationsToolbar', () => {
+  beforeEach(() => {
+    useChatStore.setState({ language: 'en-US' })
+  })
+
   afterEach(() => {
     cleanup()
     vi.clearAllMocks()
@@ -50,6 +55,11 @@ describe('TraceOperationsToolbar', () => {
     fireEvent.click(screen.getByTestId('settings-trace-refresh'))
     fireEvent.click(screen.getByTestId('settings-trace-clear'))
 
+    expect(screen.getByText('Trace Operations')).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Latest 100' })).toBeInTheDocument()
+    expect(screen.getByTestId('settings-trace-limit')).toHaveClass('min-h-11')
+    expect(screen.getByTestId('settings-trace-refresh')).toHaveClass('min-h-11')
+    expect(screen.getByTestId('settings-trace-clear')).toHaveClass('min-h-11')
     expect(onLimitChange).toHaveBeenCalledWith(200)
     expect(onRefresh).toHaveBeenCalledTimes(1)
     expect(onClear).toHaveBeenCalledTimes(1)

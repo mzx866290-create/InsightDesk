@@ -1,9 +1,9 @@
 import asyncio
 import builtins
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-import pytest
 
 from backend.agent.connection import get_llm, list_llm_provider_catalog, normalize_connection_type
 from backend.agent.providers import ollama as ollama_provider
@@ -77,6 +77,7 @@ def test_provider_catalog_endpoint_returns_registered_provider_metadata():
 
 def test_ollama_provider_lists_installed_models(monkeypatch):
     captured: dict[str, object] = {}
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
     class FakeResponse:
         def raise_for_status(self):
@@ -85,21 +86,18 @@ def test_ollama_provider_lists_installed_models(monkeypatch):
         def json(self):
             return {"models": [{"name": "qwen2.5:7b"}, {}, {"name": "llama3.2:3b"}]}
 
-    class FakeAsyncClient:
-        def __init__(self, timeout):
-            captured["timeout"] = timeout
+    async def fake_request_public_url(
+        url: str,
+        *,
+        timeout_seconds: float,
+        max_response_bytes: int,
+    ) -> FakeResponse:
+        captured["url"] = url
+        captured["timeout_seconds"] = timeout_seconds
+        captured["max_response_bytes"] = max_response_bytes
+        return FakeResponse()
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def get(self, url):
-            captured["url"] = url
-            return FakeResponse()
-
-    monkeypatch.setattr(ollama_provider.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(ollama_provider, "request_public_url", fake_request_public_url)
 
     payload = asyncio.run(
         ollama_provider.list_ollama_models(
@@ -110,8 +108,47 @@ def test_ollama_provider_lists_installed_models(monkeypatch):
 
     assert payload == {"models": ["qwen2.5:7b", "llama3.2:3b"]}
     assert captured == {
-        "timeout": 2.5,
         "url": "http://example.test:11434/api/tags",
+        "timeout_seconds": 2.5,
+        "max_response_bytes": ollama_provider.OLLAMA_MODELS_MAX_RESPONSE_BYTES,
+    }
+
+
+def test_ollama_provider_uses_bounded_trusted_request_for_default_local_url(monkeypatch):
+    captured: dict[str, object] = {}
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"models": [{"name": "qwen2.5:7b"}]}
+
+    async def fake_request_trusted_url(
+        url: str,
+        *,
+        timeout_seconds: float,
+        max_response_bytes: int,
+    ) -> FakeResponse:
+        captured["url"] = url
+        captured["timeout_seconds"] = timeout_seconds
+        captured["max_response_bytes"] = max_response_bytes
+        return FakeResponse()
+
+    async def blocked_public_request(*_args, **_kwargs):
+        raise ollama_provider.OutboundURLBlockedError("local target")
+
+    monkeypatch.setattr(ollama_provider, "request_trusted_url", fake_request_trusted_url)
+    monkeypatch.setattr(ollama_provider, "request_public_url", blocked_public_request)
+
+    payload = asyncio.run(ollama_provider.list_ollama_models())
+
+    assert payload == {"models": ["qwen2.5:7b"]}
+    assert captured == {
+        "url": "http://localhost:11434/api/tags",
+        "timeout_seconds": 5.0,
+        "max_response_bytes": ollama_provider.OLLAMA_MODELS_MAX_RESPONSE_BYTES,
     }
 
 

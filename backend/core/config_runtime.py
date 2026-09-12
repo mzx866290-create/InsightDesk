@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import uuid
@@ -10,7 +11,14 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 
+from backend.core.outbound_http import (
+    OutboundURLBlockedError,
+    base_urls_match,
+    normalize_base_url,
+)
+
 _CLOUD_MODEL_API_KEY_REF_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{5,127}$")
+_BOUND_CLOUD_MODEL_API_KEY_PREFIX = "bound:v1:"
 
 
 def stored_config_value(store: Any, logger: Any, key: str, default: str = "") -> str:
@@ -54,12 +62,48 @@ def cloud_model_api_key_config_key(api_key_ref: str) -> str:
     return f"cloud_model_api_key:{normalized_ref}"
 
 
+def _bound_cloud_model_api_key_value(*, api_key: str, base_url: str) -> str:
+    return _BOUND_CLOUD_MODEL_API_KEY_PREFIX + json.dumps(
+        {
+            "api_key": api_key,
+            "base_url": base_url,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _parse_cloud_model_api_key_value(value: str) -> tuple[str, str]:
+    normalized = str(value or "")
+    if not normalized.startswith(_BOUND_CLOUD_MODEL_API_KEY_PREFIX):
+        return normalized, ""
+    try:
+        payload = json.loads(normalized[len(_BOUND_CLOUD_MODEL_API_KEY_PREFIX) :])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Stored cloud model API key binding is invalid.") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("Stored cloud model API key binding is invalid.")
+    api_key = str(payload.get("api_key") or "").strip()
+    base_url = str(payload.get("base_url") or "").strip()
+    if not api_key or not base_url:
+        raise ValueError("Stored cloud model API key binding is invalid.")
+    return api_key, base_url
+
+
 def upsert_cloud_model_api_key(
-    store: Any, api_key_ref: str | None, api_key: str
+    store: Any,
+    api_key_ref: str | None,
+    api_key: str,
+    base_url: str,
 ) -> str:
     normalized_api_key = str(api_key or "").strip()
     if not normalized_api_key:
         raise HTTPException(status_code=400, detail="Cloud model API Key 不能为空。")
+    try:
+        normalized_base_url = normalize_base_url(base_url)
+    except OutboundURLBlockedError as exc:
+        raise HTTPException(status_code=400, detail="Cloud model base_url 格式无效。") from exc
 
     normalized_ref = (
         normalize_cloud_model_api_key_ref(api_key_ref, allow_empty=True)
@@ -69,7 +113,13 @@ def upsert_cloud_model_api_key(
     if not normalized_ref:
         normalized_ref = f"cmk-{uuid.uuid4().hex}"
 
-    store.set(cloud_model_api_key_config_key(normalized_ref), normalized_api_key)
+    store.set(
+        cloud_model_api_key_config_key(normalized_ref),
+        _bound_cloud_model_api_key_value(
+            api_key=normalized_api_key,
+            base_url=normalized_base_url,
+        ),
+    )
     return normalized_ref
 
 
@@ -83,6 +133,7 @@ def resolve_model_api_key(
     model_config: Any,
     *,
     model_config_payload: Any,
+    trusted_base_url: str,
 ) -> str:
     data = model_config_payload(model_config)
     direct_api_key = str(data.get("api_key") or "").strip()
@@ -93,15 +144,30 @@ def resolve_model_api_key(
     if not api_key_ref:
         return ""
 
-    try:
-        return stored_config_value(
-            store, logger, cloud_model_api_key_config_key(api_key_ref), ""
-        )
-    except HTTPException:
-        raise
-    except Exception:
-        logger.exception("Failed to resolve cloud model API key ref=%s", api_key_ref)
+    stored_value = stored_config_value(
+        store,
+        logger,
+        cloud_model_api_key_config_key(api_key_ref),
+        "",
+    )
+    if not stored_value:
         return ""
+    resolved_api_key, bound_base_url = _parse_cloud_model_api_key_value(stored_value)
+    requested_base_url = str(data.get("base_url") or trusted_base_url or "").strip()
+    if bound_base_url:
+        if not base_urls_match(requested_base_url, bound_base_url):
+            raise ValueError(
+                "Cloud model API key ref is bound to a different base_url."
+            )
+        return resolved_api_key
+
+    # Legacy refs did not persist endpoint provenance. Keep them usable only
+    # with the administrator-configured provider URL.
+    if not base_urls_match(requested_base_url, trusted_base_url):
+        raise ValueError(
+            "Legacy cloud model API key refs may only use the configured provider base_url."
+        )
+    return resolved_api_key
 
 
 async def validate_tavily_api_key(api_key: str) -> None:

@@ -116,6 +116,18 @@ export interface CloudModelProfile {
   updatedAt: number
 }
 
+export interface ProviderConfig {
+  id: string
+  name: string
+  connectionType: string
+  apiKeyRef: string
+  baseUrl: string
+  enabled: boolean
+  isBuiltin: boolean
+  createdAt: number
+  updatedAt: number
+}
+
 export interface ComposerSeed {
   token: number
   text: string
@@ -141,6 +153,7 @@ export interface ChatStorePersistedState {
   memoryWorkspaceOpen: boolean
   modelPresets: ModelPreset[]
   cloudModelProfiles: CloudModelProfile[]
+  providerConfigs: ProviderConfig[]
   panels: Panel[]
 }
 

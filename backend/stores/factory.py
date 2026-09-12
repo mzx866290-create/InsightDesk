@@ -1,15 +1,10 @@
-"""Store factory boundary for app metadata persistence.
-
-SQLite is the only concrete implementation today. Route composition code should
-ask this module for store instances instead of constructing SQLite stores
-directly, so a future PostgreSQL adapter can be introduced behind the same
-factory surface.
-"""
+"""Provider-aware store factory boundary for application persistence."""
 
 from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
+from functools import lru_cache
 
 from backend.artifact_service import SQLiteArtifactStore
 from backend.core.storage_runtime import (
@@ -31,6 +26,7 @@ from backend.stores.protocols import (
     RetrievalFeedbackStore,
     SecurityAuditStore,
     ShareLinkStore,
+    SessionStore,
     SessionMemoryStore,
     SsoSessionStore,
     TaskStore,
@@ -47,6 +43,7 @@ from backend.stores.pg_identity_store import PostgresIdentityStore
 from backend.stores.pg_resource_access_store import PostgresResourceAccessStore
 from backend.stores.pg_retrieval_feedback_store import PostgresRetrievalFeedbackStore
 from backend.stores.pg_security_audit_store import PostgresSecurityAuditStore
+from backend.stores.pg_session_store import PostgresSessionStore
 from backend.stores.pg_session_memory_store import PostgresSessionMemoryStore
 from backend.stores.pg_share_link_store import PostgresShareLinkStore
 from backend.stores.pg_sso_session_store import PostgresSsoSessionStore
@@ -74,12 +71,7 @@ def create_app_config_store() -> AppConfigStore:
 
 
 def create_chat_message_history(session_id: str):
-    """Create a provider-specific chat message history.
-
-    SQLite remains the default runtime. PostgreSQL support is intentionally
-    limited to the message history contract implemented by
-    ``PostgresChatMessageHistory``.
-    """
+    """Create a provider-specific chat message history."""
     config = store_factory_config()
     if config.provider == DATABASE_PROVIDER_POSTGRES:
         return PostgresChatMessageHistory(session_id=session_id, dsn=config.db_path)
@@ -110,6 +102,20 @@ def create_chat_message_history(session_id: str):
     if accepts_varargs or len(positional_parameters) >= 2:
         return SQLiteChatMessageHistory(session_id, config.db_path)
     return SQLiteChatMessageHistory(session_id=session_id)
+
+
+@lru_cache(maxsize=4)
+def _cached_postgres_session_store(dsn: str) -> PostgresSessionStore:
+    return PostgresSessionStore(dsn=dsn)
+
+
+def create_session_store() -> SessionStore:
+    """Return the shared PostgreSQL adapter used by routed session helpers."""
+
+    config = store_factory_config()
+    if config.provider == DATABASE_PROVIDER_POSTGRES:
+        return _cached_postgres_session_store(config.db_path)
+    raise RuntimeError("Session store factory is only used for PostgreSQL routing.")
 
 
 def create_security_audit_store(*, history_limit: int = 2000) -> SecurityAuditStore:

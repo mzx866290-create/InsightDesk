@@ -4,8 +4,19 @@ API service:
   {{ include "insightdesk.fullname" . }}-api:{{ .Values.service.port }}
 
 Probe paths:
-  /healthz
-  /readyz
+  startup/liveness: /healthz
+  readiness: /readyz
+
+Secret environment source:
+{{ if .Values.secret.existingSecret }}
+  {{ .Values.secret.existingSecret }}
+{{ else }}
+  not configured; create a Kubernetes Secret and set secret.existingSecret for credentials
+{{ end }}
+
+Service exposure:
+  type={{ .Values.service.type }}
+  NodePort/LoadBalancer require service.allowExternal=true
 
 Optional production hardening:
   worker.enabled=true

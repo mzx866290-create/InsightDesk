@@ -1,3 +1,10 @@
+{{- if not (has .Values.service.type (list "ClusterIP" "NodePort" "LoadBalancer")) }}
+{{- fail "service.type must be ClusterIP, NodePort, or LoadBalancer" }}
+{{- end }}
+{{- $isExternalService := or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer") }}
+{{- if and $isExternalService (not .Values.service.allowExternal) }}
+{{- fail "service.type NodePort/LoadBalancer requires service.allowExternal=true" }}
+{{- end }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -5,8 +12,16 @@ metadata:
   labels:
     {{- include "insightdesk.labels" . | nindent 4 }}
     app.kubernetes.io/component: api
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
   type: {{ .Values.service.type }}
+  {{- if and (eq .Values.service.type "LoadBalancer") .Values.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml .Values.service.loadBalancerSourceRanges | nindent 4 }}
+  {{- end }}
   ports:
     - port: {{ .Values.service.port }}
       targetPort: http

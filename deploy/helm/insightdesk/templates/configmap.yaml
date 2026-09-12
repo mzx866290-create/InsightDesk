@@ -1,3 +1,7 @@
+{{- include "insightdesk.validateSensitiveEnv" . }}
+{{- if or .Values.config.databaseUrl .Values.config.redisUrl }}
+{{- fail "config.databaseUrl/config.redisUrl are not rendered into ConfigMaps; inject DATABASE_URL/REDIS_URL through secret.existingSecret or env[].valueFrom" }}
+{{- end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -16,15 +20,17 @@ data:
   VECTOR_STORE_PATH: {{ .Values.config.vectorStorePath | quote }}
   TASK_BACKEND: {{ .Values.config.taskBackend | quote }}
   DATABASE_PROVIDER: {{ .Values.config.databaseProvider | quote }}
-  DATABASE_URL: {{ .Values.config.databaseUrl | quote }}
   VECTOR_STORE_PROVIDER: {{ .Values.config.vectorStoreProvider | quote }}
   QDRANT_URL: {{ .Values.config.qdrantUrl | quote }}
   QDRANT_COLLECTION: {{ .Values.config.qdrantCollection | quote }}
   OLLAMA_BASE_URL: {{ .Values.config.ollamaBaseUrl | quote }}
-  REDIS_URL: {{ .Values.config.redisUrl | quote }}
+  ARQ_REDIS_HOST: {{ .Values.config.arqRedisHost | quote }}
+  ARQ_REDIS_PORT: {{ .Values.config.arqRedisPort | quote }}
+  ARQ_REDIS_DATABASE: {{ .Values.config.arqRedisDatabase | quote }}
   ARQ_QUEUE_NAME: {{ .Values.config.arqQueueName | quote }}
   ARQ_WORKER_MAX_JOBS: {{ .Values.config.arqWorkerMaxJobs | quote }}
   ARQ_KEEP_RESULT_SECONDS: {{ .Values.config.arqKeepResultSeconds | quote }}
+  ARQ_CANCEL_TIMEOUT_SECONDS: {{ .Values.config.arqCancelTimeoutSeconds | quote }}
   {{ .Values.config.hotReload.fileName }}: |-
     CONFIG_RELOAD_STRATEGY={{ .Values.config.reloadStrategy }}
     SERVER_HOST={{ .Values.config.serverHost }}
@@ -34,4 +40,8 @@ data:
     DATABASE_PROVIDER={{ .Values.config.databaseProvider }}
     VECTOR_STORE_PROVIDER={{ .Values.config.vectorStoreProvider }}
     QDRANT_COLLECTION={{ .Values.config.qdrantCollection }}
+    ARQ_REDIS_HOST={{ .Values.config.arqRedisHost }}
+    ARQ_REDIS_PORT={{ .Values.config.arqRedisPort }}
+    ARQ_REDIS_DATABASE={{ .Values.config.arqRedisDatabase }}
     ARQ_QUEUE_NAME={{ .Values.config.arqQueueName }}
+    ARQ_CANCEL_TIMEOUT_SECONDS={{ .Values.config.arqCancelTimeoutSeconds }}

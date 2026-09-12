@@ -1,13 +1,21 @@
-"""Workspace persistence helpers for the SQLite chat runtime."""
+"""Workspace persistence helpers for the SQLite chat runtime.
+
+During the staged PostgreSQL migration the SQLite file remains the authority
+for workspace metadata (shared via the runtime volume). PostgreSQL sessions
+read an active-workspace mirror, so every mutation best-effort synchronizes
+that mirror here.
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 import uuid
 from typing import Any, Optional, cast
 
+from backend.core.storage_runtime import DATABASE_PROVIDER_POSTGRES, database_provider
 from backend.stores.chat_normalization import (
     DEFAULT_WORKSPACE_ID,
     DEFAULT_WORKSPACE_NAME,
@@ -21,6 +29,70 @@ from backend.stores.chat_normalization import (
 from backend.stores.chat_rows import row_to_workspace
 from backend.stores.chat_schema import init_sessions_table, init_workspaces_table
 from backend.stores.sqlite_runtime import connect_sqlite
+
+logger = logging.getLogger(__name__)
+
+
+def _postgres_session_store_for_default_runtime(db_path: str | None) -> Any | None:
+    """Return the PostgreSQL session store only for default runtime calls."""
+
+    if db_path is not None or database_provider() != DATABASE_PROVIDER_POSTGRES:
+        return None
+    from backend.stores.factory import create_session_store
+
+    return create_session_store()
+
+
+def _mirror_workspace_snapshot(
+    record: dict[str, Any],
+    *,
+    activate: bool | None = None,
+    db_path: str | None = None,
+) -> None:
+    """Best-effort mirror of a SQLite workspace mutation into PostgreSQL.
+
+    The PostgreSQL store is only resolved when the runtime is configured for
+    PostgreSQL; any connection or mirror failure is logged and never rolls back
+    the SQLite authority.
+    """
+    try:
+        store = _postgres_session_store_for_default_runtime(db_path)
+        if store is None:
+            return
+        is_active = bool(record.get("is_active"))
+        if activate is not None:
+            is_active = bool(activate)
+        if is_active:
+            store.deactivate_all_workspace_mirrors()
+        preset = record.get("preset") if isinstance(record.get("preset"), dict) else {}
+        store.mirror_workspace_snapshot(
+            workspace_id=str(record.get("workspace_id") or ""),
+            name=str(record.get("name") or ""),
+            description=str(record.get("description") or ""),
+            color=str(record.get("color") or "blue"),
+            default_panels_json=json.dumps(
+                preset.get("default_panels") or [],
+                ensure_ascii=False,
+            ),
+            tool_config_json=json.dumps(
+                preset.get("tool_config") or {},
+                ensure_ascii=False,
+            ),
+            output_preset_json=json.dumps(
+                preset.get("output_preset") or {},
+                ensure_ascii=False,
+            ),
+            is_active=is_active,
+            created_at=float(record.get("created_at") or 0),
+            updated_at=float(record.get("updated_at") or 0),
+        )
+    except Exception:
+        # SQLite stays authoritative during the staged migration; a failed
+        # mirror must not roll back the workspace mutation itself.
+        logger.exception(
+            "Failed to mirror workspace %s into PostgreSQL",
+            str(record.get("workspace_id") or ""),
+        )
 
 
 def workspace_exists(
@@ -195,6 +267,7 @@ def create_workspace(
     workspace = get_workspace(workspace_id, db_path=db_path)
     if workspace is None:
         raise RuntimeError("Failed to create workspace")
+    _mirror_workspace_snapshot(workspace, db_path=db_path)
     return workspace
 
 
@@ -263,7 +336,9 @@ def update_workspace(
             tuple(params),
         )
         conn.commit()
-    return get_workspace(workspace_id, db_path=db_path)
+    updated_workspace = get_workspace(workspace_id, db_path=db_path)
+    _mirror_workspace_snapshot(updated_workspace, db_path=db_path)
+    return updated_workspace
 
 
 def activate_workspace(
@@ -283,7 +358,13 @@ def activate_workspace(
             (now, workspace_id),
         )
         conn.commit()
-    return get_workspace(workspace_id, db_path=db_path)
+    activated_workspace = get_workspace(workspace_id, db_path=db_path)
+    _mirror_workspace_snapshot(
+        activated_workspace,
+        activate=True,
+        db_path=db_path,
+    )
+    return activated_workspace
 
 
 def delete_workspace(
@@ -307,11 +388,17 @@ def delete_workspace(
     with connect_sqlite(db_path) as conn:
         init_workspaces_table(conn)
         init_sessions_table(conn)
+        # Hold the SQLite workspace set stable while PostgreSQL sessions move.
+        # PostgreSQL is updated first, so a later SQLite failure cannot leave
+        # sessions pointing at a workspace that has already been deleted.
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.cursor()
         if not workspace_exists(cursor, normalized_workspace_id):
             return None
         if not workspace_exists(cursor, normalized_target_workspace_id):
             raise ValueError("目标工作区不存在")
+
+        postgres_session_store = _postgres_session_store_for_default_runtime(db_path)
 
         cursor.execute(
             "SELECT COALESCE(is_active, 0) FROM workspaces WHERE workspace_id = ?",
@@ -320,6 +407,15 @@ def delete_workspace(
         row = cursor.fetchone()
         was_active = bool(row[0]) if row else False
         now = time.time()
+
+        migrated_postgres_sessions = 0
+        if postgres_session_store is not None:
+            migrated_postgres_sessions = int(
+                postgres_session_store.reassign_workspace_sessions(
+                    normalized_workspace_id,
+                    normalized_target_workspace_id,
+                )
+            )
 
         cursor.execute(
             """
@@ -355,6 +451,7 @@ def delete_workspace(
         "deleted_workspace_id": normalized_workspace_id,
         "target_workspace_id": normalized_target_workspace_id,
         "target_workspace": target_workspace,
+        "migrated_postgres_sessions": migrated_postgres_sessions,
     }
 
 

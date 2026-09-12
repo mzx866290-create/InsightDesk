@@ -282,7 +282,7 @@ def build_session_router(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not workspace:
-            raise HTTPException(status_code=404, detail="鏈壘鍒板伐浣滃尯")
+            raise HTTPException(status_code=404, detail="Workspace was not found.")
         return {"ok": True, "workspace": workspace}
 
     @router.post("/api/workspaces/{workspace_id}/activate")
@@ -311,7 +311,7 @@ def build_session_router(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         if not result:
-            raise HTTPException(status_code=404, detail="鏈壘鍒板伐浣滃尯")
+            raise HTTPException(status_code=404, detail="Workspace was not found.")
         return {"ok": True, **result}
 
     # 鈹€鈹€ 浼氳瘽 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
@@ -355,9 +355,11 @@ def build_session_router(
     @router.post("/api/sessions")
     async def create_session(http_request: Request, request: CreateSessionRequest):
         from backend.chat_store import (
-            DEFAULT_WORKSPACE_ID, SQLiteChatMessageHistory, connect_sqlite, get_session,
-            get_workspace, list_workspaces, update_session_meta,
+            DEFAULT_WORKSPACE_ID, get_session, get_workspace, list_workspaces,
+            update_session_meta,
         )
+        from backend.stores.factory import create_chat_message_history
+
         require_remote_viewer(http_request)
         target_workspace_id = str(getattr(request, "workspace_id", "") or "").strip()
         if not target_workspace_id:
@@ -372,11 +374,11 @@ def build_session_router(
         try:
             result = create_session_record(
                 request,
-                history_factory=SQLiteChatMessageHistory,
-                connect_sqlite=connect_sqlite,
+                history_factory=create_chat_message_history,
                 get_session=get_session,
                 get_workspace=get_workspace,
                 update_session_meta=update_session_meta,
+                resolved_workspace_id=target_workspace_id,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -589,11 +591,13 @@ def build_session_router(
         http_request: Request,
         request: ImportSessionMessagesRequest,
     ):
-        from backend.chat_store import SQLiteChatMessageHistory, replace_session_panels
+        from backend.chat_store import replace_session_panels
+        from backend.core.storage_runtime import sqlite_history_db_path
+        from backend.stores.factory import create_chat_message_history
+
         require_session_access(http_request, session_id, "editor")
-        # Keep SQLite here until panel import is routed through a store abstraction:
-        # replace_session_panels still requires an explicit SQLite db_path.
-        history = SQLiteChatMessageHistory(session_id=session_id)
+        history = create_chat_message_history(session_id=session_id)
+        history_db_path = sqlite_history_db_path(history)
         if history.get_all_message_records():
             raise HTTPException(
                 status_code=400,
@@ -611,7 +615,14 @@ def build_session_router(
             panel_ids.add(panel_id)
             normalized_panels.append(normalized_panel)
         if normalized_panels:
-            replace_session_panels(session_id, normalized_panels, db_path=history.db_path)
+            if history_db_path:
+                replace_session_panels(
+                    session_id,
+                    normalized_panels,
+                    db_path=history_db_path,
+                )
+            else:
+                replace_session_panels(session_id, normalized_panels)
         for message in request.messages:
             images = [base_model_payload(image) for image in message.images]
             files = [base_model_payload(file) for file in message.files]
@@ -873,17 +884,29 @@ def build_session_router(
 
     @router.post("/api/sessions/{session_id}/answer-groups/{answer_group_id}/promote")
     async def promote_answer_group(session_id: str, answer_group_id: str, request: Request, panel_id: str):
-        from backend.chat_store import SQLiteChatMessageHistory, promote_panel_answer
+        from backend.chat_store import promote_panel_answer
+        from backend.core.storage_runtime import sqlite_history_db_path
         from backend.helpers.session_helpers import record_answer_preference_signal
+        from backend.stores.factory import create_chat_message_history
+
         require_session_access(request, session_id, "editor")
         review: dict[str, Any] | None = None
         try:
             review = build_answer_group_review_payload(session_id, answer_group_id)
         except KeyError:
             review = None
-        # Keep SQLite here because promote_panel_answer still updates SQLite rows by db_path.
-        history = SQLiteChatMessageHistory(session_id=session_id)
-        promoted = promote_panel_answer(session_id, answer_group_id, panel_id, db_path=history.db_path)
+        history = create_chat_message_history(session_id=session_id)
+        history_db_path = sqlite_history_db_path(history)
+        promoted = (
+            promote_panel_answer(
+                session_id,
+                answer_group_id,
+                panel_id,
+                db_path=history_db_path,
+            )
+            if history_db_path
+            else promote_panel_answer(session_id, answer_group_id, panel_id)
+        )
         if not promoted:
             raise HTTPException(status_code=404, detail="鏈壘鍒板洖绛斿垎缁勬垨闈㈡澘娑堟伅")
         preference_signal = (
@@ -908,17 +931,29 @@ def build_session_router(
 
     @router.post("/api/sessions/{session_id}/answer-groups/{answer_group_id}/promote/recommended")
     async def promote_recommended_answer_group(session_id: str, answer_group_id: str, request: Request):
-        from backend.chat_store import SQLiteChatMessageHistory, promote_panel_answer
+        from backend.chat_store import promote_panel_answer
+        from backend.core.storage_runtime import sqlite_history_db_path
         from backend.helpers.session_helpers import record_answer_preference_signal
+        from backend.stores.factory import create_chat_message_history
+
         require_session_access(request, session_id, "editor")
         try:
             review = build_answer_group_review_payload(session_id, answer_group_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="Answer group review target was not found.") from exc
         panel_id = str(review.get("recommended_panel_id") or "").strip()
-        # Keep SQLite here because promote_panel_answer still updates SQLite rows by db_path.
-        history = SQLiteChatMessageHistory(session_id=session_id)
-        promoted = promote_panel_answer(session_id, answer_group_id, panel_id, db_path=history.db_path)
+        history = create_chat_message_history(session_id=session_id)
+        history_db_path = sqlite_history_db_path(history)
+        promoted = (
+            promote_panel_answer(
+                session_id,
+                answer_group_id,
+                panel_id,
+                db_path=history_db_path,
+            )
+            if history_db_path
+            else promote_panel_answer(session_id, answer_group_id, panel_id)
+        )
         if not promoted:
             raise HTTPException(status_code=404, detail="Answer group review target was not found.")
         preference_signal = record_answer_preference_signal(

@@ -3,12 +3,10 @@ import {
   PanelLeftOpen,
   Plus,
   Minus,
-  Globe,
   Menu,
   Monitor,
   Settings,
   SquarePen,
-  UserCog,
   Paperclip,
   Database,
   Brain,
@@ -42,10 +40,7 @@ export const Header: React.FC = () => {
     panels,
     addPanel,
     removePanel,
-    webSearchEnabled,
-    setWebSearchEnabled,
     knowledgeBaseEnabled,
-    setKnowledgeBaseEnabled,
     addSession,
     setCurrentSession,
     clearMessages,
@@ -67,7 +62,7 @@ export const Header: React.FC = () => {
   const currentWorkspace =
     workspaces.find((workspace) => workspace.workspace_id === currentWorkspaceId) ?? null
   const toggleTheme = useChatStore((s) => s.toggleTheme)
-  const { language, toggleLanguage, t } = useI18n()
+  const { t } = useI18n()
   const activePrompt = useHeaderActivePrompt(activePromptId)
   const [taskCenterOpen, setTaskCenterOpen] = useState(false)
   const [kbManageOpen, setKbManageOpen] = useState(false)
@@ -147,31 +142,14 @@ export const Header: React.FC = () => {
     removePanel(panels[panels.length - 1].id)
   }
 
-  const kbStatus = activePrompt?.vector_store_id ? 'bound' : 'default'
   const themeLabel =
     theme === 'dark' ? '深色' : theme === 'light' ? '浅色' : '跟随系统'
   const themeIcon =
     theme === 'dark' ? <Sun size={15} /> : theme === 'light' ? <Moon size={15} /> : <Monitor size={15} />
-  const mobileQuickActions = [
-    {
-      key: 'web',
-      label: '联网',
-      icon: <Globe size={14} />,
-      active: webSearchEnabled,
-      onClick: () => setWebSearchEnabled(!webSearchEnabled),
-      activeClass: 'bg-accent-blue/20 text-accent-blue',
-    },
-    {
-      key: 'kb',
-      label: '知识库',
-      icon: <Database size={14} />,
-      active: knowledgeBaseEnabled,
-      onClick: () => setKnowledgeBaseEnabled(!knowledgeBaseEnabled),
-      activeClass: 'bg-accent-green/20 text-accent-green',
-    },
+  const mobileWorkspaceActions = [
     {
       key: 'attachment',
-      label: '附件',
+      label: '附件区',
       icon: <Paperclip size={14} />,
       active: attachmentWorkspaceOpen,
       onClick: () => currentSessionId && toggleAttachmentWorkspace(),
@@ -180,7 +158,7 @@ export const Header: React.FC = () => {
     },
     {
       key: 'memory',
-      label: '记忆',
+      label: '记忆区',
       icon: <Brain size={14} />,
       active: memoryWorkspaceOpen,
       onClick: () => currentSessionId && toggleMemoryWorkspace(),
@@ -226,21 +204,6 @@ export const Header: React.FC = () => {
                   <SquarePen size={16} />
                 </button>
                 <button
-                  onClick={toggleTheme}
-                  className="flex h-10 w-10 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-                  title={`当前主题: ${themeLabel}`}
-                >
-                  {themeIcon}
-                </button>
-                <button
-                  onClick={toggleLanguage}
-                  data-testid="header-toggle-language-mobile"
-                  className="flex h-10 min-w-10 items-center justify-center rounded-lg px-3 text-xs font-semibold text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-                  title={`${t('header.language')}: ${language === 'zh-CN' ? t('settings.language.zh') : t('settings.language.en')}`}
-                >
-                  {t('app.language.short')}
-                </button>
-                <button
                   onClick={() => setMobileActionsOpen(true)}
                   className="flex h-10 w-10 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
                   title="更多操作"
@@ -250,25 +213,27 @@ export const Header: React.FC = () => {
               </div>
             </div>
 
-            <div className="overflow-x-auto px-3 pb-2">
-              <div className="flex gap-2">
-                {mobileQuickActions.map((action) => (
-                  <button
-                    key={action.key}
-                    onClick={action.onClick}
-                    disabled={action.disabled}
-                    className={`inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-full px-3 text-xs transition-colors ${
-                      action.active
-                        ? action.activeClass
-                        : 'bg-bg-secondary text-text-secondary hover:text-text-primary'
-                    } disabled:opacity-40`}
-                  >
-                    {action.icon}
-                    <span>{action.label}</span>
-                  </button>
-                ))}
+            {showAdvancedDesktopActions && currentSessionId && (
+              <div className="overflow-x-auto px-3 pb-2">
+                <div className="flex gap-2">
+                  {mobileWorkspaceActions.map((action) => (
+                    <button
+                      key={action.key}
+                      onClick={action.onClick}
+                      disabled={action.disabled}
+                      className={`inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-full px-3 text-xs transition-colors ${
+                        action.active
+                          ? action.activeClass
+                          : 'bg-bg-secondary text-text-secondary hover:text-text-primary'
+                      } disabled:opacity-40`}
+                    >
+                      {action.icon}
+                      <span>{action.label}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
           </>
         ) : (
           <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 sm:px-4">
@@ -280,24 +245,6 @@ export const Header: React.FC = () => {
                   title="展开侧边栏"
                 >
                   <PanelLeftOpen size={17} />
-                </button>
-              )}
-              <span className="whitespace-nowrap text-xs text-text-secondary">
-                {panels.length} 个面板
-              </span>
-              {activePrompt && (
-                <button
-                  onClick={() => setSettingsOpen(true)}
-                  className="hidden min-h-10 min-w-0 items-center gap-1 rounded-lg border border-bg-border px-3 text-xs text-text-secondary/70 transition-colors hover:bg-bg-hover hover:text-text-primary sm:flex"
-                  title="当前角色"
-                >
-                  <UserCog size={13} />
-                  <span className="truncate">{activePrompt.name}</span>
-                  {kbStatus === 'bound' && (
-                    <span title="已绑定知识库">
-                      <Database size={11} className="ml-0.5 text-accent-green" />
-                    </span>
-                  )}
                 </button>
               )}
             </div>
@@ -325,42 +272,27 @@ export const Header: React.FC = () => {
             </div>
 
             <div className="order-2 ml-auto flex flex-wrap items-center justify-end gap-1.5 sm:order-3 sm:ml-0">
+              <button
+                onClick={handleNewChat}
+                data-testid="header-new-chat"
+                className="flex h-10 min-w-10 items-center justify-center gap-1.5 rounded-lg px-2 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+                title={t('header.newChat')}
+              >
+                <SquarePen size={15} />
+                <span className="hidden xl:inline">{t('header.newChat')}</span>
+              </button>
+
               <AssistantPresetSelector />
 
               <button
-                onClick={() => setWebSearchEnabled(!webSearchEnabled)}
-                className={`flex min-h-10 items-center gap-1.5 rounded-lg px-3 text-xs transition-colors ${
-                  webSearchEnabled
-                    ? 'bg-accent-blue/20 text-accent-blue'
-                    : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-                }`}
-                title="联网搜索"
+                onClick={() => setKbManageOpen(true)}
+                data-testid="header-open-kb"
+                className="flex min-h-10 items-center gap-1.5 rounded-lg px-3 text-xs text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
+                title="知识库管理"
               >
-                <Globe size={14} />
-                <span className="hidden sm:inline">联网</span>
+                <Database size={14} />
+                <span className="hidden xl:inline">知识库管理</span>
               </button>
-
-              <div className="flex items-center gap-0.5">
-                <button
-                  onClick={() => setKnowledgeBaseEnabled(!knowledgeBaseEnabled)}
-                  className={`flex min-h-10 items-center gap-1.5 rounded-l-lg px-3 text-xs transition-colors ${
-                    knowledgeBaseEnabled
-                      ? 'bg-accent-green/20 text-accent-green'
-                      : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-                  }`}
-                  title="知识库开关"
-                >
-                  <Database size={14} />
-                  <span className="hidden sm:inline">知识库</span>
-                </button>
-                <button
-                  onClick={() => setKbManageOpen(true)}
-                  className="flex h-10 w-10 items-center justify-center rounded-r-lg border-l border-bg-border text-text-muted transition-colors hover:bg-bg-hover hover:text-text-primary"
-                  title="管理知识库"
-                >
-                  <Settings size={13} />
-                </button>
-              </div>
 
               {showAdvancedDesktopActions && (
                 <>
@@ -413,22 +345,6 @@ export const Header: React.FC = () => {
               )}
 
               <button
-                onClick={handleNewChat}
-                data-testid="header-new-chat"
-                className="flex h-10 w-10 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-                title={t('header.newChat')}
-              >
-                <SquarePen size={16} />
-              </button>
-              <button
-                onClick={toggleLanguage}
-                data-testid="header-toggle-language"
-                className="flex h-10 min-w-10 items-center justify-center rounded-lg px-3 text-xs font-semibold text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-                title={`${t('header.language')}: ${language === 'zh-CN' ? t('settings.language.zh') : t('settings.language.en')}`}
-              >
-                {t('app.language.short')}
-              </button>
-              <button
                 onClick={toggleTheme}
                 className="flex h-10 w-10 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
                 title={`当前主题: ${themeLabel}`}
@@ -474,7 +390,6 @@ export const Header: React.FC = () => {
         onShareSession={handleShareSession}
         onGenerateReport={handleGenerateReport}
         onResetSession={handleResetSession}
-        onNewChat={handleNewChat}
         onSetTheme={setTheme}
       />
 

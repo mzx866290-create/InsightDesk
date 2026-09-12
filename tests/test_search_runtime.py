@@ -2,6 +2,8 @@ import asyncio
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
+
 import backend.helpers.task_execution_helpers as task_execution_helpers_module
 from backend.helpers.task_execution_helpers import (
     persist_web_research_task_placeholder,
@@ -1587,6 +1589,22 @@ def test_run_web_research_task_builds_summary(monkeypatch):
     assert record.params["research_sources"][0]["title"] == "OpenAI News"
 
 
+def test_run_deep_research_enforces_per_llm_step_timeout():
+    class SlowLLM:
+        async def ainvoke(self, prompt):
+            del prompt
+            await asyncio.sleep(1)
+
+    with pytest.raises(TimeoutError, match="Research LLM step timed out after 0.01 seconds"):
+        asyncio.run(
+            run_deep_research(
+                "OpenAI agents",
+                llm=SlowLLM(),
+                llm_timeout_seconds=0.01,
+            )
+        )
+
+
 def test_run_web_research_task_supports_deep_mode(monkeypatch):
     async def fake_run_deep_research(
         query,
@@ -1598,12 +1616,14 @@ def test_run_web_research_task_supports_deep_mode(monkeypatch):
         time_range=None,
         source_strategy=None,
         knowledge_search=None,
+        llm_timeout_seconds=120,
     ):
         assert query == "OpenAI agents"
         assert providers == ["tavily"]
         assert max_rounds == 2
         assert max_results_per_query == 4
         assert source_strategy == "community_first"
+        assert llm_timeout_seconds == 120
         return WebResearchResult(
             query=query,
             provider="tavily",
@@ -1750,6 +1770,51 @@ def test_run_web_research_task_falls_back_to_quick_mode_when_deep_config_is_miss
     assert "quick fallback complete" in (record.result or "")
 
 
+def test_run_web_research_task_does_not_fallback_after_deep_timeout(monkeypatch):
+    quick_calls: list[str] = []
+
+    async def fake_run_deep_research(query, **kwargs):
+        del query, kwargs
+        raise TimeoutError("deep step timed out")
+
+    async def fake_run_web_research(query, **kwargs):
+        del kwargs
+        quick_calls.append(query)
+        return WebResearchResult(query=query, provider="fake", summary="unexpected")
+
+    monkeypatch.setattr(task_execution_helpers_module, "run_deep_research", fake_run_deep_research)
+    monkeypatch.setattr(task_execution_helpers_module, "run_web_research", fake_run_web_research)
+
+    record = TaskRecord(
+        task_id="task-research-timeout",
+        task_type="web_research",
+        status=TaskStatus.RUNNING,
+        params={
+            "query": "OpenAI agents",
+            "research_mode": "deep",
+            "panel_config": {"provider": "ollama", "model": "test-model"},
+        },
+        session_id="session-1",
+        created_at=1.0,
+        updated_at=1.0,
+    )
+
+    async def set_progress(value: int) -> None:
+        del value
+
+    with pytest.raises(TimeoutError, match="deep step timed out"):
+        asyncio.run(
+            run_web_research_task(
+                record,
+                set_progress=set_progress,
+                normalize_model_config=lambda value: type("Cfg", (), value)(),
+                create_llm=lambda *args: object(),
+            )
+        )
+
+    assert quick_calls == []
+
+
 def test_run_web_research_task_deep_mode_allows_default_provider_selection(monkeypatch):
     async def fake_run_deep_research(
         query,
@@ -1761,12 +1826,14 @@ def test_run_web_research_task_deep_mode_allows_default_provider_selection(monke
         time_range=None,
         source_strategy=None,
         knowledge_search=None,
+        llm_timeout_seconds=120,
     ):
         assert query == "OpenAI agents"
         assert providers is None
         assert max_rounds == 2
         assert max_results_per_query == 4
         assert source_strategy == "web_only"
+        assert llm_timeout_seconds == 120
         return WebResearchResult(
             query=query,
             provider="searxng",

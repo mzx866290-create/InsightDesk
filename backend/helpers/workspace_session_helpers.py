@@ -1,4 +1,3 @@
-import time
 import uuid
 from typing import Any, Callable
 
@@ -62,42 +61,40 @@ def create_session_record(
     request: Any,
     *,
     history_factory: Callable[..., Any],
-    connect_sqlite: Callable[..., Any],
     get_session: Callable[..., dict[str, Any] | None],
     get_workspace: Callable[[str], dict[str, Any] | None],
     update_session_meta: Callable[..., Any],
+    resolved_workspace_id: str | None = None,
     session_id_factory: Callable[[], Any] = uuid.uuid4,
-    current_time: Callable[[], float] = time.time,
 ) -> dict[str, Any]:
     requested_workspace_id = normalize_workspace_id(getattr(request, "workspace_id", None))
-    if requested_workspace_id and not get_workspace(requested_workspace_id):
+    target_workspace_id = requested_workspace_id or normalize_workspace_id(
+        resolved_workspace_id
+    )
+    if target_workspace_id and not get_workspace(target_workspace_id):
         raise ValueError("工作区不存在")
 
     session_id = str(session_id_factory())
-    history = history_factory(session_id=session_id)
+    history_factory(session_id=session_id)
     title = str(getattr(request, "title", "") or "").strip()
 
+    metadata_updates: dict[str, Any] = {}
     if title:
-        with connect_sqlite(history.db_path) as conn:
-            conn.execute(
-                "UPDATE sessions SET title = ?, updated_at = ? WHERE session_id = ?",
-                (title, current_time(), session_id),
-            )
-            conn.commit()
-
-    if requested_workspace_id is not None:
+        metadata_updates["title"] = title
+    if target_workspace_id is not None:
+        metadata_updates["workspace_id"] = target_workspace_id
+    if metadata_updates:
         update_session_meta(
             session_id,
-            workspace_id=requested_workspace_id,
-            db_path=history.db_path,
+            **metadata_updates,
         )
 
-    session = get_session(session_id, db_path=history.db_path)
+    session = get_session(session_id)
     if session is None:
         return fallback_session_payload(
             session_id,
             title=title,
-            workspace_id=requested_workspace_id,
+            workspace_id=target_workspace_id,
         )
     return session
 

@@ -1,4 +1,4 @@
-﻿import { expect, test, openAdvancedSettings, openKnowledgeBaseMonitor } from './support/testHarness'
+import { expect, test, openAdvancedSettings, openKnowledgeBaseMonitor } from './support/testHarness'
 
 import { mockSecurityAuditFailure } from './support/mockApi'
 
@@ -44,7 +44,7 @@ test('keeps advanced settings collapsed until explicitly opened', async ({ page 
   const advancedToggle = page.getByTestId('settings-advanced-toggle')
   await expect(advancedToggle).toHaveAttribute('aria-expanded', 'false')
   await expect(page.getByTestId('settings-tab-general')).toBeVisible()
-  await expect(page.getByTestId('settings-tab-documents')).toBeVisible()
+  await expect(page.getByTestId('settings-tab-cloud_models')).toBeVisible()
   await expect(page.getByTestId('settings-tab-roles')).toHaveCount(0)
   await expect(page.getByTestId('settings-tab-integrations')).toHaveCount(0)
 
@@ -76,12 +76,12 @@ test('shows the delivery template catalog panel', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Board Deck' })).toBeVisible()
 })
 
-test('uploads a document and refreshes ingestion stats from settings', async ({ page }) => {
+test('uploads a document and tracks ingestion from the knowledge base modal', async ({ page }) => {
   await page.goto('/')
-  await page.getByTestId('header-open-settings').click()
-  await page.getByTestId('settings-tab-documents').click()
+  await page.getByTestId('header-open-kb').click()
+  await page.getByTestId('settings-kb-tab-upload').click()
 
-  await expect(page.getByTestId('settings-documents-panel')).toBeVisible()
+  await expect(page.getByTestId('settings-kb-upload-zone')).toBeVisible()
 
   const uploadResponsePromise = page.waitForResponse(
     (response) =>
@@ -89,32 +89,20 @@ test('uploads a document and refreshes ingestion stats from settings', async ({ 
       response.url().includes('/api/documents/upload'),
   )
   await page
-    .getByTestId('settings-documents-upload-input')
+    .getByTestId('settings-kb-upload-input')
     .setInputFiles({
       name: 'ops-upload.md',
       mimeType: 'text/markdown',
       buffer: Buffer.from('# Ops Upload\n\nSynthetic E2E document.'),
     })
+  await page.getByTestId('settings-kb-upload-submit').click()
 
   const uploadResponse = await uploadResponsePromise
   expect(uploadResponse.ok()).toBeTruthy()
-  await expect(page.getByTestId('settings-documents-upload-result')).toHaveAttribute('data-status', 'success')
-  await expect(page.getByTestId('settings-documents-upload-result')).toContainText('task-document-upload')
-  await expect(page.getByTestId('settings-documents-upload-progress')).toBeVisible()
-
-  const statsResponsePromise = page.waitForResponse(
-    (response) =>
-      response.request().method() === 'GET' &&
-      response.url().includes('/api/documents/stats'),
+  await expect(page.getByTestId('settings-kb-upload-progress')).toBeVisible()
+  await expect(page.getByTestId('settings-kb-upload-result')).toContainText(
+    'Document upload accepted',
   )
-  await page.getByTestId('settings-documents-stats-refresh').click()
-
-  const statsResponse = await statsResponsePromise
-  expect(statsResponse.ok()).toBeTruthy()
-  await expect(page.getByTestId('settings-documents-stats')).toBeVisible()
-  await expect(page.getByTestId('settings-documents-stats-status')).toHaveText('ready')
-  await expect(page.getByTestId('settings-documents-stats-total-docs')).toHaveText('4')
-  await expect(page.getByTestId('settings-documents-stats-store-path')).toContainText('mock://knowledge-base/faiss')
 })
 
 test('shows knowledge base health and refreshes filtered chunks from settings', async ({ page }) => {

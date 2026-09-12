@@ -1,13 +1,13 @@
-import React from 'react'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import React from 'react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { TranslationKey } from '../../i18n'
-import type { CloudModelProfile } from '../../stores/chatStore'
+import type { TranslationKey } from '../../i18n';
+import type { CloudModelProfile } from '../../stores/chatStore';
 import {
   CloudModelProfileFormPanel,
   type CloudModelProfileFormPanelProps,
-} from './CloudModelProfileFormPanel'
+} from './CloudModelProfileFormPanel';
 
 vi.mock('../ui/Button', () => ({
   Button: ({
@@ -17,13 +17,11 @@ vi.mock('../ui/Button', () => ({
     size: _size,
     ...props
   }: React.ButtonHTMLAttributes<HTMLButtonElement> & {
-    loading?: boolean
-    variant?: string
-    size?: string
-  }) => (
-    <button {...props}>{children}</button>
-  ),
-}))
+    loading?: boolean;
+    variant?: string;
+    size?: string;
+  }) => <button {...props}>{children}</button>,
+}));
 
 const managedProfile: CloudModelProfile = {
   id: 'profile-1',
@@ -41,11 +39,13 @@ const managedProfile: CloudModelProfile = {
   },
   createdAt: 1,
   updatedAt: 2,
-}
+};
 
-const t = (key: TranslationKey) => key
+const t = (key: TranslationKey) => key;
 
-function createProps(overrides: Partial<CloudModelProfileFormPanelProps> = {}): CloudModelProfileFormPanelProps {
+function createProps(
+  overrides: Partial<CloudModelProfileFormPanelProps> = {}
+): CloudModelProfileFormPanelProps {
   return {
     form: {
       name: '',
@@ -66,54 +66,66 @@ function createProps(overrides: Partial<CloudModelProfileFormPanelProps> = {}): 
     onReset: vi.fn(),
     onClearApiKey: vi.fn(),
     ...overrides,
-  }
+  };
 }
 
 describe('CloudModelProfileFormPanel', () => {
   afterEach(() => {
-    cleanup()
-  })
+    cleanup();
+  });
 
   it('forwards form input changes', () => {
-    const onChange = vi.fn()
+    const onChange = vi.fn();
 
-    render(<CloudModelProfileFormPanel {...createProps({ onChange })} />)
+    render(<CloudModelProfileFormPanel {...createProps({ onChange })} />);
 
     fireEvent.change(screen.getByTestId('settings-cloud-profile-name-input'), {
       target: { value: 'Prod' },
-    })
+    });
     fireEvent.change(screen.getByTestId('settings-cloud-profile-model-input'), {
       target: { value: 'openai/gpt-4.1' },
-    })
+    });
     fireEvent.change(screen.getByTestId('settings-cloud-profile-base-url-input'), {
       target: { value: 'https://api.example.test/v1' },
-    })
+    });
     fireEvent.change(screen.getByTestId('settings-cloud-profile-api-key-input'), {
       target: { value: 'sk-test' },
-    })
+    });
     fireEvent.change(screen.getByDisplayValue('0.3'), {
       target: { value: '0.7' },
-    })
+    });
 
-    expect(onChange).toHaveBeenCalledWith({ name: 'Prod' })
-    expect(onChange).toHaveBeenCalledWith({ model: 'openai/gpt-4.1' })
-    expect(onChange).toHaveBeenCalledWith({ baseUrl: 'https://api.example.test/v1' })
-    expect(onChange).toHaveBeenCalledWith({ apiKey: 'sk-test' })
-    expect(onChange).toHaveBeenCalledWith({ temperature: 0.7 })
-  })
+    expect(onChange).toHaveBeenCalledWith({ name: 'Prod' });
+    expect(onChange).toHaveBeenCalledWith({ model: 'openai/gpt-4.1' });
+    expect(onChange).toHaveBeenCalledWith({ baseUrl: 'https://api.example.test/v1' });
+    expect(onChange).toHaveBeenCalledWith({ apiKey: 'sk-test' });
+    expect(onChange).toHaveBeenCalledWith({ temperature: 0.7 });
+  });
+
+  it('keeps mobile form controls at least 44px tall', () => {
+    render(<CloudModelProfileFormPanel {...createProps()} />);
+
+    expect(screen.getByTestId('settings-cloud-profile-name-input')).toHaveClass('min-h-11');
+    expect(screen.getByTestId('settings-cloud-profile-model-input')).toHaveClass('min-h-11');
+    expect(screen.getByTestId('settings-cloud-profile-base-url-input')).toHaveClass('min-h-11');
+    expect(screen.getByTestId('settings-cloud-profile-api-key-input')).toHaveClass('min-h-11');
+    expect(screen.getByTestId('settings-cloud-profile-temperature-input')).toHaveClass('h-11');
+    expect(screen.getByTestId('settings-cloud-profile-save')).toHaveClass('min-h-11');
+    expect(screen.getByTestId('settings-cloud-profile-reset')).toHaveClass('min-h-11');
+  });
 
   it('disables save while invalid or saving and forwards save when enabled', () => {
-    const onSave = vi.fn()
+    const onSave = vi.fn();
     const { rerender } = render(
       <CloudModelProfileFormPanel
         {...createProps({
           canSave: false,
           onSave,
         })}
-      />,
-    )
+      />
+    );
 
-    expect(screen.getByTestId('settings-cloud-profile-save')).toBeDisabled()
+    expect(screen.getByTestId('settings-cloud-profile-save')).toBeDisabled();
 
     rerender(
       <CloudModelProfileFormPanel
@@ -122,10 +134,12 @@ describe('CloudModelProfileFormPanel', () => {
           saving: true,
           onSave,
         })}
-      />,
-    )
-    expect(screen.getByTestId('settings-cloud-profile-save')).toBeDisabled()
-    expect(screen.getByTestId('settings-cloud-profile-save')).toHaveTextContent('settings.cloud.saving')
+      />
+    );
+    expect(screen.getByTestId('settings-cloud-profile-save')).toBeDisabled();
+    expect(screen.getByTestId('settings-cloud-profile-save')).toHaveTextContent(
+      'settings.cloud.saving'
+    );
 
     rerender(
       <CloudModelProfileFormPanel
@@ -133,16 +147,16 @@ describe('CloudModelProfileFormPanel', () => {
           canSave: true,
           onSave,
         })}
-      />,
-    )
-    fireEvent.click(screen.getByTestId('settings-cloud-profile-save'))
+      />
+    );
+    fireEvent.click(screen.getByTestId('settings-cloud-profile-save'));
 
-    expect(onSave).toHaveBeenCalledTimes(1)
-  })
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
 
   it('renders edit state and forwards reset and managed key clearing', () => {
-    const onReset = vi.fn()
-    const onClearApiKey = vi.fn()
+    const onReset = vi.fn();
+    const onClearApiKey = vi.fn();
 
     render(
       <CloudModelProfileFormPanel
@@ -153,22 +167,24 @@ describe('CloudModelProfileFormPanel', () => {
           onReset,
           onClearApiKey,
         })}
-      />,
-    )
+      />
+    );
 
-    expect(screen.getByTestId('settings-cloud-profile-save')).toHaveTextContent('settings.cloud.update')
-    expect(screen.getByText('settings.cloud.currentKeyManaged')).toBeInTheDocument()
+    expect(screen.getByTestId('settings-cloud-profile-save')).toHaveTextContent(
+      'settings.cloud.update'
+    );
+    expect(screen.getByText('settings.cloud.currentKeyManaged')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText('settings.cloud.resetForm'))
-    fireEvent.click(screen.getByTestId('settings-cloud-profile-clear-editor'))
+    fireEvent.click(screen.getByText('settings.cloud.resetForm'));
+    fireEvent.click(screen.getByTestId('settings-cloud-profile-clear-editor'));
 
-    expect(onReset).toHaveBeenCalledTimes(1)
-    expect(onClearApiKey).toHaveBeenCalledWith(managedProfile)
-  })
+    expect(onReset).toHaveBeenCalledTimes(1);
+    expect(onClearApiKey).toHaveBeenCalledWith(managedProfile);
+  });
 
   it('shows save errors', () => {
-    render(<CloudModelProfileFormPanel {...createProps({ saveError: 'Failed to save' })} />)
+    render(<CloudModelProfileFormPanel {...createProps({ saveError: 'Failed to save' })} />);
 
-    expect(screen.getByText('Failed to save')).toBeInTheDocument()
-  })
-})
+    expect(screen.getByText('Failed to save')).toBeInTheDocument();
+  });
+});

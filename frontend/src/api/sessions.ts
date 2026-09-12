@@ -34,6 +34,16 @@ import type {
 } from './types'
 
 const fetch: typeof globalThis.fetch = fetchWithApiToken
+
+async function failedResponseError(response: Response): Promise<Error> {
+  const payload = (await response.json().catch(() => null)) as {
+    detail?: unknown
+  } | null
+  const detail = typeof payload?.detail === 'string' ? payload.detail.trim() : ''
+  return new Error(
+    detail || response.statusText || `Request failed with status ${response.status}`,
+  )
+}
 // 鈹€鈹€ Sessions 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 export async function getSessions(params?: {
@@ -235,7 +245,12 @@ export async function createSession(
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  await fetch(`${BASE}/sessions/${sessionId}`, { method: 'DELETE' })
+  const res = await fetch(`${BASE}/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    throw await failedResponseError(res)
+  }
 }
 
 export async function getBookmarks(params?: {
@@ -358,13 +373,22 @@ export async function reorderSessions(
   return (data.sessions ?? []).map((session) => normalizeSession(session))
 }
 
-export async function getSessionMessages(sessionId: string): Promise<MessagesResponse> {
-  const res = await fetch(`${BASE}/sessions/${sessionId}/messages`)
-  const data = await res.json()
+export async function getSessionMessages(
+  sessionId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<MessagesResponse> {
+  const res = await fetch(`${BASE}/sessions/${encodeURIComponent(sessionId)}/messages`, {
+    signal: options.signal,
+  })
+  if (!res.ok) {
+    throw await failedResponseError(res)
+  }
+  const data = await res.json() as Partial<MessagesResponse>
+  const messages = Array.isArray(data.messages) ? data.messages : []
   return {
-    messages: data.messages as Message[],
+    messages: messages as Message[],
     context_limit: data.context_limit ?? 16,
-    total_messages: data.total_messages ?? (data.messages as Message[]).length,
+    total_messages: data.total_messages ?? messages.length,
     panels: (data.panels ?? []) as SessionPanel[],
     panel_messages: (data.panel_messages ?? {}) as Record<string, Message[]>,
   }
@@ -725,7 +749,12 @@ export async function promoteSessionAttachmentToKnowledgeBase(
 }
 
 export async function clearSessionMessages(sessionId: string): Promise<void> {
-  await fetch(`${BASE}/sessions/${sessionId}/messages`, { method: 'DELETE' })
+  const res = await fetch(`${BASE}/sessions/${encodeURIComponent(sessionId)}/messages`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    throw await failedResponseError(res)
+  }
 }
 
 export async function promotePanelAnswer(
@@ -776,7 +805,12 @@ export async function promoteRecommendedAnswerGroup(
 // 鈹€鈹€ Session Reset 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 export async function resetSession(sessionId: string): Promise<void> {
-  await fetch(`${BASE}/sessions/${sessionId}/reset`, { method: 'POST' })
+  const res = await fetch(`${BASE}/sessions/${encodeURIComponent(sessionId)}/reset`, {
+    method: 'POST',
+  })
+  if (!res.ok) {
+    throw await failedResponseError(res)
+  }
 }
 
 export async function createSessionShareLink(sessionId: string): Promise<ShareLinkResponse> {

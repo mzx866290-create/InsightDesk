@@ -23,11 +23,17 @@ spec:
         {{- include "insightdesk.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: worker
     spec:
+      automountServiceAccountToken: {{ .Values.pod.automountServiceAccountToken }}
+      enableServiceLinks: {{ .Values.pod.enableServiceLinks }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
       containers:
         - name: worker
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
           command:
             {{- toYaml .Values.worker.command | nindent 12 }}
           args:
@@ -35,10 +41,30 @@ spec:
           envFrom:
             - configMapRef:
                 name: {{ include "insightdesk.fullname" . }}-config
+            {{ if .Values.secret.existingSecret }}
+            - secretRef:
+                name: {{ .Values.secret.existingSecret | quote }}
+                optional: {{ .Values.secret.optional }}
+            {{ end }}
+            {{ with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+            {{ end }}
           env:
             - name: TASK_BACKEND
               value: arq
-            {{- toYaml .Values.env | nindent 12 }}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: ARQ_WORKER_HEARTBEAT_KEY
+              value: {{ printf "%s:worker:heartbeat:$(POD_NAME)" (include "insightdesk.fullname" .) | quote }}
+            {{ with .Values.env }}
+            {{- toYaml . | nindent 12 }}
+            {{ end }}
+          startupProbe:
+            {{- toYaml .Values.worker.startupProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.worker.readinessProbe | nindent 12 }}
           lifecycle:
             {{- toYaml .Values.worker.lifecycle | nindent 12 }}
           resources:

@@ -2,15 +2,18 @@ import { act, renderHook } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { saveConfig } from '../../api/client'
+import { useChatStore } from '../../stores/chatStore'
 import { useTavilySettings } from './useTavilySettings'
 
-vi.mock('../../api/client', () => ({
+vi.mock('../../api/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/client')>()),
   saveConfig: vi.fn(),
 }))
 
 describe('useTavilySettings', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    useChatStore.setState({ language: 'en-US' })
   })
 
   it('saves a typed Tavily key, clears the input, and refreshes config', async () => {
@@ -69,5 +72,16 @@ describe('useTavilySettings', () => {
     expect(onConfigSaved).not.toHaveBeenCalled()
     expect(result.current.saveError).toBe('Unable to save Tavily key')
     expect(result.current.saving).toBe(false)
+  })
+
+  it('uses localized readable fallback errors instead of mojibake', async () => {
+    vi.mocked(saveConfig).mockRejectedValue(new Error(''))
+    const { result } = renderHook(() => useTavilySettings())
+
+    await act(async () => {
+      await result.current.clearTavilyKey(vi.fn())
+    })
+
+    expect(result.current.saveError).toBe('Failed to clear the Tavily key.')
   })
 })

@@ -16,3 +16,11 @@ export function getAdvancedTabsVisible(
 ): boolean {
   return showAdvancedSettings || isAdvancedSettingsTab(activeTab)
 }
+
+export function shouldLoadSsoSettings(
+  open: boolean,
+  activeTab: SettingsTab,
+  loadedForCurrentOpen: boolean,
+): boolean {
+  return open && activeTab === 'sso' && !loadedForCurrentOpen
+}

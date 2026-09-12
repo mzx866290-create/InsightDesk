@@ -1408,6 +1408,7 @@ export function normalizeSecurityStatusPayload(data: Partial<SecurityStatusRespo
     security_audit_persisted_count: readNumber(data.security_audit_persisted_count),
     security_audit_memory_window_limit: readNumber(data.security_audit_memory_window_limit),
     chat_file_limits: readNumberRecord(data.chat_file_limits),
+    chat_image_limits: readNumberRecord(data.chat_image_limits),
     document_upload_limits: readNumberRecord(data.document_upload_limits),
   }
 }

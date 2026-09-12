@@ -1,16 +1,16 @@
-import React from 'react'
+import React from 'react';
 
-import type { TranslationKey } from '../../i18n'
-import { Button } from '../ui/Button'
+import type { TranslationKey } from '../../i18n';
+import { Button } from '../ui/Button';
 
 interface CloudModelProfileFormActionsProps {
-  canSave: boolean
-  editingProfileId: string | null
-  saving: boolean
-  saveError: string | null
-  onSave: () => void
-  onReset: () => void
-  t: (key: TranslationKey) => string
+  canSave: boolean;
+  editingProfileId: string | null;
+  saving: boolean;
+  saveError: string | null;
+  onSave: () => void;
+  onReset: () => void;
+  t: (key: TranslationKey) => string;
 }
 
 export const CloudModelProfileFormActions: React.FC<CloudModelProfileFormActionsProps> = ({
@@ -27,6 +27,7 @@ export const CloudModelProfileFormActions: React.FC<CloudModelProfileFormActions
       <Button
         data-testid="settings-cloud-profile-save"
         variant="primary"
+        className="min-h-11"
         onClick={onSave}
         disabled={saving || !canSave}
       >
@@ -36,15 +37,16 @@ export const CloudModelProfileFormActions: React.FC<CloudModelProfileFormActions
             ? t('settings.cloud.update')
             : t('settings.cloud.save')}
       </Button>
-      <Button variant="ghost" onClick={onReset}>
+      <Button
+        data-testid="settings-cloud-profile-reset"
+        variant="ghost"
+        className="min-h-11"
+        onClick={onReset}
+      >
         {t('settings.cloud.resetForm')}
       </Button>
-      <span className="text-[11px] text-text-secondary">
-        {t('settings.cloud.encryptedHint')}
-      </span>
+      <span className="text-[11px] text-text-secondary">{t('settings.cloud.encryptedHint')}</span>
     </div>
-    {saveError ? (
-      <p className="mt-2 text-xs text-accent-red">{saveError}</p>
-    ) : null}
+    {saveError ? <p className="mt-2 text-xs text-accent-red">{saveError}</p> : null}
   </>
-)
+);

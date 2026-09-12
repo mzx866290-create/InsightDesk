@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   createSession,
   getSessionMessages,
@@ -55,6 +55,13 @@ export function useSidebarSessionNavigation({
   const hydrateWorkflow = useWorkflowStore((state) => state.hydrateWorkflow)
   const clearWorkflow = useWorkflowStore((state) => state.clearWorkflow)
   const [loadingNew, setLoadingNew] = useState(false)
+  const openRequestIdRef = useRef(0)
+  const activeOpenControllerRef = useRef<AbortController | null>(null)
+
+  useEffect(() => () => {
+    openRequestIdRef.current += 1
+    activeOpenControllerRef.current?.abort()
+  }, [])
 
   const resetPanelWorkflows = () => {
     storePanels.forEach((panel) => clearWorkflow(panel.id))
@@ -100,21 +107,28 @@ export function useSidebarSessionNavigation({
     session: Session,
     options?: { forceWorkspaceSync?: boolean },
   ) => {
+    const requestId = openRequestIdRef.current + 1
+    openRequestIdRef.current = requestId
+    activeOpenControllerRef.current?.abort()
+    const controller = new AbortController()
+    activeOpenControllerRef.current = controller
     const shouldSyncWorkspace =
       Boolean(options?.forceWorkspaceSync) || session.workspace_id !== currentWorkspaceId
 
-    if (shouldSyncWorkspace) {
-      await syncWorkspaceForSession(session, true)
-    }
-
-    setCurrentSession(session.session_id)
     try {
+      if (shouldSyncWorkspace) {
+        await syncWorkspaceForSession(session, true)
+      }
+      if (requestId !== openRequestIdRef.current || controller.signal.aborted) return
+
+      setCurrentSession(session.session_id)
       const {
         messages,
         total_messages,
         panels: sessionPanels,
         panel_messages,
-      } = await getSessionMessages(session.session_id)
+      } = await getSessionMessages(session.session_id, { signal: controller.signal })
+      if (requestId !== openRequestIdRef.current || controller.signal.aborted) return
 
       if (sessionPanels && sessionPanels.length > 0) {
         const nextPanelIds = new Set(sessionPanels.map((panel) => panel.panel_id))
@@ -156,7 +170,13 @@ export function useSidebarSessionNavigation({
         setSidebarOpen(false)
       }
     } catch (openError) {
-      console.error(openError)
+      if (!(openError instanceof DOMException && openError.name === 'AbortError')) {
+        console.error(openError)
+      }
+    } finally {
+      if (activeOpenControllerRef.current === controller) {
+        activeOpenControllerRef.current = null
+      }
     }
   }
 

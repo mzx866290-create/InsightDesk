@@ -9,10 +9,23 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN pip install --upgrade pip \
-    && pip install "arq>=0.26.0"
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
+        libmagic1 \
+    && rm -rf /var/lib/apt/lists/*
 
+COPY requirements.txt ./
+RUN pip install --upgrade pip \
+    && pip install -r requirements.txt
+
+# The worker imports backend.api_server for real task execution, which in turn
+# loads the search runtime and project configuration at runtime.
 COPY backend ./backend
+COPY search_runtime ./search_runtime
+COPY config ./config
+COPY mcp_servers ./mcp_servers
 COPY deploy ./deploy
 
 CMD ["arq", "backend.tasks.worker.WorkerSettings"]

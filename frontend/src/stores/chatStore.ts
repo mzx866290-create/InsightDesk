@@ -56,6 +56,7 @@ import type {
   ModelPreset,
   Panel,
   PanelMessage,
+  ProviderConfig,
   ResearchMode,
   ResearchSourceStrategy,
   ThemeMode,
@@ -71,10 +72,24 @@ export type {
   ModelPreset,
   Panel,
   PanelMessage,
+  ProviderConfig,
   ResearchMode,
   ResearchSourceStrategy,
   ThemeMode,
 }
+
+export type SettingsTabId =
+  | 'general'
+  | 'cloud_models'
+  | 'assistant_presets'
+  | 'sso'
+  | 'agent_catalog'
+  | 'delivery_templates'
+  | 'roles'
+  | 'mcp_approvals'
+  | 'integrations'
+  | 'traces'
+  | 'security_audit'
 
 export interface JumpTarget {
   sessionId: string
@@ -97,10 +112,13 @@ interface ChatState extends BookmarkActionSlice, MessageActionSlice {
   panels: Panel[]
   modelPresets: ModelPreset[]
   cloudModelProfiles: CloudModelProfile[]
+  providerConfigs: ProviderConfig[]
 
   // UI state
   sidebarOpen: boolean
   settingsOpen: boolean
+  settingsInitialTab: SettingsTabId
+  modelProviderOpen: boolean
   webSearchEnabled: boolean
   knowledgeBaseEnabled: boolean
   researchMode: ResearchMode
@@ -150,6 +168,8 @@ interface ChatState extends BookmarkActionSlice, MessageActionSlice {
   }) => void
   deleteCloudModelProfile: (profileId: string) => void
   applyCloudModelProfile: (panelId: string, profileId: string) => void
+  saveProviderConfig: (config: ProviderConfig) => void
+  deleteProviderConfig: (id: string) => void
   setPanels: (panels: Panel[]) => void
   loadMessagesToAllPanels: (messages: Message[]) => void
 
@@ -157,6 +177,8 @@ interface ChatState extends BookmarkActionSlice, MessageActionSlice {
   toggleSidebar: () => void
   setSidebarOpen: (open: boolean) => void
   setSettingsOpen: (open: boolean) => void
+  openSettings: (tab?: SettingsTabId) => void
+  setModelProviderOpen: (open: boolean) => void
   setWebSearchEnabled: (enabled: boolean) => void
   setKnowledgeBaseEnabled: (enabled: boolean) => void
   setResearchMode: (mode: ResearchMode) => void
@@ -193,8 +215,11 @@ export const useChatStore = create<ChatState>()(
       panels: [newPanel()],
       modelPresets: [],
       cloudModelProfiles: [],
+      providerConfigs: [],
       sidebarOpen: true,
       settingsOpen: false,
+      settingsInitialTab: 'general',
+      modelProviderOpen: false,
       webSearchEnabled: false,
       knowledgeBaseEnabled: true,
       researchMode: 'deep',
@@ -281,6 +306,21 @@ export const useChatStore = create<ChatState>()(
             profileId,
           ),
         })),
+      saveProviderConfig: (config) =>
+        set((s) => {
+          const existing = s.providerConfigs.findIndex((p) => p.id === config.id)
+          const updated = [...s.providerConfigs]
+          if (existing >= 0) {
+            updated[existing] = config
+          } else {
+            updated.push(config)
+          }
+          return { providerConfigs: updated }
+        }),
+      deleteProviderConfig: (id) =>
+        set((s) => ({
+          providerConfigs: s.providerConfigs.filter((p) => p.id !== id),
+        })),
       setPanels: (panels) =>
         set({
           panels: normalizePanels(panels),
@@ -294,7 +334,17 @@ export const useChatStore = create<ChatState>()(
 
       toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
       setSidebarOpen: (open) => set({ sidebarOpen: open }),
-      setSettingsOpen: (open) => set({ settingsOpen: open }),
+      setSettingsOpen: (open) =>
+        set({
+          settingsOpen: open,
+          ...(open ? { settingsInitialTab: 'general' as const } : {}),
+        }),
+      openSettings: (tab = 'general') =>
+        set({
+          settingsOpen: true,
+          settingsInitialTab: tab,
+        }),
+      setModelProviderOpen: (open) => set({ modelProviderOpen: open }),
       setWebSearchEnabled: (enabled) => set({ webSearchEnabled: enabled }),
       setKnowledgeBaseEnabled: (enabled) => set({ knowledgeBaseEnabled: enabled }),
       setResearchMode: (mode) => set({ researchMode: mode }),

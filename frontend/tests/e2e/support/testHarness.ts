@@ -140,8 +140,7 @@ export async function openAdvancedSettings(page: Page): Promise<void> {
 
 export async function openKnowledgeBaseMonitor(page: Page): Promise<void> {
   await page.goto('/')
-  await page.getByTestId('header-open-settings').click()
-  await openAdvancedSettings(page)
+  await page.getByTestId('header-open-kb').click()
 
   const healthResponsePromise = page.waitForResponse(
     (response) =>
@@ -154,7 +153,7 @@ export async function openKnowledgeBaseMonitor(page: Page): Promise<void> {
       response.url().includes('/api/knowledge-base/chunks'),
   )
 
-  await page.getByTestId('settings-tab-kb_monitor').click()
+  await page.getByTestId('settings-kb-tab-monitor').click()
 
   const [healthResponse, chunksResponse] = await Promise.all([
     healthResponsePromise,

@@ -40,11 +40,22 @@ def normalize_model_config(mc: ModelConfig | dict[str, Any]) -> ModelConfig:
 
 
 def resolve_model_api_key(store: Any, logger: Any, mc: ModelConfig | dict[str, Any]) -> str:
+    from backend.agent.connection import (
+        default_base_url_for_connection_type,
+        normalize_connection_type,
+    )
+
+    data = model_config_payload(mc)
+    connection_type = normalize_connection_type(
+        data.get("connection_type") or data.get("provider"),
+        data.get("base_url"),
+    )
     return resolve_config_model_api_key(
         store,
         logger,
         mc,
         model_config_payload=model_config_payload,
+        trusted_base_url=default_base_url_for_connection_type(connection_type),
     )
 
 

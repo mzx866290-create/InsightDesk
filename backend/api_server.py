@@ -1,4 +1,4 @@
-﻿"""
+"""
 FastAPI 鍚庣 API 鏈嶅姟
 鎻愪緵 REST + SSE 绔偣锛屽寘瑁呯幇鏈?agent_core / chat_store / doc_pipeline 妯″潡
 """
@@ -18,6 +18,8 @@ from backend.core import task_runtime
 from backend.core import security_runtime
 from backend.core import sso_runtime
 from backend.core import env_runtime
+from backend.core import rate_limit
+from backend.core import request_runtime
 from backend.core import kb_runtime
 from backend.core import mcp_runtime as mcp_runtime_helpers
 from backend.core import model_config_runtime
@@ -215,6 +217,8 @@ from backend.helpers.session_helpers import (
     render_shared_session_html as _render_shared_session_html,
 )
 from backend.helpers.chat_input_helpers import (
+    ChatImageConfig,
+    SUPPORTED_CHAT_IMAGE_MEDIA_TYPES,
     build_user_input as _build_user_input_impl,
     stringify_user_input as _stringify_user_input_impl,
     validate_chat_payload as _validate_chat_payload_impl,
@@ -301,6 +305,7 @@ from backend.helpers.task_runtime_helpers import (
 from backend.tasks.health import arq_queue_health_payload
 from backend.helpers.task_execution_helpers import (
     persist_multi_agent_workflow_task_placeholder,
+    persist_multi_agent_workflow_task_result,
     persist_web_research_task_placeholder,
     persist_web_research_task_result,
     run_analyze_knowledge_base_task,
@@ -325,6 +330,7 @@ from backend.logging_config import configure_logging
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi.responses import JSONResponse
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -371,6 +377,7 @@ _DYNAMIC_CONTEXT_DEPENDENCIES = (
     AuthTokenCatalogResponse,
     AuthWhoAmIResponse,
     ChatFileConfig,
+    ChatImageConfig,
     ChatRequest,
     CreateBookmarkRequest,
     CreateDeckRequest,
@@ -415,6 +422,7 @@ _DYNAMIC_CONTEXT_DEPENDENCIES = (
     SsoCallbackResponse,
     SsoConfigResponse,
     SsoLoginResponse,
+    SUPPORTED_CHAT_IMAGE_MEDIA_TYPES,
     SyncExternalIdentityRequest,
     SyncExternalIdentityResponse,
     TruncateSessionMessagesRequest,
@@ -683,6 +691,7 @@ TASK_HISTORY_LIMIT = 200
 TASK_HISTORY_TTL_SECONDS = int(os.getenv("TASK_HISTORY_TTL_SECONDS", str(6 * 60 * 60)))
 TASK_BACKEND = os.getenv("TASK_BACKEND", "memory").strip().lower() or "memory"
 enqueue_external_task = None
+cancel_external_task = None
 KB_METADATA_TTL_SECONDS = 30
 CHAT_FILE_CONTEXT_START_MARKER = "[[CHAT_FILE_CONTEXT_START]]"
 CHAT_FILE_CONTEXT_END_MARKER = "[[CHAT_FILE_CONTEXT_END]]"
@@ -691,6 +700,11 @@ CHAT_FILE_MAX_BYTES = int(os.getenv("CHAT_FILE_MAX_BYTES", str(10 * 1024 * 1024)
 CHAT_FILE_MAX_CHARS_PER_FILE = int(os.getenv("CHAT_FILE_MAX_CHARS_PER_FILE", "8000"))
 CHAT_FILE_MAX_TOTAL_CHARS = int(os.getenv("CHAT_FILE_MAX_TOTAL_CHARS", "24000"))
 CHAT_ATTACHMENT_PREVIEW_CHARS = int(os.getenv("CHAT_ATTACHMENT_PREVIEW_CHARS", "4000"))
+CHAT_IMAGE_MAX_COUNT = int(os.getenv("CHAT_IMAGE_MAX_COUNT", "4"))
+CHAT_IMAGE_MAX_BYTES = int(os.getenv("CHAT_IMAGE_MAX_BYTES", str(10 * 1024 * 1024)))
+CHAT_IMAGE_MAX_TOTAL_BYTES = int(
+    os.getenv("CHAT_IMAGE_MAX_TOTAL_BYTES", str(20 * 1024 * 1024))
+)
 SHARE_LINK_SECRET = os.getenv("SHARE_LINK_SECRET", "local-share-secret")
 SHARE_LINK_TTL_SECONDS = int(os.getenv("SHARE_LINK_TTL_SECONDS", str(7 * 24 * 60 * 60)))
 DEFAULT_SHARE_LINK_SECRET = "local-share-secret"
@@ -1027,6 +1041,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+if rate_limit.general_rate_limit_enabled():
+    _general_rpm, _general_burst = rate_limit.general_rate_limit_limits()
+    app.add_middleware(
+        BaseHTTPMiddleware,
+        dispatch=rate_limit.rate_limit_middleware_factory(
+            rate_limit.RateLimiter(
+                requests_per_minute=_general_rpm,
+                burst=_general_burst,
+            )
+        ),
+    )
+
 
 @app.middleware("http")
 async def restrict_remote_clients(request: Request, call_next):
@@ -1064,14 +1090,13 @@ async def restrict_remote_clients(request: Request, call_next):
             else:
                 response = await call_next(request)
         else:
-            client_host = request.client.host if request.client else None
-            if env_runtime.is_loopback_host(client_host):
+            if request_runtime.request_is_local_origin(request):
                 response = await call_next(request)
             else:
                 logger.warning(
                     "Blocked non-local request request_id=%s host=%s path=%s",
                     request_id,
-                    client_host,
+                    request_runtime.request_client_ip(request),
                     sanitize_request_path(request.url.path),
                 )
                 response = JSONResponse(

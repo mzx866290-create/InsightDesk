@@ -1,6 +1,9 @@
+import asyncio
+
 from fastapi.testclient import TestClient
 
 import backend.api_server as api_server
+from backend.routes import chat_routes
 from backend.core.tracing import reset_trace_events, trace_span
 
 
@@ -29,9 +32,45 @@ def test_kubernetes_probe_endpoints_return_lightweight_json():
     assert ready_payload["status"] == "ok"
     assert ready_payload["checks"] == {
         "config": "ok",
+        "database": "ok",
         "runtime": "ok",
+        "task_queue": "ok",
     }
     assert "timestamp" in ready_payload
+
+
+def test_kubernetes_readiness_rejects_missing_postgres_config(monkeypatch):
+    monkeypatch.setenv("DATABASE_PROVIDER", "postgres")
+    for name in ("DATABASE_URL", "POSTGRES_DSN", "POSTGRES_URL"):
+        monkeypatch.delenv(name, raising=False)
+
+    response = TestClient(api_server.app).get("/readyz")
+
+    assert response.status_code == 503
+    assert response.json()["checks"]["config"] == "unavailable"
+    assert response.json()["checks"]["database"] == "unavailable"
+
+
+def test_runtime_readiness_rejects_unavailable_arq_queue(monkeypatch):
+    async def unavailable_queue(**kwargs):
+        assert kwargs == {"heartbeat_seconds": 0}
+        return {
+            "status": "unavailable",
+            "warnings": ["arq_queue_health_unavailable"],
+        }
+
+    monkeypatch.setattr(chat_routes, "database_readiness_status", lambda: "ok")
+    monkeypatch.setattr(chat_routes, "task_backend_from_env", lambda: "arq")
+    monkeypatch.setattr(chat_routes, "arq_queue_health_payload", unavailable_queue)
+
+    checks = asyncio.run(chat_routes.runtime_readiness_checks(runtime_ready=True))
+
+    assert checks == {
+        "config": "ok",
+        "database": "ok",
+        "runtime": "ok",
+        "task_queue": "unavailable",
+    }
 
 
 def test_operations_runtime_includes_operations_summary():

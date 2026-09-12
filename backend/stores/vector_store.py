@@ -47,6 +47,21 @@ class FaissVectorStoreAdapter:
     path: str
     provider: str = VECTOR_STORE_PROVIDER_FAISS
 
+    def _guarded_path(self, path: str | None) -> str:
+        """Keep every FAISS operation inside the adapter's configured scope.
+
+        FAISS deserializes its ``index.pkl`` with pickle, so callers must not
+        be able to point the adapter at an arbitrary external directory.
+        """
+        requested = str(path or self.path or "").strip()
+        if not requested:
+            raise ValueError("FAISS vector store path is required")
+        base = Path(self.path).resolve()
+        target = Path(requested).resolve()
+        if target != base and base not in target.parents:
+            raise ValueError("FAISS vector store path escapes the configured store scope")
+        return str(target)
+
     def from_documents(self, documents: list[Document], embeddings: Any) -> Any:
         from langchain_community.vectorstores import FAISS
 
@@ -56,16 +71,16 @@ class FaissVectorStoreAdapter:
         from langchain_community.vectorstores import FAISS
 
         return FAISS.load_local(
-            path or self.path,
+            self._guarded_path(path),
             embeddings,
             allow_dangerous_deserialization=True,
         )
 
     def save(self, vectorstore: Any, *, path: str | None = None) -> None:
-        vectorstore.save_local(path or self.path)
+        vectorstore.save_local(self._guarded_path(path))
 
     def delete(self, *, path: str | None = None) -> bool:
-        target_dir = Path(path or self.path)
+        target_dir = Path(self._guarded_path(path))
         if not target_dir.exists():
             return False
         try:
@@ -81,7 +96,7 @@ class FaissVectorStoreAdapter:
     def validation_summary(self, *, path: str | None = None) -> dict[str, Any]:
         return vector_store_runtime_summary(
             provider=self.provider,
-            path=path or self.path,
+            path=self._guarded_path(path),
             delete_supported=True,
             clear_supported=True,
         )

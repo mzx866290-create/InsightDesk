@@ -1,5 +1,6 @@
-import React from 'react'
-import type { TraceEvent } from '../../api/client'
+import React from 'react';
+import type { TraceEvent } from '../../api/client';
+import { useI18n } from '../../i18n';
 import {
   TRACE_EVENT_STYLE,
   attributesSummary,
@@ -7,22 +8,27 @@ import {
   formatDuration,
   formatTimestamp,
   shortId,
-} from './traceOperationsModel'
+} from './traceOperationsModel';
 
 interface TraceEventListProps {
-  events: TraceEvent[]
-  loading: boolean
+  events: TraceEvent[];
+  loading: boolean;
 }
 
 export const TraceEventList: React.FC<TraceEventListProps> = ({ events, loading }) => {
+  const { t } = useI18n();
+
   return (
-    <div className="overflow-hidden rounded-lg border border-bg-border" data-testid="settings-trace-event-list">
+    <div
+      className="overflow-hidden rounded-lg border border-bg-border"
+      data-testid="settings-trace-event-list"
+    >
       <div className="hidden grid-cols-[minmax(10rem,1.25fr)_5rem_6rem_minmax(9rem,1fr)_minmax(12rem,1.4fr)] gap-3 bg-bg-tertiary/60 px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-text-secondary md:grid">
-        <span>Name</span>
-        <span>Event</span>
-        <span>Duration</span>
-        <span>Error</span>
-        <span>Attributes</span>
+        <span>{t('settings.traces.name')}</span>
+        <span>{t('settings.traces.event')}</span>
+        <span>{t('settings.traces.duration')}</span>
+        <span>{t('settings.traces.error')}</span>
+        <span>{t('settings.traces.attributes')}</span>
       </div>
 
       {loading && events.length === 0 && (
@@ -32,13 +38,16 @@ export const TraceEventList: React.FC<TraceEventListProps> = ({ events, loading 
       )}
 
       {!loading && events.length === 0 && (
-        <div className="px-3 py-8 text-center text-xs text-text-secondary" data-testid="settings-trace-empty">
-          暂无 Trace。
+        <div
+          className="px-3 py-8 text-center text-xs text-text-secondary"
+          data-testid="settings-trace-empty"
+        >
+          {t('settings.traces.empty')}
         </div>
       )}
 
       {events.map((event) => {
-        const errorText = [event.error_type, event.error_message].filter(Boolean).join(': ') || '-'
+        const errorText = [event.error_type, event.error_message].filter(Boolean).join(': ') || '-';
         return (
           <div
             key={`${event.trace_id}:${event.span_id}:${event.event}:${event.timestamp}`}
@@ -48,24 +57,35 @@ export const TraceEventList: React.FC<TraceEventListProps> = ({ events, loading 
             <div className="min-w-0">
               <p className="truncate font-medium text-text-primary">{event.name || 'span'}</p>
               <p className="mt-0.5 truncate font-mono text-[10px] text-text-secondary/70">
-                {shortId(event.trace_id)} / {shortId(event.span_id)} | {formatTimestamp(event.timestamp)}
+                {shortId(event.trace_id)} / {shortId(event.span_id)} |{' '}
+                {formatTimestamp(event.timestamp)}
               </p>
             </div>
             <div>
-              <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${TRACE_EVENT_STYLE[event.event]}`}>
+              <span
+                className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${TRACE_EVENT_STYLE[event.event]}`}
+              >
                 {event.event}
               </span>
             </div>
-            <div className="font-mono text-[11px] text-text-primary">{formatDuration(event.duration_ms)}</div>
-            <div className={`min-w-0 truncate ${event.event === 'error' ? 'text-accent-red' : ''}`} title={errorText}>
+            <div className="font-mono text-[11px] text-text-primary">
+              {formatDuration(event.duration_ms)}
+            </div>
+            <div
+              className={`min-w-0 truncate ${event.event === 'error' ? 'text-accent-red' : ''}`}
+              title={errorText}
+            >
               {clampText(errorText)}
             </div>
-            <div className="min-w-0 truncate text-[11px]" title={attributesSummary(event.attributes)}>
+            <div
+              className="min-w-0 truncate text-[11px]"
+              title={attributesSummary(event.attributes)}
+            >
               {attributesSummary(event.attributes)}
             </div>
           </div>
-        )
+        );
       })}
     </div>
-  )
-}
+  );
+};

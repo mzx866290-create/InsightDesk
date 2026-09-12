@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from backend.helpers.model_config_helpers import (
     base_model_payload,
     model_config_payload,
@@ -51,6 +53,16 @@ def _default_model(connection_type):
         "ollama": "qwen3.5-2B:latest",
         "openai_compatible": "gpt-4o-mini",
     }[connection_type]
+
+
+def _normalize(payload):
+    return normalize_model_config(
+        payload,
+        model_config_cls=_model_config_cls,
+        normalize_connection_type=_normalize_connection_type,
+        default_base_url_for_connection_type=_default_base_url,
+        default_model_for_connection_type=_default_model,
+    )
 
 
 def test_model_config_payload_copies_plain_dict_without_mutating_source():
@@ -127,3 +139,52 @@ def test_normalize_model_config_preserves_explicit_base_url_and_model():
     assert normalized.provider == "ollama"
     assert normalized.base_url == "http://localhost:11434"
     assert normalized.model == "custom-model"
+
+
+def test_normalize_model_config_rejects_custom_cloud_url_with_server_managed_key():
+    with pytest.raises(ValueError, match="requires an explicit api_key"):
+        _normalize(
+            {
+                "connection_type": "openai_compatible",
+                "base_url": "https://attacker.example/v1",
+                "api_key": "",
+            }
+        )
+
+
+def test_normalize_model_config_allows_custom_cloud_url_with_api_key_ref():
+    normalized = _normalize(
+        {
+            "connection_type": "openai_compatible",
+            "base_url": "https://custom.example/v1",
+            "api_key_ref": "managed-secret",
+        }
+    )
+
+    assert normalized.base_url == "https://custom.example/v1"
+    assert normalized.api_key_ref == "managed-secret"
+
+
+def test_normalize_model_config_allows_custom_cloud_url_with_explicit_key():
+    normalized = _normalize(
+        {
+            "connection_type": "openai_compatible",
+            "base_url": "https://custom.example/v1",
+            "api_key": "client-owned-key",
+        }
+    )
+
+    assert normalized.base_url == "https://custom.example/v1"
+    assert normalized.api_key == "client-owned-key"
+
+
+def test_normalize_model_config_accepts_equivalent_trusted_cloud_url():
+    normalized = _normalize(
+        {
+            "connection_type": "openai_compatible",
+            "base_url": "https://OPENROUTER.ai:443/api/v1/",
+            "api_key": "",
+        }
+    )
+
+    assert normalized.base_url == "https://OPENROUTER.ai:443/api/v1/"

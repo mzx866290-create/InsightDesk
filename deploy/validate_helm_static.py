@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 CHART_DIR = ROOT / "deploy" / "helm" / "insightdesk"
 K8S_ROLLOUT_DRILL_RUNNER = ROOT / "deploy" / "run_k8s_rollout_drill.py"
@@ -30,17 +29,38 @@ REQUIRED_FILES = [
 
 REQUIRED_SNIPPETS = {
     "Chart.yaml": ["apiVersion: v2", "name: insightdesk", "type: application"],
+    "templates/_helpers.tpl": [
+        "insightdesk.validateSensitiveEnv",
+        "APP_AUTH_TOKENS_JSON",
+        "DATABASE_URL",
+        "OPENAI_API_KEY",
+        "SHARE_LINK_SECRET",
+        "(_API_KEY|_TOKEN|_PASSWORD|_SECRET|_TOKENS_JSON)$",
+        "ARQ_WORKER_HEARTBEAT_KEY",
+        "POD_NAME",
+        "TASK_BACKEND",
+        "if has $name $reservedNames",
+        "is chart-managed and cannot be overridden through env[]",
+        "env[].valueFrom.secretKeyRef",
+    ],
     "values.yaml": [
         "image:",
         "runtime:",
         "worker:",
         "autoscaling:",
         "livenessProbe:",
+        "startupProbe:",
         "readinessProbe:",
         "path: /healthz",
         "path: /readyz",
         "terminationGracePeriodSeconds:",
         "preStop:",
+        "allowExternal: false",
+        "existingSecret:",
+        "arqRedisHost:",
+        "arqCancelTimeoutSeconds:",
+        "automountServiceAccountToken: false",
+        "enableServiceLinks: false",
         "podDisruptionBudget:",
         "arq backend.tasks.worker.WorkerSettings",
         "reloadStrategy: rolloutOnConfigChange",
@@ -55,10 +75,16 @@ REQUIRED_SNIPPETS = {
         "postgres:",
     ],
     "templates/configmap.yaml": [
+        "insightdesk.validateSensitiveEnv",
+        "config.databaseUrl/config.redisUrl are not rendered into ConfigMaps",
         "CONFIG_RELOAD_STRATEGY:",
         "CONFIG_HOT_RELOAD_ENABLED:",
         "CONFIG_HOT_RELOAD_PATH:",
         "CONFIG_HOT_RELOAD_CHECK_INTERVAL_SECONDS:",
+        "ARQ_REDIS_HOST:",
+        "ARQ_REDIS_PORT:",
+        "ARQ_REDIS_DATABASE:",
+        "ARQ_CANCEL_TIMEOUT_SECONDS:",
         ".Values.config.hotReload.fileName",
     ],
     "templates/deployment-api.yaml": [
@@ -69,6 +95,11 @@ REQUIRED_SNIPPETS = {
         "config.insightdesk/reload-strategy:",
         "runtime-config",
         ".Values.config.hotReload.enabled",
+        ".Values.secret.existingSecret",
+        ".Values.pod.automountServiceAccountToken",
+        ".Values.pod.enableServiceLinks",
+        ".Values.containerSecurityContext",
+        "startupProbe:",
         "livenessProbe:",
         "readinessProbe:",
         "terminationGracePeriodSeconds:",
@@ -83,6 +114,14 @@ REQUIRED_SNIPPETS = {
         "config.insightdesk/reload-strategy:",
         "runtime-config",
         ".Values.config.hotReload.enabled",
+        ".Values.secret.existingSecret",
+        ".Values.pod.automountServiceAccountToken",
+        ".Values.pod.enableServiceLinks",
+        ".Values.containerSecurityContext",
+        "startupProbe:",
+        "readinessProbe:",
+        "ARQ_WORKER_HEARTBEAT_KEY",
+        "fieldPath: metadata.name",
         "terminationGracePeriodSeconds:",
         "lifecycle:",
         "value: arq",
@@ -101,7 +140,14 @@ REQUIRED_SNIPPETS = {
         "Ingress",
         "Egress",
     ],
-    "templates/service.yaml": ["kind: Service", "targetPort: http"],
+    "templates/service.yaml": [
+        "kind: Service",
+        "targetPort: http",
+        ".Values.service.allowExternal",
+        "service.type must be ClusterIP, NodePort, or LoadBalancer",
+        "service.allowExternal=true",
+        "loadBalancerSourceRanges:",
+    ],
     "templates/pvc.yaml": ["kind: PersistentVolumeClaim", "storage:"],
     "templates/hpa.yaml": ["kind: HorizontalPodAutoscaler", "autoscaling/v2"],
     "templates/pdb.yaml": [
@@ -121,6 +167,22 @@ REQUIRED_SNIPPETS = {
         "--manifest-path",
         "hot_reload_checklist",
         "graceful_shutdown_checklist",
+        "secret.existingSecret",
+        "Secret Management",
+        "config.taskBackend",
+        "service.allowExternal=true",
+    ],
+}
+
+FORBIDDEN_SNIPPETS = {
+    "values.yaml": [
+        "postgresql://postgres:postgres",
+        "databaseUrl:",
+        "redisUrl:",
+    ],
+    "templates/configmap.yaml": [
+        "DATABASE_URL:",
+        "REDIS_URL:",
     ],
 }
 
@@ -181,6 +243,15 @@ def validate_chart() -> list[str]:
                     f"{relative_path} expected at least {minimum_count} occurrence(s) of {snippet}, "
                     f"found {actual_count}"
                 )
+
+    for relative_path, snippets in FORBIDDEN_SNIPPETS.items():
+        path = CHART_DIR / relative_path
+        if not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8")
+        for snippet in snippets:
+            if snippet in content:
+                errors.append(f"{relative_path} contains forbidden snippet: {snippet}")
 
     if not K8S_ROLLOUT_DRILL_RUNNER.is_file():
         errors.append(f"missing K8s rollout drill runner: {K8S_ROLLOUT_DRILL_RUNNER}")

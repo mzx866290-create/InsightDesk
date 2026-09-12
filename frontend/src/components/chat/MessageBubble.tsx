@@ -169,6 +169,54 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
   const reportTask = useTaskStore((state) => (reportTaskId ? state.tasks[reportTaskId] : undefined))
   const researchTask = useTaskStore((state) => (message.taskId ? state.tasks[message.taskId] : undefined))
   const effectivePanelId = panelId ?? message.panelId ?? ''
+
+  React.useEffect(() => {
+    if (!reportTaskId || !reportTask || handledReportTaskId === reportTaskId) return
+
+    if (reportTask.status === 'completed') {
+      const params = reportTask.params ?? {}
+      const markdown = typeof params.report_markdown === 'string' ? params.report_markdown : ''
+      const title = typeof params.report_title === 'string' ? params.report_title : '研究报告'
+      const artifactId =
+        typeof params.artifact_id === 'string' ? params.artifact_id : undefined
+      if (markdown) {
+        setReportPreview({
+          markdown,
+          title,
+          sessionId: currentSessionId ?? reportTask.session_id ?? '',
+          artifactId,
+          answerGroupId:
+            typeof params.answer_group_id === 'string'
+              ? params.answer_group_id
+              : message.answerGroupId,
+          panelId: typeof params.panel_id === 'string' ? params.panel_id : effectivePanelId,
+        })
+      }
+      setReportError(null)
+      setReportState('idle')
+      setHandledReportTaskId(reportTaskId)
+      return
+    }
+
+    if (reportTask.status === 'failed') {
+      setReportError(reportTask.error ?? '报告生成失败，请稍后重试。')
+      setReportState('error')
+      setHandledReportTaskId(reportTaskId)
+      return
+    }
+
+    if (reportTask.status === 'pending' || reportTask.status === 'running') {
+      setReportState('loading')
+    }
+  }, [
+    currentSessionId,
+    effectivePanelId,
+    handledReportTaskId,
+    message.answerGroupId,
+    reportTask,
+    reportTaskId,
+  ])
+
   const bookmarkEntry = bookmarks.find((bookmark) => {
     if ((bookmark.source ?? 'remote') === 'local' && bookmark.id === message.id) {
       return true
@@ -587,53 +635,6 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
       setReportState('idle')
     }
   }
-
-  React.useEffect(() => {
-    if (!reportTaskId || !reportTask || handledReportTaskId === reportTaskId) return
-
-    if (reportTask.status === 'completed') {
-      const params = reportTask.params ?? {}
-      const markdown = typeof params.report_markdown === 'string' ? params.report_markdown : ''
-      const title = typeof params.report_title === 'string' ? params.report_title : '研究报告'
-      const artifactId =
-        typeof params.artifact_id === 'string' ? params.artifact_id : undefined
-      if (markdown) {
-        setReportPreview({
-          markdown,
-          title,
-          sessionId: currentSessionId ?? reportTask.session_id ?? '',
-          artifactId,
-          answerGroupId:
-            typeof params.answer_group_id === 'string'
-              ? params.answer_group_id
-              : message.answerGroupId,
-          panelId: typeof params.panel_id === 'string' ? params.panel_id : effectivePanelId,
-        })
-      }
-      setReportError(null)
-      setReportState('idle')
-      setHandledReportTaskId(reportTaskId)
-      return
-    }
-
-    if (reportTask.status === 'failed') {
-      setReportError(reportTask.error ?? '报告生成失败，请稍后重试。')
-      setReportState('error')
-      setHandledReportTaskId(reportTaskId)
-      return
-    }
-
-    if (reportTask.status === 'pending' || reportTask.status === 'running') {
-      setReportState('loading')
-    }
-  }, [
-    currentSessionId,
-    effectivePanelId,
-    handledReportTaskId,
-    message.answerGroupId,
-    reportTask,
-    reportTaskId,
-  ])
 
   const pinFeedbackVisible = memoryPinState !== 'idle'
   let pinButtonLabel = '固定到记忆'

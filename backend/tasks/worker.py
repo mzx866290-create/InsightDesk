@@ -26,9 +26,41 @@ from backend.tasks.settings import (
 )
 
 logger = logging.getLogger(__name__)
+NON_RETRYABLE_FAILURE_KINDS = {"timeout", "cancelled"}
 
 
-def _probe_task_store() -> SQLiteTaskStore:
+def _probe_task_store() -> Any:
+    """Return the provider-correct store for arq_e2e_probe bookkeeping.
+
+    PostgreSQL deployments must not silently touch a local SQLite file just to
+    track a health probe. Retention mirrors the main task store instead of the
+    previous hard-coded 50-record/1h window.
+    """
+    from backend.core.storage_runtime import (
+        DATABASE_PROVIDER_POSTGRES,
+        database_provider,
+    )
+    from backend.stores.factory import create_task_store
+
+    history_limit = 200
+    try:
+        history_limit = max(1, int(os.getenv("TASK_HISTORY_LIMIT", "200") or 200))
+    except ValueError:
+        history_limit = 200
+    ttl_seconds = 6 * 60 * 60
+    try:
+        ttl_seconds = max(
+            0, int(os.getenv("TASK_HISTORY_TTL_SECONDS", str(ttl_seconds)) or ttl_seconds)
+        )
+    except ValueError:
+        ttl_seconds = 6 * 60 * 60
+
+    if database_provider() == DATABASE_PROVIDER_POSTGRES:
+        return create_task_store(
+            history_limit=history_limit,
+            ttl_seconds=ttl_seconds,
+        )
+
     db_path = (
         os.getenv("APP_DB_PATH")
         or os.getenv("CHAT_HISTORY_DB_PATH")
@@ -36,8 +68,8 @@ def _probe_task_store() -> SQLiteTaskStore:
     )
     return SQLiteTaskStore(
         db_path=db_path,
-        history_limit=50,
-        ttl_seconds=3600,
+        history_limit=history_limit,
+        ttl_seconds=ttl_seconds,
         fail_incomplete_on_start=False,
     )
 
@@ -90,6 +122,17 @@ async def run_task_by_id(ctx, task_id: str) -> None:
     record = task_store.get(str(task_id))
     if record is None:
         raise ValueError(f"Task was not found: {task_id}")
+    persisted_failure_kind = str(
+        (record.params or {}).get("task_failure_kind") or ""
+    ).strip().lower()
+    if persisted_failure_kind in NON_RETRYABLE_FAILURE_KINDS:
+        logger.info(
+            "task_id=%s skipped non-retryable %s delivery job_try=%s",
+            task_id,
+            persisted_failure_kind,
+            job_try,
+        )
+        return
     if not arq_should_start_task_record(status=record.status, job_try=job_try):
         logger.info(
             "task_id=%s skipped duplicate arq delivery status=%s job_try=%s",
@@ -102,6 +145,18 @@ async def run_task_by_id(ctx, task_id: str) -> None:
     await api_server._run_task(record)
 
     latest_record = task_store.get(str(task_id)) or record
+    failure_kind = str(
+        (record.params or {}).get("task_failure_kind")
+        or (latest_record.params or {}).get("task_failure_kind")
+        or ""
+    ).strip().lower()
+    if failure_kind in NON_RETRYABLE_FAILURE_KINDS:
+        logger.info(
+            "task_id=%s will not be retried after %s",
+            task_id,
+            failure_kind,
+        )
+        return
     if not arq_should_retry_failed_task(
         status=latest_record.status,
         job_try=job_try,

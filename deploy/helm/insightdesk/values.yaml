@@ -10,7 +10,11 @@ fullnameOverride: ""
 
 service:
   type: ClusterIP
+  # NodePort/LoadBalancer require an explicit opt-in in the Service template.
+  allowExternal: false
   port: 8000
+  annotations: {}
+  loadBalancerSourceRanges: []
 
 config:
   reloadStrategy: rolloutOnConfigChange
@@ -25,17 +29,45 @@ config:
   vectorStorePath: /app/runtime/vector_store
   taskBackend: memory
   databaseProvider: sqlite
-  databaseUrl: postgresql://postgres:postgres@postgres:5432/insightdesk
   vectorStoreProvider: faiss
   qdrantUrl: http://qdrant:6333
   qdrantCollection: insightdesk_kb
   ollamaBaseUrl: http://ollama:11434
-  redisUrl: redis://redis:6379/0
+  arqRedisHost: redis
+  arqRedisPort: "6379"
+  arqRedisDatabase: "0"
   arqQueueName: insightdesk:tasks
   arqWorkerMaxJobs: "4"
   arqKeepResultSeconds: "3600"
+  arqCancelTimeoutSeconds: "5"
 
+# Import sensitive runtime values from a pre-created Kubernetes Secret. Secret
+# keys must match environment variable names, for example DATABASE_URL,
+# REDIS_URL, OPENAI_API_KEY, SHARE_LINK_SECRET, or OIDC_CLIENT_SECRET.
+secret:
+  existingSecret: ""
+  optional: false
+
+# Non-sensitive entries or individual secretKeyRef entries. Do not put raw
+# credentials in value fields because Helm values are stored in release history.
+# TASK_BACKEND, POD_NAME, and ARQ_WORKER_HEARTBEAT_KEY are chart-managed and
+# cannot be overridden here.
 env: []
+extraEnvFrom: []
+
+pod:
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+
+podSecurityContext:
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
 
 runtime:
   persistence:
@@ -62,7 +94,7 @@ api:
       mkdir -p /app/runtime/vector_store
       && touch /app/runtime/chat_history.db
       && ln -sf /app/runtime/chat_history.db /app/chat_history.db
-      && uvicorn backend.api_server:app --host 0.0.0.0 --port 8000
+      && exec uvicorn backend.api_server:app --host "${SERVER_HOST}" --port "${SERVER_PORT}"
   resources: {}
   livenessProbe:
     httpGet:
@@ -72,6 +104,13 @@ api:
     periodSeconds: 20
     timeoutSeconds: 5
     failureThreshold: 3
+  startupProbe:
+    httpGet:
+      path: /healthz
+      port: http
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 30
   readinessProbe:
     httpGet:
       path: /readyz
@@ -100,8 +139,30 @@ worker:
       mkdir -p /app/runtime/vector_store
       && touch /app/runtime/chat_history.db
       && ln -sf /app/runtime/chat_history.db /app/chat_history.db
-      && arq backend.tasks.worker.WorkerSettings
+      && exec arq backend.tasks.worker.WorkerSettings
   resources: {}
+  # Each Pod receives a unique ARQ heartbeat key. Startup/readiness check that
+  # Pod-specific heartbeat;
+  # liveness deliberately relies on the main process exit so a Redis outage
+  # does not trigger a worker restart storm.
+  startupProbe:
+    exec:
+      command:
+        - arq
+        - backend.tasks.worker.WorkerSettings
+        - --check
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 30
+  readinessProbe:
+    exec:
+      command:
+        - arq
+        - backend.tasks.worker.WorkerSettings
+        - --check
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
 
 autoscaling:
   enabled: false
@@ -119,7 +180,8 @@ networkPolicy:
     enabled: true
     ingress:
       - from:
-          - namespaceSelector: {}
+          # An empty podSelector matches only pods in this release namespace.
+          - podSelector: {}
         ports:
           - protocol: TCP
             port: 8000

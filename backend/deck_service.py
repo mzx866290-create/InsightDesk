@@ -17,82 +17,69 @@ from typing import Any, cast
 from langchain_core.documents import Document
 from pydantic import BaseModel, Field
 
+from backend.core.storage_runtime import app_database_path
+from backend.deck_common import (  # noqa: F401
+    _FALLBACK_SECTION_TITLES,
+    _FALLBACK_SLIDE_TITLES,
+    DECK_THEME_PALETTES,
+    _clean_text,
+    _coerce_chart_number,
+    _extract_qa_pairs,
+    _is_failed_answer,
+    _metadata_dict,
+    _normalize_chart_datasets,
+    _normalize_chart_labels,
+    _normalize_message_text,
+    _now_iso,
+    _stringify_llm_content,
+    _truncate,
+    _truncate_multiline,
+    ensure_deckable_chat,
+    extract_successful_qa_pairs,
+    normalize_deck_theme,
+)
 from backend.deck_models import (
     DeckBlock,
     DeckChartNormalizationReport,
-    DeckCitationValidation as DeckCitationValidation,
-    DeckCitationValidationIssue as DeckCitationValidationIssue,
-    DeckEvidenceCoverage as DeckEvidenceCoverage,
     DeckEvidenceRef,
     DeckGeneration,
     DeckMeta,
     DeckQualityState,
     DeckSlide,
-    DeckSlideEvidenceCoverage as DeckSlideEvidenceCoverage,
     DeckSlideStatus,
     DeckSourceItem,
     DeckSourceMode,
     DeckSpec,
     DeckThemeName,
     DeckWarning,
-    build_deck_evidence_coverage as build_deck_evidence_coverage,
     refresh_deck_evidence_coverage,
+)
+from backend.deck_models import (
+    DeckCitationValidation as DeckCitationValidation,
+)
+from backend.deck_models import (
+    DeckCitationValidationIssue as DeckCitationValidationIssue,
+)
+from backend.deck_models import (
+    DeckEvidenceCoverage as DeckEvidenceCoverage,
+)
+from backend.deck_models import (
+    DeckSlideEvidenceCoverage as DeckSlideEvidenceCoverage,
+)
+from backend.deck_models import (
+    build_deck_evidence_coverage as build_deck_evidence_coverage,
+)
+from backend.deck_models import (
     validate_deck_citation_consistency as validate_deck_citation_consistency,
 )
+from backend.doc_pipeline import DocPipeline
 from backend.services.agent_core import get_llm
 from backend.stores.sqlite_runtime import connect_sqlite
-from backend.core.storage_runtime import app_database_path
-from backend.doc_pipeline import DocPipeline
 
 _DASHBOARD_CARD_BLOCK_RE = re.compile(
     r":::dashboard-card\s*\n([\s\S]*?)\n:::",
     flags=re.IGNORECASE,
 )
-
-DECK_THEME_PALETTES: dict[str, dict[str, str]] = {
-    "default": {
-        "bg": "F6F8FC",
-        "surface": "FFFFFF",
-        "surface_alt": "EEF4FF",
-        "border": "D8E0EE",
-        "title": "162033",
-        "body": "2A3547",
-        "muted": "60708A",
-        "accent": "2563EB",
-        "accent_soft": "DBEAFE",
-        "success": "1F9D68",
-        "warning": "D97706",
-        "danger": "C2410C",
-    },
-    "midnight": {
-        "bg": "0F172A",
-        "surface": "111827",
-        "surface_alt": "1E293B",
-        "border": "334155",
-        "title": "F8FAFC",
-        "body": "E2E8F0",
-        "muted": "94A3B8",
-        "accent": "38BDF8",
-        "accent_soft": "082F49",
-        "success": "34D399",
-        "warning": "FBBF24",
-        "danger": "F87171",
-    },
-    "sunrise": {
-        "bg": "FFF7ED",
-        "surface": "FFFBF5",
-        "surface_alt": "FDE7D6",
-        "border": "F4C7A1",
-        "title": "7C2D12",
-        "body": "9A3412",
-        "muted": "C2410C",
-        "accent": "EA580C",
-        "accent_soft": "FED7AA",
-        "success": "2F855A",
-        "warning": "D97706",
-        "danger": "C2410C",
-    },
-}
 
 
 class OutlineSlidePlan(BaseModel):
@@ -143,82 +130,6 @@ class SourcePack:
     warnings: list[DeckWarning]
 
 
-_FALLBACK_SECTION_TITLES = ["Topic Overview", "Key Findings", "Recommendations"]
-_FALLBACK_SLIDE_TITLES = [
-    "Topic overview and core conclusion",
-    "鍏抽敭淇℃伅鎷嗚В",
-    "Use cases and action recommendations",
-    "Follow-up priorities and risk notes",
-    "琛ュ厖瑙傚療",
-]
-
-
-def _now_iso() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%S%z")
-
-
-def _clean_text(text: Any) -> str:
-    return " ".join(str(text).strip().split())
-
-
-def _metadata_dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def normalize_deck_theme(theme: Any) -> DeckThemeName:
-    raw = _clean_text(theme).lower().replace("-", "_").replace(" ", "_")
-    aliases: dict[str, DeckThemeName] = {
-        "": "default",
-        "default": "default",
-        "classic": "default",
-        "midnight": "midnight",
-        "night": "midnight",
-        "dark": "midnight",
-        "sunrise": "sunrise",
-        "warm": "sunrise",
-    }
-    return aliases.get(raw, "default")
-
-
-def _truncate(text: str, limit: int) -> str:
-    cleaned = _clean_text(text)
-    if len(cleaned) <= limit:
-        return cleaned
-    return cleaned[: limit - 1].rstrip() + "..."
-
-
-def _truncate_multiline(text: Any, limit: int) -> str:
-    normalized = str(text).replace("\r\n", "\n").replace("\r", "\n").strip()
-    if len(normalized) <= limit:
-        return normalized
-    return normalized[: limit - 1].rstrip() + "..."
-
-
-def _stringify_llm_content(content: Any) -> str:
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict):
-                text = item.get("text")
-                if text:
-                    parts.append(str(text))
-            else:
-                parts.append(str(item))
-        return "\n".join(parts).strip()
-    return str(content).strip()
-
-
-def _normalize_message_text(content: Any) -> str:
-    return (
-        _stringify_llm_content(content)
-        .replace("\r\n", "\n")
-        .replace("\r", "\n")
-        .strip()
-    )
-
-
 def _strip_dashboard_card_blocks(text: Any) -> str:
     normalized = _normalize_message_text(text)
     if not normalized:
@@ -245,64 +156,6 @@ def _extract_dashboard_card_payloads(text: Any) -> list[dict[str, Any]]:
         if isinstance(payload, dict):
             payloads.append(payload)
     return payloads
-
-
-def _coerce_chart_number(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return float(value)
-    if isinstance(value, (int, float)):
-        return float(value)
-    cleaned = _clean_text(value).replace(",", "")
-    if not cleaned:
-        return None
-    try:
-        return float(cleaned)
-    except ValueError:
-        return None
-
-
-def _normalize_chart_labels(values: Any) -> list[str]:
-    if not isinstance(values, list):
-        return []
-    labels: list[str] = []
-    for index, value in enumerate(values, start=1):
-        cleaned = _clean_text(value)
-        labels.append(cleaned or f"绫诲埆 {index}")
-    return labels
-
-
-def _normalize_chart_datasets(values: Any, label_count: int) -> list[dict[str, Any]]:
-    if not isinstance(values, list):
-        return []
-
-    datasets: list[dict[str, Any]] = []
-    for dataset_index, value in enumerate(values, start=1):
-        if not isinstance(value, dict):
-            continue
-
-        raw_points = value.get("data")
-        if not isinstance(raw_points, list):
-            continue
-
-        clean_points = [_coerce_chart_number(item) for item in raw_points]
-        if not any(item is not None for item in clean_points):
-            continue
-
-        target_size = label_count or len(clean_points)
-        normalized_points = [
-            _coerce_chart_number(item) or 0.0 for item in raw_points[:target_size]
-        ]
-        if len(normalized_points) < target_size:
-            normalized_points.extend([0.0] * (target_size - len(normalized_points)))
-
-        label = _clean_text(value.get("label")) or f"绯诲垪 {dataset_index}"
-        datasets.append(
-            {
-                "label": label,
-                "data": normalized_points,
-            }
-        )
-    return datasets
 
 
 def _chart_summary_from_answer(answer: Any) -> str:
@@ -495,56 +348,6 @@ def _extract_dashboard_chart_blocks(answer: Any, limit: int = 1) -> list[DeckBlo
                 return blocks
     return blocks
 
-
-def _extract_qa_pairs(messages: list[Any]) -> list[tuple[str, str]]:
-    pairs: list[tuple[str, str]] = []
-    pending_question = ""
-    for message in messages:
-        role = getattr(message, "__class__", type(message)).__name__
-        content = _normalize_message_text(getattr(message, "content", ""))
-        if not content:
-            continue
-        if role == "HumanMessage":
-            pending_question = _clean_text(content)
-            continue
-        if role == "AIMessage" and pending_question:
-            pairs.append((pending_question, content))
-            pending_question = ""
-    return pairs
-
-
-def _is_failed_answer(answer: str) -> bool:
-    normalized = answer.strip().lower()
-    if not normalized:
-        return True
-    failure_markers = (
-        "agent stopped due to max iterations",
-        "agent stopped due to iteration limit",
-        "鐢熸垚鍥炵瓟澶辫触",
-        "鏃犳硶瀹屾垚浠诲姟",
-        "request processing error",
-        "妯″瀷宸ュ叿璋冪敤娆℃暟瓒呴檺",
-        "internal_error",
-    )
-    return any(marker in normalized for marker in failure_markers)
-
-
-def extract_successful_qa_pairs(messages: list[Any]) -> list[tuple[str, str]]:
-    return [
-        (question, answer)
-        for question, answer in _extract_qa_pairs(messages)
-        if not _is_failed_answer(answer)
-    ]
-
-
-def ensure_deckable_chat(messages: list[Any]) -> list[tuple[str, str]]:
-    raw_pairs = _extract_qa_pairs(messages)
-    qa_pairs = extract_successful_qa_pairs(messages)
-    if qa_pairs:
-        return qa_pairs
-    if raw_pairs:
-        raise ValueError("The latest chat answers are failed results and cannot be converted into a deck.")
-    raise ValueError("This session has no successful Q&A content for deck generation.")
 
 
 def _extract_json_payload(text: str) -> dict[str, Any]:

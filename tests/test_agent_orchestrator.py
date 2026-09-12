@@ -7,6 +7,7 @@ import pytest
 from backend.agent import (
     AgentRegistry,
     DataAnalysisAgent,
+    DataAnalysisAgentConfig,
     ModelCompareAgent,
     ReviewAgent,
     StaticAgent,
@@ -63,6 +64,27 @@ class FailingResearchAgent:
 
     async def execute(self, task, context):
         raise RuntimeError("simulated research failure")
+
+
+class TimeoutResearchAgent(FailingResearchAgent):
+    async def execute(self, task, context):
+        raise TimeoutError("simulated research timeout")
+
+
+class FailedResultResearchAgent(FailingResearchAgent):
+    async def execute(self, task, context):
+        del context
+        return {
+            "agent": self.name,
+            "task_id": str(task.get("id") or ""),
+            "task_type": str(task.get("type") or ""),
+            "status": "failed",
+            "output": "Research failed cleanly.",
+            "artifacts": [],
+            "sources": [],
+            "error": "research result failure",
+            "metadata": {},
+        }
 
 
 class WorkflowProbeAgent:
@@ -384,6 +406,30 @@ def test_orchestrator_records_failed_agent_metric():
     assert metric["span_id"]
     assert state["agent_cost_summary"]["failed_count"] == 1
     assert state["agent_cost_summary"]["agents"]["research"]["failed_count"] == 1
+
+
+def test_orchestrator_preserves_timeout_failure_kind():
+    registry = AgentRegistry()
+    registry.register(TimeoutResearchAgent())
+
+    state = asyncio.run(run_orchestrator("research timeout handling", registry=registry))
+
+    assert state["status"] == "failed"
+    assert state["failure_kind"] == "timeout"
+    assert state["errors"] == ["simulated research timeout"]
+
+
+def test_orchestrator_treats_failed_agent_result_as_failed_step():
+    registry = AgentRegistry()
+    registry.register(FailedResultResearchAgent())
+
+    state = asyncio.run(run_orchestrator("research result failure", registry=registry))
+
+    assert state["status"] == "failed"
+    assert state["plan"][0]["status"] == "failed"
+    assert state["errors"] == ["research result failure"]
+    assert state["agent_metrics"]["step-1"]["status"] == "failed"
+    assert "step-1" not in state["agent_results"]
 
 
 def test_orchestrator_runs_parallel_group_before_downstream_step():
@@ -1152,9 +1198,16 @@ def test_data_analysis_agent_loads_csv_file_path(tmp_path):
     csv_path = tmp_path / "revenue.csv"
     csv_path.write_text("region,revenue,orders\nNorth,120,4\nSouth,180,6\n", encoding="utf-8")
 
+    registry = create_default_agent_registry(
+        data_analysis_agent=DataAnalysisAgent(
+            config=DataAnalysisAgentConfig(allowed_file_roots=(tmp_path,))
+        )
+    )
+
     state = asyncio.run(
         run_orchestrator(
             "analyze uploaded CSV revenue data",
+            registry=registry,
             plan=[
                 {
                     "id": "step-1",
@@ -1187,9 +1240,16 @@ def test_data_analysis_agent_loads_json_file_path_from_task_input(tmp_path):
         encoding="utf-8",
     )
 
+    registry = create_default_agent_registry(
+        data_analysis_agent=DataAnalysisAgent(
+            config=DataAnalysisAgentConfig(allowed_file_roots=(tmp_path,))
+        )
+    )
+
     state = asyncio.run(
         run_orchestrator(
             "analyze JSON revenue data",
+            registry=registry,
             plan=[
                 {
                     "id": "step-1",

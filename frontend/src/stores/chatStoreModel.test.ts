@@ -1469,6 +1469,7 @@ describe('chatStoreModel', () => {
           updatedAt: 2,
         },
       ],
+      providerConfigs: [],
       panels: [
         {
           id: 'panel-1',

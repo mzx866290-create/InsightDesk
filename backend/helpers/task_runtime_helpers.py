@@ -23,6 +23,10 @@ from backend.tasks.settings import (
     normalize_task_backend as normalize_task_backend,
 )
 
+TASK_DISPATCH_FAILURE_MESSAGE = (
+    "Task dispatch failed before the worker accepted it. Check queue and worker health, then retry."
+)
+
 
 def task_record_payload(
     record: TaskRecord,
@@ -129,13 +133,37 @@ async def enqueue_task(
         except Exception:
             logger.exception("task_id=%s on_record_created callback failed", task_id)
 
-    backend = await dispatch_task_record(
-        record,
-        task_backend=task_backend,
-        run_task=run_task,
-        spawn_background_task=spawn_background_task,
-        enqueue_external_task=enqueue_external_task,
-    )
+    try:
+        backend = await dispatch_task_record(
+            record,
+            task_backend=task_backend,
+            run_task=run_task,
+            spawn_background_task=spawn_background_task,
+            enqueue_external_task=enqueue_external_task,
+        )
+    except Exception:
+        # The record was persisted before dispatch. Move it to a terminal state
+        # so a Redis/ARQ outage cannot leave a permanent pending task behind.
+        async with tasks_lock:
+            record.status = TaskStatus.FAILED
+            record.updated_at = time.time()
+            record.error = TASK_DISPATCH_FAILURE_MESSAGE
+            record.progress = 0
+            tasks[task_id] = record
+        try:
+            persist_record(record)
+        except Exception:
+            logger.exception(
+                "task_id=%s task_type=%s failed to persist dispatch failure",
+                task_id,
+                task_type,
+            )
+        logger.exception(
+            "task_id=%s task_type=%s dispatch failed",
+            task_id,
+            task_type,
+        )
+        raise
     logger.info(
         "task_id=%s task_type=%s dispatched backend=%s",
         task_id,

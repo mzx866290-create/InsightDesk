@@ -17,10 +17,28 @@ RESTART_FAILURE_MESSAGE = "服务已重启，任务未能继续执行，请重�
 _DISABLED_ENV_VALUES = {"0", "false", "off", "no", "disabled"}
 
 
-def _fail_incomplete_on_start_from_env(default: bool = True) -> bool:
+def _task_backend_fail_incomplete_default() -> bool:
+    """In-memory backends have no worker that could resume tasks after a restart.
+
+    ARQ deployments hand task ownership to the worker process, so an API restart
+    must not race the worker by failing queued or in-flight records.
+    """
+    try:
+        from backend.tasks.settings import task_backend_from_env
+
+        return task_backend_from_env() == "memory"
+    except Exception:
+        return True
+
+
+def _fail_incomplete_on_start_from_env(default: bool | None = None) -> bool:
     raw = os.getenv("TASK_STORE_FAIL_INCOMPLETE_ON_START")
     if raw is None:
-        return default
+        return (
+            _task_backend_fail_incomplete_default()
+            if default is None
+            else bool(default)
+        )
     return str(raw).strip().lower() not in _DISABLED_ENV_VALUES
 
 

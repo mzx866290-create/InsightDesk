@@ -57,6 +57,11 @@ const securityStatusPayload: SecurityStatusResponse = {
     max_total_chars: 24000,
     preview_chars: 4000,
   },
+  chat_image_limits: {
+    max_count: 4,
+    max_bytes: 10485760,
+    max_total_bytes: 20971520,
+  },
   document_upload_limits: {
     max_count: 12,
     max_file_bytes: 52428800,

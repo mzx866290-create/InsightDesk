@@ -75,4 +75,5 @@ class OrchestratorState(TypedDict, total=False):
     approval_step_id: str
     approval_decision: ApprovalDecision
     errors: list[str]
+    failure_kind: str
     status: OrchestratorStatus

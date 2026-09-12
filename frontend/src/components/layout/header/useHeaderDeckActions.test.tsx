@@ -76,6 +76,7 @@ describe('useHeaderDeckActions', () => {
         stopPolling: vi.fn(),
         getTask: (taskId) => tasks[taskId],
         syncRecentTasks: vi.fn(),
+        cancelTask: vi.fn(),
       }),
     )
   })

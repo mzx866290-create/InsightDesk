@@ -1,11 +1,8 @@
-import React from 'react'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import React from 'react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  TraceOperationsFilters,
-  type TraceOperationsFiltersProps,
-} from './TraceOperationsFilters'
+import { TraceOperationsFilters, type TraceOperationsFiltersProps } from './TraceOperationsFilters';
 
 vi.mock('../ui/Button', () => ({
   Button: ({
@@ -16,17 +13,19 @@ vi.mock('../ui/Button', () => ({
     size: _size,
     ...props
   }: React.ButtonHTMLAttributes<HTMLButtonElement> & {
-    loading?: boolean
-    variant?: string
-    size?: string
+    loading?: boolean;
+    variant?: string;
+    size?: string;
   }) => (
     <button {...props} disabled={disabled || loading} data-loading={loading ? 'true' : 'false'}>
       {children}
     </button>
   ),
-}))
+}));
 
-function createProps(overrides: Partial<TraceOperationsFiltersProps> = {}): TraceOperationsFiltersProps {
+function createProps(
+  overrides: Partial<TraceOperationsFiltersProps> = {}
+): TraceOperationsFiltersProps {
   return {
     eventFilter: '',
     nameFilter: '',
@@ -41,14 +40,14 @@ function createProps(overrides: Partial<TraceOperationsFiltersProps> = {}): Trac
     onApplyFilters: vi.fn(),
     onResetFilters: vi.fn(),
     ...overrides,
-  }
+  };
 }
 
 describe('TraceOperationsFilters', () => {
   afterEach(() => {
-    cleanup()
-    vi.clearAllMocks()
-  })
+    cleanup();
+    vi.clearAllMocks();
+  });
 
   it('preserves filter test ids and displays controlled values', () => {
     render(
@@ -60,68 +59,71 @@ describe('TraceOperationsFilters', () => {
           spanIdFilter: 'span-456',
           canResetFilters: true,
         })}
-      />,
-    )
+      />
+    );
 
-    expect(screen.getByTestId('settings-trace-filter-event')).toHaveValue('error')
-    expect(screen.getByTestId('settings-trace-filter-name')).toHaveValue('fetch-users')
-    expect(screen.getByTestId('settings-trace-filter-trace-id')).toHaveValue('trace-123')
-    expect(screen.getByTestId('settings-trace-filter-span-id')).toHaveValue('span-456')
-    expect(screen.getByTestId('settings-trace-apply-filters')).toBeEnabled()
-    expect(screen.getByTestId('settings-trace-reset-filters')).toBeEnabled()
-  })
+    expect(screen.getByTestId('settings-trace-filter-event')).toHaveValue('error');
+    expect(screen.getByTestId('settings-trace-filter-name')).toHaveValue('fetch-users');
+    expect(screen.getByTestId('settings-trace-filter-trace-id')).toHaveValue('trace-123');
+    expect(screen.getByTestId('settings-trace-filter-span-id')).toHaveValue('span-456');
+    expect(screen.getByTestId('settings-trace-apply-filters')).toBeEnabled();
+    expect(screen.getByTestId('settings-trace-reset-filters')).toBeEnabled();
+    expect(screen.getByTestId('settings-trace-filter-event')).toHaveClass('min-h-11');
+    expect(screen.getByTestId('settings-trace-filter-name')).toHaveClass('min-h-11');
+    expect(screen.getByTestId('settings-trace-apply-filters')).toHaveClass('min-h-11');
+  });
 
   it('forwards filter field changes', () => {
-    const props = createProps()
+    const props = createProps();
 
-    render(<TraceOperationsFilters {...props} />)
+    render(<TraceOperationsFilters {...props} />);
 
     fireEvent.change(screen.getByTestId('settings-trace-filter-event'), {
       target: { value: 'start' },
-    })
+    });
     fireEvent.change(screen.getByTestId('settings-trace-filter-name'), {
       target: { value: 'span-name' },
-    })
+    });
     fireEvent.change(screen.getByTestId('settings-trace-filter-trace-id'), {
       target: { value: 'trace-id' },
-    })
+    });
     fireEvent.change(screen.getByTestId('settings-trace-filter-span-id'), {
       target: { value: 'span-id' },
-    })
+    });
 
-    expect(props.onEventFilterChange).toHaveBeenCalledWith('start')
-    expect(props.onNameFilterChange).toHaveBeenCalledWith('span-name')
-    expect(props.onTraceIdFilterChange).toHaveBeenCalledWith('trace-id')
-    expect(props.onSpanIdFilterChange).toHaveBeenCalledWith('span-id')
-  })
+    expect(props.onEventFilterChange).toHaveBeenCalledWith('start');
+    expect(props.onNameFilterChange).toHaveBeenCalledWith('span-name');
+    expect(props.onTraceIdFilterChange).toHaveBeenCalledWith('trace-id');
+    expect(props.onSpanIdFilterChange).toHaveBeenCalledWith('span-id');
+  });
 
   it('applies filters from the apply button and Enter key', () => {
-    const props = createProps()
+    const props = createProps();
 
-    render(<TraceOperationsFilters {...props} />)
+    render(<TraceOperationsFilters {...props} />);
 
-    fireEvent.click(screen.getByTestId('settings-trace-apply-filters'))
-    fireEvent.keyDown(screen.getByTestId('settings-trace-filter-name'), { key: 'Enter' })
-    fireEvent.keyDown(screen.getByTestId('settings-trace-filter-trace-id'), { key: 'Enter' })
-    fireEvent.keyDown(screen.getByTestId('settings-trace-filter-span-id'), { key: 'Enter' })
-    fireEvent.keyDown(screen.getByTestId('settings-trace-filter-name'), { key: 'Escape' })
+    fireEvent.click(screen.getByTestId('settings-trace-apply-filters'));
+    fireEvent.keyDown(screen.getByTestId('settings-trace-filter-name'), { key: 'Enter' });
+    fireEvent.keyDown(screen.getByTestId('settings-trace-filter-trace-id'), { key: 'Enter' });
+    fireEvent.keyDown(screen.getByTestId('settings-trace-filter-span-id'), { key: 'Enter' });
+    fireEvent.keyDown(screen.getByTestId('settings-trace-filter-name'), { key: 'Escape' });
 
-    expect(props.onApplyFilters).toHaveBeenCalledTimes(4)
-  })
+    expect(props.onApplyFilters).toHaveBeenCalledTimes(4);
+  });
 
   it('keeps reset disabled until filters can reset and disables apply while loading', () => {
-    const props = createProps({ loading: true, canResetFilters: false })
-    const { rerender } = render(<TraceOperationsFilters {...props} />)
+    const props = createProps({ loading: true, canResetFilters: false });
+    const { rerender } = render(<TraceOperationsFilters {...props} />);
 
-    expect(screen.getByTestId('settings-trace-apply-filters')).toBeDisabled()
-    expect(screen.getByTestId('settings-trace-reset-filters')).toBeDisabled()
+    expect(screen.getByTestId('settings-trace-apply-filters')).toBeDisabled();
+    expect(screen.getByTestId('settings-trace-reset-filters')).toBeDisabled();
 
-    const activeProps = createProps({ canResetFilters: true })
-    rerender(<TraceOperationsFilters {...activeProps} />)
+    const activeProps = createProps({ canResetFilters: true });
+    rerender(<TraceOperationsFilters {...activeProps} />);
 
-    fireEvent.click(screen.getByTestId('settings-trace-reset-filters'))
+    fireEvent.click(screen.getByTestId('settings-trace-reset-filters'));
 
-    expect(screen.getByTestId('settings-trace-reset-filters')).toBeEnabled()
-    expect(activeProps.onResetFilters).toHaveBeenCalledTimes(1)
-  })
-})
+    expect(screen.getByTestId('settings-trace-reset-filters')).toBeEnabled();
+    expect(activeProps.onResetFilters).toHaveBeenCalledTimes(1);
+  });
+});

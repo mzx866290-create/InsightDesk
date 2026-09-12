@@ -1,7 +1,6 @@
 import React, { useRef } from 'react'
 import {
   Download,
-  Eraser,
   Eye,
   EyeOff,
   Search,
@@ -29,13 +28,10 @@ interface ChatPanelHeaderProps {
   searchOpen: boolean
   searchQuery: string
   matchedCount: number
-  confirmClear: boolean
-  clearing: boolean
   onRemovePanel: () => void
   onToggleWorkflowVisible: () => void
   onToggleSearch: () => void
   onSearchQueryChange: (q: string) => void
-  onClearContext: () => void
   onExport: () => void
 }
 
@@ -63,13 +59,10 @@ export const ChatPanelHeader: React.FC<ChatPanelHeaderProps> = ({
   searchOpen,
   searchQuery,
   matchedCount,
-  confirmClear,
-  clearing,
   onRemovePanel,
   onToggleWorkflowVisible,
   onToggleSearch,
   onSearchQueryChange,
-  onClearContext,
   onExport,
 }) => {
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -154,30 +147,9 @@ export const ChatPanelHeader: React.FC<ChatPanelHeaderProps> = ({
               type="button"
               onClick={onExport}
               className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-text-secondary transition-colors hover:bg-bg-hover hover:text-text-primary"
-              title="导出对话（Markdown）"
+              title="导出当前面板（Markdown）"
             >
               <Download size={11} />
-            </button>
-          )}
-
-          {(panel.messages as PanelMessage[]).length > 0 && (
-            <button
-              type="button"
-              onClick={onClearContext}
-              disabled={clearing || isInteractionLocked}
-              className={`flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] transition-colors ${
-                confirmClear
-                  ? 'bg-accent-red/20 text-accent-red'
-                  : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
-              }`}
-              title={confirmClear ? '再次点击确认清除' : '清除上下文'}
-            >
-              {clearing ? (
-                <span className="block h-3 w-3 animate-spin rounded-full border border-current border-t-transparent" />
-              ) : (
-                <Eraser size={11} />
-              )}
-              {confirmClear ? '确认清除' : '清除'}
             </button>
           )}
         </div>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -27,6 +28,8 @@ from .types import (
 logger = logging.getLogger(__name__)
 
 ResearchFindingStatus = Literal["verified", "partial", "unverified"]
+DEFAULT_RESEARCH_LLM_TIMEOUT_SECONDS = 120.0
+DEFAULT_RESEARCH_KNOWLEDGE_TIMEOUT_SECONDS = 30.0
 
 TIME_SENSITIVE_TERMS = (
     "latest",
@@ -629,14 +632,26 @@ def _workflow_node(
     return node
 
 
-def _knowledge_context_text(
+async def _knowledge_context_text(
     query: str,
     knowledge_search: Callable[[str], Sequence[SearchDocument]] | None,
+    *,
+    timeout_seconds: float = DEFAULT_RESEARCH_KNOWLEDGE_TIMEOUT_SECONDS,
 ) -> str:
     if not callable(knowledge_search):
         return ""
     try:
-        docs = list(knowledge_search(query))
+        docs = await asyncio.wait_for(
+            asyncio.to_thread(lambda: list(knowledge_search(query))),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError:
+        logger.warning(
+            "knowledge_search timed out after %ss query=%s",
+            timeout_seconds,
+            query,
+        )
+        return ""
     except Exception:
         logger.exception("knowledge_search failed query=%s", query)
         return ""
@@ -966,6 +981,7 @@ async def run_deep_research(
     source_strategy: str | None = "web_only",
     knowledge_search: Callable[[str], Sequence[SearchDocument]] | None = None,
     max_fetch_pages: int = 3,
+    llm_timeout_seconds: float = DEFAULT_RESEARCH_LLM_TIMEOUT_SECONDS,
 ) -> WebResearchResult:
     if llm is None:
         raise ValueError("run_deep_research requires an llm instance.")
@@ -986,8 +1002,23 @@ async def run_deep_research(
         template_prompt_hint = str(template_match.get("prompt_hint") or "").strip()
     generic_facets = _generic_facets_for_intent(intent, resolved_source_strategy)
 
+    try:
+        resolved_llm_timeout_seconds = float(llm_timeout_seconds)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("llm_timeout_seconds must be a positive number.") from exc
+    if resolved_llm_timeout_seconds <= 0:
+        raise ValueError("llm_timeout_seconds must be a positive number.")
+
     async def invoke_json_prompt(prompt: str) -> tuple[str, Any | None]:
-        response = await llm.ainvoke(prompt)
+        try:
+            response = await asyncio.wait_for(
+                llm.ainvoke(prompt),
+                timeout=resolved_llm_timeout_seconds,
+            )
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f"Research LLM step timed out after {resolved_llm_timeout_seconds:g} seconds."
+            ) from exc
         text = _response_text(response)
         return text, _extract_json_payload(text)
 
@@ -1122,7 +1153,7 @@ Generic fallback facets: {json.dumps(generic_facets, ensure_ascii=False)}
         highlights=[doc.snippet for doc in deduped_round_one_sources[:3] if doc.snippet],
     )
 
-    knowledge_context = _knowledge_context_text(query, knowledge_search)
+    knowledge_context = await _knowledge_context_text(query, knowledge_search)
     analysis_started = int(time.time() * 1000)
     analysis_prompt = f"""
 You are a research analyst.

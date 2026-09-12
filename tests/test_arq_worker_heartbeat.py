@@ -14,6 +14,7 @@ from backend.tasks.registry import (
     DEFAULT_ARQ_WORKER_HEARTBEAT_KEY,
     DEFAULT_ARQ_WORKER_HEARTBEAT_SECONDS,
     DEFAULT_ARQ_WORKER_DRAIN_SECONDS,
+    arq_cancel_timeout_from_env,
     arq_pending_stale_seconds_from_env,
     arq_queue_health_payload,
     arq_queue_warning_length_from_env,
@@ -46,6 +47,18 @@ def test_arq_worker_heartbeat_uses_generated_defaults(monkeypatch):
 
     assert DEFAULT_ARQ_WORKER_HEARTBEAT_KEY == "insightdesk:tasks:worker:heartbeat"
     assert DEFAULT_ARQ_WORKER_HEARTBEAT_SECONDS == 30
+
+
+def test_arq_cancel_timeout_uses_default_override_and_validation(monkeypatch):
+    monkeypatch.delenv("ARQ_CANCEL_TIMEOUT_SECONDS", raising=False)
+    assert arq_cancel_timeout_from_env() == 5
+
+    monkeypatch.setenv("ARQ_CANCEL_TIMEOUT_SECONDS", "9")
+    assert arq_cancel_timeout_from_env() == 9
+
+    monkeypatch.setenv("ARQ_CANCEL_TIMEOUT_SECONDS", "0")
+    with pytest.raises(ValueError, match="positive integer"):
+        arq_cancel_timeout_from_env()
     assert build_arq_worker_heartbeat_key("custom:tasks") == "custom:tasks:worker:heartbeat"
     assert arq_worker_heartbeat_key_from_env() == "insightdesk:tasks:worker:heartbeat"
     assert arq_worker_heartbeat_seconds_from_env() == 30
@@ -241,6 +254,7 @@ def test_arq_retry_and_drain_config_reject_invalid_values(monkeypatch):
 
 def test_arq_runtime_config_payload_exposes_retry_heartbeat_and_drain(monkeypatch):
     monkeypatch.setenv("ARQ_QUEUE_NAME", "ops:tasks")
+    monkeypatch.setenv("ARQ_JOB_TIMEOUT_SECONDS", "700")
     monkeypatch.setenv("ARQ_RETRY_ATTEMPTS", "4")
     monkeypatch.setenv("ARQ_RETRY_BACKOFF_SECONDS", "20")
     monkeypatch.setenv("ARQ_WORKER_DRAIN_SECONDS", "45")
@@ -265,19 +279,25 @@ def test_arq_runtime_config_payload_exposes_retry_heartbeat_and_drain(monkeypatc
         "expected_ttl_seconds": 11,
     }
     assert payload["worker"]["drain"]["job_completion_wait_seconds"] == 45
+    assert payload["worker"]["job_timeout_seconds"] == 700
+    assert payload["worker"]["allow_abort_jobs"] is True
+    assert payload["worker"]["cancel_timeout_seconds"] == 5
 
 
 def test_arq_worker_runtime_settings_expose_startup_semantics(monkeypatch):
     monkeypatch.setenv("ARQ_WORKER_MAX_JOBS", "6")
     monkeypatch.setenv("ARQ_KEEP_RESULT_SECONDS", "120")
+    monkeypatch.setenv("ARQ_JOB_TIMEOUT_SECONDS", "700")
     monkeypatch.setenv("ARQ_RETRY_ATTEMPTS", "4")
     monkeypatch.setenv("ARQ_WORKER_DRAIN_SECONDS", "18")
     monkeypatch.setenv("ARQ_WORKER_HEARTBEAT_SECONDS", "9")
     monkeypatch.delenv("ARQ_WORKER_HEARTBEAT_KEY", raising=False)
 
     assert arq_worker_runtime_settings_from_env(queue_name="ops:tasks") == {
+        "allow_abort_jobs": True,
         "max_jobs": 6,
         "keep_result": 120,
+        "job_timeout": 700,
         "max_tries": 4,
         "retry_jobs": True,
         "job_completion_wait": 18,
@@ -379,6 +399,7 @@ def test_worker_settings_exposes_arq_health_check_settings(monkeypatch):
     monkeypatch.setenv("ARQ_WORKER_HEARTBEAT_SECONDS", "12")
     monkeypatch.setenv("ARQ_PENDING_STALE_SECONDS", "90")
     monkeypatch.setenv("ARQ_RUNNING_STALE_SECONDS", "900")
+    monkeypatch.setenv("ARQ_JOB_TIMEOUT_SECONDS", "720")
     monkeypatch.setenv("ARQ_RETRY_ATTEMPTS", "5")
     monkeypatch.setenv("ARQ_WORKER_DRAIN_SECONDS", "21")
 
@@ -386,8 +407,10 @@ def test_worker_settings_exposes_arq_health_check_settings(monkeypatch):
     try:
         worker = importlib.import_module("backend.tasks.worker")
         assert worker.WorkerSettings.queue_name == "ops:tasks"
+        assert worker.WorkerSettings.allow_abort_jobs is True
         assert worker.WorkerSettings.max_tries == 5
         assert worker.WorkerSettings.retry_jobs is True
+        assert worker.WorkerSettings.job_timeout == 720
         assert worker.WorkerSettings.job_completion_wait == 21
         assert worker.WorkerSettings.health_check_key == "ops:tasks:heartbeat"
         assert worker.WorkerSettings.health_check_interval == 12
@@ -503,6 +526,59 @@ def test_run_task_by_id_skips_completed_duplicate_delivery(monkeypatch):
     try:
         worker = importlib.import_module("backend.tasks.worker")
         asyncio.run(worker.run_task_by_id({"job_try": 1}, "task-1"))
+        assert run_calls == []
+    finally:
+        sys.modules.pop("backend.tasks.worker", None)
+        if previous_worker_module is not None:
+            sys.modules["backend.tasks.worker"] = previous_worker_module
+        sys.modules.pop("backend.api_server", None)
+        if previous_api_server_module is not None:
+            sys.modules["backend.api_server"] = previous_api_server_module
+
+
+def test_run_task_by_id_skips_non_retryable_timeout_delivery(monkeypatch):
+    fake_arq = types.ModuleType("arq")
+    fake_connections = types.ModuleType("arq.connections")
+
+    class FakeRedisSettings:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_connections.RedisSettings = FakeRedisSettings
+    fake_arq.connections = fake_connections
+    monkeypatch.setitem(sys.modules, "arq", fake_arq)
+    monkeypatch.setitem(sys.modules, "arq.connections", fake_connections)
+
+    record = TaskRecord(
+        task_id="task-timeout",
+        task_type="web_research",
+        status=TaskStatus.FAILED,
+        params={"task_failure_kind": "timeout"},
+        session_id="session-1",
+        created_at=1.0,
+        updated_at=1.0,
+    )
+    run_calls: list[str] = []
+
+    class FakeTaskStore:
+        def get(self, task_id):
+            assert task_id == "task-timeout"
+            return record
+
+    fake_api_server = types.ModuleType("backend.api_server")
+    fake_api_server._get_task_store = lambda: FakeTaskStore()
+
+    async def fake_run_task(task_record):
+        run_calls.append(task_record.task_id)
+
+    fake_api_server._run_task = fake_run_task
+    previous_api_server_module = sys.modules.get("backend.api_server")
+    monkeypatch.setitem(sys.modules, "backend.api_server", fake_api_server)
+
+    previous_worker_module = sys.modules.pop("backend.tasks.worker", None)
+    try:
+        worker = importlib.import_module("backend.tasks.worker")
+        asyncio.run(worker.run_task_by_id({"job_try": 2}, "task-timeout"))
         assert run_calls == []
     finally:
         sys.modules.pop("backend.tasks.worker", None)

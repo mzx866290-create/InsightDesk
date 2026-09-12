@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Callable, TypeVar
+from collections.abc import Callable
+from typing import Any, TypeVar
 
+from backend.core.outbound_http import base_urls_match
 
 TModelConfig = TypeVar("TModelConfig")
 
@@ -41,12 +43,27 @@ def normalize_model_config(
     )
     data["connection_type"] = connection_type
     data["provider"] = connection_type
-    data["base_url"] = str(
-        data.get("base_url") or default_base_url_for_connection_type(connection_type)
-    ).strip()
+    requested_base_url = str(data.get("base_url") or "").strip()
+    trusted_base_url = str(default_base_url_for_connection_type(connection_type) or "").strip()
+    data["base_url"] = requested_base_url or trusted_base_url
     data["model"] = str(
         data.get("model") or default_model_for_connection_type(connection_type)
     ).strip()
     data["api_key"] = str(data.get("api_key") or "").strip()
     data["api_key_ref"] = str(data.get("api_key_ref") or "").strip()
+
+    # Custom endpoints require either a key supplied in the same request or a
+    # persisted key ref. Ref-to-endpoint binding is enforced when the secret is
+    # resolved, before it can reach the provider client.
+    if (
+        connection_type == "openai_compatible"
+        and requested_base_url
+        and not data["api_key"]
+        and not data["api_key_ref"]
+        and not base_urls_match(requested_base_url, trusted_base_url)
+    ):
+        raise ValueError(
+            "Custom OpenAI-compatible base_url requires an explicit api_key "
+            "or a bound api_key_ref."
+        )
     return model_config_cls(**data)

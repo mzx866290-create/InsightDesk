@@ -30,8 +30,14 @@ def upsert_cloud_model_api_key(
     store_getter: Callable[[], Any],
     api_key_ref: str | None,
     api_key: str,
+    base_url: str,
 ) -> str:
-    return upsert_cloud_model_api_key_impl(store_getter(), api_key_ref, api_key)
+    return upsert_cloud_model_api_key_impl(
+        store_getter(),
+        api_key_ref,
+        api_key,
+        base_url,
+    )
 
 
 def delete_cloud_model_api_key(

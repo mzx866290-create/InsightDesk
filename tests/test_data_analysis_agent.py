@@ -1,6 +1,32 @@
 import asyncio
 
-from backend.agent.agents.data_analysis import DataAnalysisAgent
+from backend.agent.agents.data_analysis import DataAnalysisAgent, DataAnalysisAgentConfig
+
+
+def test_data_analysis_agent_rejects_local_file_paths_by_default(tmp_path):
+    csv_path = tmp_path / "sensitive.csv"
+    csv_path.write_text("name,value\nsecret,42\n", encoding="utf-8")
+
+    rows = DataAnalysisAgent()._rows_from_file_path(csv_path)
+
+    assert rows == []
+
+
+def test_data_analysis_agent_reads_only_from_explicitly_allowed_roots(tmp_path):
+    trusted_dir = tmp_path / "trusted"
+    trusted_dir.mkdir()
+    trusted_csv = trusted_dir / "metrics.csv"
+    trusted_csv.write_text("name,value\nrevenue,42\n", encoding="utf-8")
+    outside_csv = tmp_path / "outside.csv"
+    outside_csv.write_text("name,value\nsecret,99\n", encoding="utf-8")
+    agent = DataAnalysisAgent(
+        config=DataAnalysisAgentConfig(allowed_file_roots=(trusted_dir,))
+    )
+
+    assert agent._rows_from_file_path(trusted_csv) == [
+        {"name": "revenue", "value": "42"}
+    ]
+    assert agent._rows_from_file_path(outside_csv) == []
 
 
 def test_data_analysis_agent_applies_nested_structured_filter_tree_from_task_metadata():
