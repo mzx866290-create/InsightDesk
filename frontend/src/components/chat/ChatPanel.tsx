@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { useChatStore } from '../../stores/chatStore'
 import { MessageBubble } from './MessageBubble'
 import type { Panel, PanelMessage } from '../../stores/chatStore'
-import { Bot, Presentation } from 'lucide-react'
+import { Presentation } from 'lucide-react'
 import {
   createSession,
   getSystemPrompts,
@@ -13,12 +13,7 @@ import {
 import type { ActiveStreamControl } from './streamControl'
 import { useWorkflowStore } from '../../stores/workflowStore'
 import { WorkflowVisualizer } from '../workflow/WorkflowVisualizer'
-import {
-  getAnswerGroupReview,
-  promoteRecommendedAnswerGroup,
-} from '../../api/client'
 import type {
-  AnswerGroupReviewResponse,
   ChatFile,
   ChatImage,
   Message,
@@ -29,98 +24,11 @@ import { exportConversationAsMarkdown } from '../../utils/exportConversation'
 import { ChatPanelHeader } from './ChatPanelHeader'
 import { AnswerReviewModal } from './AnswerReviewModal'
 import { dispatchChatStreamChunk } from '../../hooks/useChatStreaming'
+import { findLatestWorkflowNodes, mapMessages } from './chatPanelModel'
+import { EmptyState } from './EmptyState'
+import { useAnswerReview } from './useAnswerReview'
 
 // 默认快捷提问（当角色没有特定提示时使用）
-const DEFAULT_STARTERS = [
-  '帮我总结知识库里的核心内容',
-  '查询最新行业动态',
-  '帮我分析上传的文档',
-  '生成一份数据可视化仪表盘',
-]
-
-// 根据角色名称推断快捷提问
-function getStartersForPrompt(prompt: SystemPrompt | null): string[] {
-  if (!prompt) return DEFAULT_STARTERS
-  const name = prompt.name.toLowerCase()
-  if (name.includes('代码') || name.includes('code')) {
-    return ['帮我审查这段代码', '解释这个函数的作用', '找出潜在的安全漏洞', '优化代码性能']
-  }
-  if (name.includes('文档') || name.includes('写作')) {
-    return ['帮我撰写技术文档', '优化这段文字的表达', '生成 API 说明文档', '写一份项目 README']
-  }
-  if (name.includes('简历') || name.includes('hr') || name.includes('招聘')) {
-    return ['分析候选人简历', '生成岗位职责描述', '提取简历关键信息', '对比多份简历']
-  }
-  return DEFAULT_STARTERS
-}
-
-function mapMessages(messages: Message[]): PanelMessage[] {
-  return messages.map((message, index) => ({
-    id: typeof message.id === 'number' ? `db-${message.id}` : `loaded-${index}`,
-    serverMessageId: message.id,
-    role: message.role,
-    content: message.content,
-    images: message.images,
-    files: message.files,
-    sources: message.sources,
-    modelId: message.model_id,
-    panelId: message.panel_id,
-    answerGroupId: message.answer_group_id,
-    taskId: message.task_id,
-    taskType: message.task_type,
-    workflowNodes: message.workflow_nodes,
-    tokenUsage: message.token_usage,
-    timestamp: message.timestamp,
-    feedbackValue: message.feedback_value,
-  }))
-}
-
-function findLatestWorkflowNodes(messages: Message[]) {
-  const latestAssistantMessage = [...messages]
-    .reverse()
-    .find(
-      (message) =>
-        message.role === 'assistant' && (message.workflow_nodes?.length ?? 0) > 0,
-    )
-
-  return latestAssistantMessage?.workflow_nodes ?? []
-}
-
-interface EmptyStateProps {
-  modelName: string
-  activePrompt: SystemPrompt | null
-  onSelectStarter: (text: string) => void
-}
-
-const EmptyState: React.FC<EmptyStateProps> = ({ modelName, activePrompt, onSelectStarter }) => {
-  const starters = getStartersForPrompt(activePrompt)
-  return (
-    <div className="flex flex-col items-center justify-center h-full text-center gap-4 py-10">
-      <div className="w-12 h-12 rounded-2xl bg-accent-blue/10 flex items-center justify-center">
-        <Bot size={24} className="text-accent-blue/60" />
-      </div>
-      <div>
-        <p className="text-text-secondary text-sm font-medium">
-          {activePrompt ? activePrompt.name : '准备就绪'}
-        </p>
-        <p className="text-text-secondary/50 text-xs mt-0.5">{modelName}</p>
-      </div>
-      <div className="grid grid-cols-1 gap-2 w-full max-w-xs mt-1">
-        {starters.map((starter) => (
-          <button
-            key={starter}
-            type="button"
-            onClick={() => onSelectStarter(starter)}
-            className="text-left rounded-xl border border-bg-border bg-bg-tertiary/40 px-3 py-2.5 text-xs text-text-secondary transition-colors hover:border-accent-blue/40 hover:bg-accent-blue/5 hover:text-text-primary"
-          >
-            {starter}
-          </button>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 interface ChatPanelProps {
   panel: Panel
   isStreaming: boolean
@@ -179,12 +87,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [deckHintDismissed, setDeckHintDismissed] = useState(false)
-  const [reviewAnswerGroupId, setReviewAnswerGroupId] = useState<string | null>(null)
-  const [reviewData, setReviewData] = useState<AnswerGroupReviewResponse | null>(null)
-  const [reviewLoading, setReviewLoading] = useState(false)
-  const [reviewError, setReviewError] = useState<string | null>(null)
-  const [reviewPromotingPanelId, setReviewPromotingPanelId] = useState<string | null>(null)
-  const [reviewPromotingRecommended, setReviewPromotingRecommended] = useState(false)
 
   useEffect(() => {
     getSystemPrompts()
@@ -353,63 +255,19 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     touchSession()
   }
 
-  const loadAnswerReview = async (answerGroupId: string) => {
-    if (!currentSessionId) return
-    setReviewLoading(true)
-    setReviewError(null)
-    try {
-      const payload = await getAnswerGroupReview(currentSessionId, answerGroupId)
-      setReviewData(payload)
-    } catch (error) {
-      setReviewError((error as Error).message || '加载答案评审失败')
-      setReviewData(null)
-    } finally {
-      setReviewLoading(false)
-    }
-  }
-
-  const handleOpenAnswerReview = async (message: PanelMessage) => {
-    if (!currentSessionId || !message.answerGroupId) return
-    setReviewAnswerGroupId(message.answerGroupId)
-    setReviewData(null)
-    setReviewError(null)
-    await loadAnswerReview(message.answerGroupId)
-  }
-
-  const handleRefreshAnswerReview = async () => {
-    if (!reviewAnswerGroupId) return
-    await loadAnswerReview(reviewAnswerGroupId)
-  }
-
-  const handlePromoteReviewedPanel = async (sourcePanelId: string) => {
-    if (!currentSessionId || !reviewAnswerGroupId) return
-    setReviewPromotingPanelId(sourcePanelId)
-    setReviewError(null)
-    try {
-      const payload = await promotePanelAnswer(currentSessionId, reviewAnswerGroupId, sourcePanelId)
-      applyPromotedAnswer(payload)
-      setReviewAnswerGroupId(null)
-    } catch (error) {
-      setReviewError((error as Error).message || '设置主答案失败')
-    } finally {
-      setReviewPromotingPanelId(null)
-    }
-  }
-
-  const handlePromoteRecommendedAnswer = async () => {
-    if (!currentSessionId || !reviewAnswerGroupId) return
-    setReviewPromotingRecommended(true)
-    setReviewError(null)
-    try {
-      const payload = await promoteRecommendedAnswerGroup(currentSessionId, reviewAnswerGroupId)
-      applyPromotedAnswer(payload)
-      setReviewAnswerGroupId(null)
-    } catch (error) {
-      setReviewError((error as Error).message || '采用推荐答案失败')
-    } finally {
-      setReviewPromotingRecommended(false)
-    }
-  }
+  const {
+    reviewAnswerGroupId,
+    reviewData,
+    reviewLoading,
+    reviewError,
+    reviewPromotingPanelId,
+    reviewPromotingRecommended,
+    closeReview,
+    handleOpenAnswerReview,
+    handleRefreshAnswerReview,
+    handlePromoteReviewedPanel,
+    handlePromoteRecommendedAnswer,
+  } = useAnswerReview({ currentSessionId, applyPromotedAnswer })
 
   const handleFork = async (message: PanelMessage) => {
     if (!currentSessionId) return
@@ -1416,13 +1274,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         primaryPanelId={primaryPanelId}
         promotingPanelId={reviewPromotingPanelId}
         promotingRecommended={reviewPromotingRecommended}
-        onClose={() => {
-          setReviewAnswerGroupId(null)
-          setReviewData(null)
-          setReviewError(null)
-          setReviewPromotingPanelId(null)
-          setReviewPromotingRecommended(false)
-        }}
+        onClose={closeReview}
         onRefresh={() => {
           void handleRefreshAnswerReview()
         }}
