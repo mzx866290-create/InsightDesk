@@ -36,7 +36,7 @@ interface UseComposerSendSubmitOptions {
   pendingEditAnswerGroupId: string | null
   omitHistoryForNextSend: boolean
   isInteractionLocked: boolean
-  textareaRef: RefObject<HTMLTextAreaElement>
+  textareaRef: RefObject<HTMLTextAreaElement | null>
   adjustHeight: () => void
   resetComposer: () => void
   restoreAttachments: (nextImages: ChatImage[], nextFiles: ChatFile[]) => void

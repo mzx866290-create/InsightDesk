@@ -11,7 +11,7 @@ import {
 interface UseComposerSuggestionsOptions {
   input: string
   setInput: Dispatch<SetStateAction<string>>
-  textareaRef: RefObject<HTMLTextAreaElement>
+  textareaRef: RefObject<HTMLTextAreaElement | null>
   adjustHeight: () => void
 }
 

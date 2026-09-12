@@ -3,7 +3,7 @@ import { Check, FileText, History, MoreHorizontal, RotateCcw, Share2 } from 'luc
 
 interface HeaderMoreMenuProps {
   open: boolean
-  menuRef: React.RefObject<HTMLDivElement>
+  menuRef: React.RefObject<HTMLDivElement | null>
   currentSessionId: string | null
   sharingSession: boolean
   sessionShareCopied: boolean
