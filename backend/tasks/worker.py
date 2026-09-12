@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
-import importlib
 import logging
 import os
 import time
 
 from backend.stores.task_store import SQLiteTaskStore, TaskStatus
 from backend.tasks.enqueue import _redis_settings_from_env
+from backend.tasks.runtime_bridge import execute_task_record, load_task_store
 from backend.tasks.settings import (
     arq_pending_stale_seconds_from_env,
     arq_queue_name_from_env,
@@ -118,8 +118,7 @@ async def run_task_by_id(ctx, task_id: str) -> None:
         await _run_probe_task(probe_record, task_store=probe_task_store)
         return
 
-    api_server = importlib.import_module("backend.api_server")
-    task_store = api_server._get_task_store()
+    task_store = load_task_store()
     record = task_store.get(str(task_id))
     if record is None:
         raise ValueError(f"Task was not found: {task_id}")
@@ -143,7 +142,7 @@ async def run_task_by_id(ctx, task_id: str) -> None:
         )
         return
 
-    await api_server._run_task(record)
+    await execute_task_record(record)
 
     latest_record = task_store.get(str(task_id)) or record
     failure_kind = str(
