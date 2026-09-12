@@ -13,6 +13,11 @@ from backend.agent.protocols import AgentTask
 from backend.agent.agents.model_compare import ModelCompareAgentConfig
 from backend.agent.agents.researcher import ResearchAgentConfig
 from backend.agent.orchestrator_metrics import build_agent_metric, summarize_agent_metrics
+import logging
+
+from backend.agent.llm_planner import build_llm_plan, llm_planner_enabled
+
+logger = logging.getLogger(__name__)
 from backend.agent.registry import (
     AgentRegistry,
     create_default_agent_registry,
@@ -765,6 +770,7 @@ def build_orchestrator_graph(
     model_compare_config: ModelCompareAgentConfig | None = None,
     integrator_connectors: tuple[Any, ...] | list[Any] | None = None,
     event_sink: Any | None = None,
+    llm_planner: Any | None = None,
 ):
     """Build the multi-agent orchestration graph.
 
@@ -791,13 +797,38 @@ def build_orchestrator_graph(
     async def plan_node(state: OrchestratorState) -> OrchestratorState:
         next_state = _copy_state(state)
         if not next_state.get("plan"):
-            next_state["plan"] = create_plan(
-                next_state.get("user_request", ""),
-                agent_registry,
-                context=next_state.get("context") or {},
-                requested_tasks=next_state.get("requested_tasks"),
-                requested_agents=next_state.get("requested_agents"),
+            context_map = next_state.get("context") or {}
+            requested_plan_given = bool(
+                next_state.get("requested_tasks") or next_state.get("requested_agents")
             )
+            planner = llm_planner
+            if planner is None and llm is not None and llm_planner_enabled(context_map):
+                async def _default_llm_planner(request: str, registry: Any) -> Any:
+                    return await build_llm_plan(request, llm, registry)
+
+                planner = _default_llm_planner
+            llm_plan = None
+            if planner is not None and not requested_plan_given:
+                try:
+                    llm_plan = await planner(
+                        next_state.get("user_request", ""), agent_registry
+                    )
+                except Exception:
+                    logger.exception("LLM workflow planner failed; falling back to heuristics")
+                    llm_plan = None
+            if llm_plan:
+                next_state["plan"] = _apply_task_approval_policy(
+                    _apply_agent_metadata_to_plan(llm_plan, agent_registry),
+                    context_map,
+                )
+            else:
+                next_state["plan"] = create_plan(
+                    next_state.get("user_request", ""),
+                    agent_registry,
+                    context=context_map,
+                    requested_tasks=next_state.get("requested_tasks"),
+                    requested_agents=next_state.get("requested_agents"),
+                )
         else:
             next_state["plan"] = _normalize_plan(next_state.get("plan", []))
             next_state["plan"] = _apply_agent_metadata_to_plan(
@@ -1234,6 +1265,7 @@ async def run_orchestrator(
     model_compare_config: ModelCompareAgentConfig | None = None,
     integrator_connectors: tuple[Any, ...] | list[Any] | None = None,
     event_sink: Any | None = None,
+    llm_planner: Any | None = None,
 ) -> OrchestratorState:
     """Convenience helper for one-shot orchestrator execution."""
     normalized_requested_tasks = [
@@ -1275,6 +1307,7 @@ async def run_orchestrator(
             model_compare_config=model_compare_config,
             integrator_connectors=integrator_connectors,
             event_sink=event_sink,
+            llm_planner=llm_planner,
         )
         initial_state: OrchestratorState = {
             "user_request": user_request,
@@ -1319,6 +1352,7 @@ async def resume_orchestrator(
     model_compare_config: ModelCompareAgentConfig | None = None,
     integrator_connectors: tuple[Any, ...] | list[Any] | None = None,
     event_sink: Any | None = None,
+    llm_planner: Any | None = None,
 ) -> OrchestratorState:
     """Resume an existing orchestrator state, optionally after a human decision."""
     async with trace_span(
@@ -1347,6 +1381,7 @@ async def resume_orchestrator(
             model_compare_config=model_compare_config,
             integrator_connectors=integrator_connectors,
             event_sink=event_sink,
+            llm_planner=llm_planner,
         )
         result = await graph.ainvoke(resume_state)
         span.set_attributes(
