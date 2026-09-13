@@ -1,13 +1,19 @@
 /**
  * InsightDesk desktop shell (Electron).
  *
- * CherryStudio-style desktop behavior: single instance, system tray with
- * close-to-tray, native app icon. Spawns the packaged backend (PyInstaller
- * onedir under resources/backend), waits for /api/health, then loads the
- * single-port UI. Falls back to a dev backend (venv312 python) when the
- * packaged backend is absent, so `npm start` works from a source checkout.
+ * Shell patterns adopted from CherryStudio (AGPL-3.0, referenced only):
+ * - Windows minimize-to-tray via setOpacity(0)+setSkipTaskbar(true)+minimize()
+ *   (plain hide() steals focus back to the previous window)
+ * - tray click shows the window; right-click pops the context menu
+ * - tray / close-to-tray are configurable (env INSIGHTDESK_TRAY,
+ *   INSIGHTDESK_TRAY_ON_CLOSE; "0" disables)
+ * - electron-updater skeleton guarded by app.isPackaged
+ *
+ * Spawns the packaged backend (PyInstaller onedir under resources/backend),
+ * waits for /api/health, then loads the single-port UI. Falls back to a dev
+ * backend (venv312 python) when the packaged backend is absent.
  */
-const { app, BrowserWindow, Tray, Menu, dialog, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell } = require('electron');
 const { spawn } = require('child_process');
 const http = require('http');
 const net = require('net');
@@ -19,17 +25,12 @@ let backendProcess = null;
 let tray = null;
 let quitting = false;
 
+const TRAY_ENABLED = process.env.INSIGHTDESK_TRAY !== '0';
+const TRAY_ON_CLOSE = process.env.INSIGHTDESK_TRAY_ON_CLOSE !== '0';
+
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
-} else {
-  app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    }
-  });
 }
 
 app.setAppUserModelId('com.insightdesk.desktop');
@@ -144,40 +145,79 @@ async function startBackend() {
   return port;
 }
 
+function showMainWindow() {
+  if (!mainWindow) return;
+  mainWindow.setOpacity(1);
+  mainWindow.setSkipTaskbar(false);
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
 function createTray() {
-  const iconPath = path.join(__dirname, 'build', 'icon.png');
+  if (!TRAY_ENABLED) return;
+  const iconPath = path.join(__dirname, 'build', 'tray_icon.png');
   const image = fs.existsSync(iconPath)
-    ? nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
-    : nativeImage.createEmpty();
+    ? nativeImage.createFromPath(iconPath)
+    : nativeImage.createFromPath(path.join(__dirname, 'build', 'icon.png'));
   tray = new Tray(image);
   tray.setToolTip('InsightDesk');
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      {
-        label: '显示 InsightDesk',
-        click: () => {
-          if (mainWindow) {
-            mainWindow.show();
-            mainWindow.focus();
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: '显示 InsightDesk',
+      click: showMainWindow,
+    },
+    { type: 'separator' },
+    {
+      label: '退出',
+      click: () => {
+        quitting = true;
+        app.quit();
+      },
+    },
+  ]);
+  // CherryStudio pattern: click shows the window, right-click pops the menu.
+  tray.on('click', showMainWindow);
+  tray.on('right-click', () => tray.popUpContextMenu(contextMenu));
+  tray.on('double-click', showMainWindow);
+  tray.setContextMenu(contextMenu);
+}
+
+function minimizeToTrayOnWindows() {
+  mainWindow.setOpacity(0);
+  mainWindow.setSkipTaskbar(true);
+  mainWindow.minimize();
+}
+
+function setupAutoUpdater() {
+  if (!app.isPackaged) return;
+  try {
+    // lazy require: the module only ships in packaged builds
+    const { autoUpdater } = require('electron-updater');
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = false;
+    autoUpdater.on('update-available', (info) => {
+      dialog
+        .showMessageBox({
+          type: 'info',
+          title: 'InsightDesk 更新',
+          message: `发现新版本 ${info.version}`,
+          detail: '可前往 GitHub Releases 页面下载。',
+          buttons: ['打开下载页', '以后再说'],
+          defaultId: 0,
+        })
+        .then(({ response }) => {
+          if (response === 0) {
+            shell.openExternal('https://github.com/mzx866290-create/InsightDesk/releases');
           }
-        },
-      },
-      { type: 'separator' },
-      {
-        label: '退出',
-        click: () => {
-          quitting = true;
-          app.quit();
-        },
-      },
-    ]),
-  );
-  tray.on('double-click', () => {
-    if (mainWindow) {
-      mainWindow.show();
-      mainWindow.focus();
-    }
-  });
+        });
+    });
+    autoUpdater.checkForUpdates().catch(() => {
+      // no published release yet; silently skip
+    });
+  } catch {
+    // updater unavailable; ignore
+  }
 }
 
 async function createWindow() {
@@ -200,27 +240,20 @@ async function createWindow() {
   });
   mainWindow.setMenuBarVisibility(false);
   mainWindow.once('ready-to-show', () => mainWindow.show());
-  // CherryStudio behavior: closing the window hides it to the tray; the
-  // backend keeps running so reopening is instant. Quit via tray menu.
   mainWindow.on('close', (event) => {
-    if (!quitting) {
-      event.preventDefault();
-      mainWindow.hide();
-    }
+    if (quitting || !TRAY_ENABLED || !TRAY_ON_CLOSE) return; // real quit
+    event.preventDefault();
+    minimizeToTrayOnWindows();
   });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
   createTray();
+  setupAutoUpdater();
   await mainWindow.loadURL(`http://127.0.0.1:${port}`);
 }
 
-app.on('second-instance', () => {
-  if (mainWindow) {
-    mainWindow.show();
-    mainWindow.focus();
-  }
-});
+app.on('second-instance', showMainWindow);
 
 app.on('before-quit', () => {
   quitting = true;
@@ -236,7 +269,7 @@ app.on('before-quit', () => {
 });
 
 app.on('window-all-closed', () => {
-  // keep running in the tray; quit happens through the tray menu
+  // tray-resident: quit goes through the tray menu
 });
 
 app.whenReady().then(createWindow);
