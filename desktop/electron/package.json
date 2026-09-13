@@ -3,22 +3,26 @@
   "private": true,
   "version": "2.0.0",
   "description": "InsightDesk desktop shell",
-  "main": "main.js",
+  "main": "./out/main/index.js",
   "scripts": {
-    "start": "electron .",
-    "dist": "electron-builder --win"
+    "typecheck": "tsc --noEmit",
+    "build": "electron-vite build",
+    "start": "electron-vite dev",
+    "dist": "electron-vite build && electron-builder --win"
   },
   "devDependencies": {
+    "@types/node": "^22.20.2",
     "electron": "^33.0.0",
-    "electron-builder": "^25.1.8"
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^3.1.0",
+    "typescript": "^7.0.2"
   },
   "build": {
     "appId": "com.insightdesk.desktop",
     "productName": "InsightDesk",
     "icon": "build/icon.ico",
     "files": [
-      "main.js",
-      "preload.js"
+      "out/**"
     ],
     "extraResources": [
       {
