@@ -22,7 +22,8 @@
     "productName": "InsightDesk",
     "icon": "build/icon.ico",
     "files": [
-      "out/**"
+      "out/**",
+      "build/**"
     ],
     "extraResources": [
       {
