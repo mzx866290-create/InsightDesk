@@ -121,3 +121,6 @@ desktop/pyinstaller/dist/
 desktop/pyinstaller/build/
 desktop/electron/node_modules/
 desktop/electron/dist/
+# ...but the Electron build assets (app icon) must be tracked
+!desktop/electron/build/
+!desktop/electron/build/**

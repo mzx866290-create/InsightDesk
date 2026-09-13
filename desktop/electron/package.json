@@ -15,6 +15,7 @@
   "build": {
     "appId": "com.insightdesk.desktop",
     "productName": "InsightDesk",
+    "icon": "build/icon.ico",
     "files": [
       "main.js",
       "preload.js"
@@ -39,7 +40,12 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "artifactName": "InsightDesk-Setup-${version}.${ext}"
+      "artifactName": "InsightDesk-Setup-${version}.${ext}",
+      "shortcutName": "InsightDesk",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
     }
   }
 }

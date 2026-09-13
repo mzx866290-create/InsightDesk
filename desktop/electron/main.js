@@ -1,12 +1,13 @@
 /**
  * InsightDesk desktop shell (Electron).
  *
- * Spawns the packaged backend (PyInstaller onedir under resources/backend),
- * waits for /api/health, then loads the single-port UI. Falls back to a
- * dev backend (venv312 python + desktop/app.py semantics) when the packaged
- * backend is absent, so `npm start` works from a source checkout.
+ * CherryStudio-style desktop behavior: single instance, system tray with
+ * close-to-tray, native app icon. Spawns the packaged backend (PyInstaller
+ * onedir under resources/backend), waits for /api/health, then loads the
+ * single-port UI. Falls back to a dev backend (venv312 python) when the
+ * packaged backend is absent, so `npm start` works from a source checkout.
  */
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, nativeImage } = require('electron');
 const { spawn } = require('child_process');
 const http = require('http');
 const net = require('net');
@@ -15,6 +16,31 @@ const fs = require('fs');
 
 let mainWindow = null;
 let backendProcess = null;
+let tray = null;
+let quitting = false;
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
+app.setAppUserModelId('com.insightdesk.desktop');
+
+function resolveIcon() {
+  const icoPath = path.join(__dirname, 'build', 'icon.ico');
+  const pngPath = path.join(__dirname, 'build', 'icon.png');
+  if (fs.existsSync(icoPath)) return icoPath;
+  if (fs.existsSync(pngPath)) return pngPath;
+  return undefined;
+}
 
 function findFreePort(start) {
   return new Promise((resolve, reject) => {
@@ -118,6 +144,42 @@ async function startBackend() {
   return port;
 }
 
+function createTray() {
+  const iconPath = path.join(__dirname, 'build', 'icon.png');
+  const image = fs.existsSync(iconPath)
+    ? nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 })
+    : nativeImage.createEmpty();
+  tray = new Tray(image);
+  tray.setToolTip('InsightDesk');
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      {
+        label: '显示 InsightDesk',
+        click: () => {
+          if (mainWindow) {
+            mainWindow.show();
+            mainWindow.focus();
+          }
+        },
+      },
+      { type: 'separator' },
+      {
+        label: '退出',
+        click: () => {
+          quitting = true;
+          app.quit();
+        },
+      },
+    ]),
+  );
+  tray.on('double-click', () => {
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
 async function createWindow() {
   const port = await startBackend();
   if (port === null) return;
@@ -128,28 +190,53 @@ async function createWindow() {
     minWidth: 1024,
     minHeight: 700,
     title: 'InsightDesk',
+    icon: resolveIcon(),
+    backgroundColor: '#101319',
+    show: false,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
   mainWindow.setMenuBarVisibility(false);
+  mainWindow.once('ready-to-show', () => mainWindow.show());
+  // CherryStudio behavior: closing the window hides it to the tray; the
+  // backend keeps running so reopening is instant. Quit via tray menu.
+  mainWindow.on('close', (event) => {
+    if (!quitting) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+  createTray();
   await mainWindow.loadURL(`http://127.0.0.1:${port}`);
 }
 
-app.on('window-all-closed', () => {
-  app.quit();
+app.on('second-instance', () => {
+  if (mainWindow) {
+    mainWindow.show();
+    mainWindow.focus();
+  }
 });
 
 app.on('before-quit', () => {
+  quitting = true;
+  if (tray) {
+    tray.destroy();
+    tray = null;
+  }
   if (backendProcess !== null) {
     backendProcess.removeAllListeners('exit');
     backendProcess.kill();
     backendProcess = null;
   }
+});
+
+app.on('window-all-closed', () => {
+  // keep running in the tray; quit happens through the tray menu
 });
 
 app.whenReady().then(createWindow);
